@@ -1,10 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   Bootstrap,
+  AutomationConfig,
+  AutomationSummary,
   Incident,
   InvestigationResponse,
   TimelineFilters,
   EventRecord,
+  OverheadResponse,
   ScanSummary,
 } from "./types";
 
@@ -104,6 +107,34 @@ export function loadTimeline(filters: TimelineFilters, limit = 240): Promise<Eve
 
 export function runScan(): Promise<{ scan: ScanSummary }> {
   return request<{ scan: ScanSummary }>("/scan", { method: "POST", body: "{}" });
+}
+
+export function updateAutomationConfig(input: AutomationConfig): Promise<{ automation: AutomationSummary }> {
+  return request<{ automation: AutomationSummary }>("/automation/config", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateAutomationWatcher(
+  action: "enable" | "disable" | "run",
+  intervalSeconds?: number,
+): Promise<{ automation: AutomationSummary; scan?: ScanSummary }> {
+  return request<{ automation: AutomationSummary; scan?: ScanSummary }>("/automation/watcher", {
+    method: "POST",
+    body: JSON.stringify({ action, interval_seconds: intervalSeconds }),
+  });
+}
+
+export function markAutomationNotificationsRead(ids?: string[]): Promise<{ automation: AutomationSummary }> {
+  return request<{ automation: AutomationSummary }>("/automation/notifications/read", {
+    method: "POST",
+    body: JSON.stringify(ids ? { ids } : {}),
+  });
+}
+
+export function recordOverhead(): Promise<OverheadResponse> {
+  return request<OverheadResponse>("/overhead", { method: "POST", body: "{}" });
 }
 
 export function createInvestigation(input: {

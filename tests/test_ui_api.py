@@ -1,9 +1,11 @@
 import json
 import unittest
+from unittest.mock import patch
 
 from difftrail.db import Database
+from difftrail.models import Event, utc_now
 from difftrail.simulation import simulate_nvidia_driver_switch
-from difftrail.ui_api import build_bootstrap, create_investigation
+from difftrail.ui_api import build_bootstrap, create_investigation, record_overhead
 
 
 class UiApiTests(unittest.TestCase):
@@ -29,3 +31,62 @@ class UiApiTests(unittest.TestCase):
             self.assertEqual(result["summary"]["incident_id"], result["incident"]["id"])
             self.assertTrue(result["summary"]["hypotheses"])
             self.assertTrue(all("details" not in hypothesis["event"] for hypothesis in result["summary"]["hypotheses"]))
+            lead_event = result["summary"]["hypotheses"][0]["event"]
+            self.assertIn("version", lead_event["detail_summary"]["changed_fields"])
+            self.assertNotIn("path", json.dumps(lead_event))
+
+    def test_bootstrap_exposes_safe_event_detail_summary_without_raw_message(self) -> None:
+        with Database(":memory:") as database:
+            database.save_events(
+                [
+                    Event(
+                        utc_now(),
+                        "symptom",
+                        "application",
+                        "crash",
+                        "Application crash detected",
+                        entity="Application Error",
+                        source="eventlog",
+                        details={
+                            "event_id": 1000,
+                            "log_name": "Application",
+                            "provider": "Application Error",
+                            "record_id": "42",
+                            "message": r"Faulting application name: C:\Games\Example.exe, version 1.0",
+                        },
+                    )
+                ]
+            )
+            event = build_bootstrap(database)["events"][0]
+
+        self.assertEqual(event["entity"], "Application Error")
+        self.assertEqual(event["detail_summary"]["application_name"], "Example.exe")
+        self.assertEqual(event["detail_summary"]["event_id"], 1000)
+        self.assertNotIn('"message":', json.dumps(event))
+        self.assertNotIn("C:\\Games", json.dumps(event))
+
+    def test_record_overhead_persists_numeric_report_without_process_id(self) -> None:
+        report = {
+            "status": "ok",
+            "interval_seconds": 15,
+            "warmup_seconds": 2,
+            "sample_seconds": 5,
+            "startup_process_tree_cpu_percent": 1.0,
+            "process_tree_cpu_percent": 0.2,
+            "startup_rss_mb_peak": 100.0,
+            "rss_mb_mean": 30.0,
+            "rss_mb_peak": 32.0,
+            "startup_disk_read_mb": 1.0,
+            "startup_disk_write_mb": 0.0,
+            "disk_read_mb": 0.1,
+            "disk_write_mb": 0.0,
+            "sample_count": 3,
+            "process_id": 1234,
+            "scope": "watcher",
+        }
+        with Database(":memory:") as database, patch("difftrail.ui_api.measure_watcher_overhead", return_value=report):
+            result = record_overhead(database)
+            self.assertEqual(len(database.list_overhead_measurements()), 1)
+
+        self.assertNotIn("process_id", result["report"])
+        self.assertEqual(result["report"]["sample_seconds"], 5)

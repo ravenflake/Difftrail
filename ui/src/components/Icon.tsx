@@ -27,6 +27,9 @@ export type IconName =
   | "external"
   | "copy"
   | "close"
+  | "minus"
+  | "maximize"
+  | "restore"
   | "menu"
   | "spark"
   | "sun"
@@ -61,6 +64,9 @@ const paths: Record<IconName, ReactNode> = {
   external: <><path d="M14 4h6v6" /><path d="m20 4-9 9" /><path d="M18 13v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h5" /></>,
   copy: <><rect x="8" y="8" width="11" height="11" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></>,
   close: <><path d="m6 6 12 12M18 6 6 18" /></>,
+  minus: <path d="M5 12h14" />,
+  maximize: <rect x="5" y="5" width="14" height="14" rx="1" />,
+  restore: <><path d="M8 8h11v11H8z" /><path d="M5 16V5h11" /></>,
   menu: <><path d="M4 6h16M4 12h16M4 18h16" /></>,
   spark: <><path d="m12 3 1.5 5.5L19 10l-5.5 1.5L12 17l-1.5-5.5L5 10l5.5-1.5L12 3Z" /><path d="m19 16 .5 2 2 .5-2 .5-.5 2-.5-2-2-.5 2-.5.5-2Z" /></>,
   sun: <><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42" /></>,

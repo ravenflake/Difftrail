@@ -82,8 +82,10 @@ class Scanner:
         return result
 
     def watch(self, interval_seconds: int = 300) -> None:
-        if interval_seconds < 15:
-            raise ValueError("The watcher interval must be at least 15 seconds")
+        if interval_seconds < 15 or interval_seconds > 86_400:
+            raise ValueError("The watcher interval must be between 15 and 86400 seconds")
+        from .automation import run_automated_scan
+
         while True:
-            self.scan()
+            run_automated_scan(self.database, self)
             time.sleep(interval_seconds)

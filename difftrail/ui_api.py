@@ -17,11 +17,20 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from . import __version__
+from .automation import (
+    automation_snapshot,
+    disable_watcher,
+    enable_watcher,
+    mark_notifications_read,
+    run_automated_scan,
+    update_automation_config,
+)
 from .correlation import infer_subsystem, investigation_summary, rank_candidates
 from .db import Database
 from .models import IncidentRequest, parse_datetime, utc_now
-from .service import Scanner
 from .host_validation import build_host_validation_report
+from .overhead import measure_watcher_overhead
+from .privacy import extract_safe_application_name
 
 
 SOURCE_LABELS = {
@@ -33,19 +42,73 @@ SOURCE_LABELS = {
     "startup": "Startup entries",
     "devices": "Devices",
     "event-log": "Windows signal",
+    "eventlog": "Windows signal",
     "fixture:eventlog": "Windows signal",
     "windows-reliability": "Windows signal",
 }
 
 ALLOWED_ORIGINS = frozenset({"http://tauri.localhost", "http://127.0.0.1:5173"})
 MAX_REQUEST_BODY_BYTES = 64 * 1024
+SAFE_CHANGE_FIELDS = frozenset({"display_name", "state", "start_mode", "start_name", "version", "driver_date", "manufacturer", "class", "status"})
+SAFE_EVENT_FIELDS = frozenset({"event_id", "log_name", "provider", "record_id", "application_name"})
+
+
+def _safe_detail_value(value: Any) -> str | int | float | bool | None:
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return None
+
+
+def _public_detail_summary(event: dict[str, Any]) -> dict[str, Any] | None:
+    """Expose parsed, non-sensitive event context without raw messages/paths."""
+
+    details = event.get("details")
+    if not isinstance(details, dict):
+        return None
+    summary: dict[str, Any] = {}
+    before = details.get("before") if isinstance(details.get("before"), dict) else None
+    after = details.get("after") if isinstance(details.get("after"), dict) else None
+    if before is not None or after is not None:
+        old = before or {}
+        new = after or {}
+        changed_fields = sorted(
+            key for key in set(old) | set(new)
+            if key in SAFE_CHANGE_FIELDS and old.get(key) != new.get(key)
+        )
+        if changed_fields:
+            summary["changed_fields"] = changed_fields
+        for label, values in (("before", old), ("after", new)):
+            selected = {
+                key: safe_value
+                for key, value in values.items()
+                if key in SAFE_CHANGE_FIELDS
+                and (safe_value := _safe_detail_value(value)) is not None
+            }
+            if selected:
+                summary[label] = selected
+    for key in SAFE_EVENT_FIELDS:
+        value = _safe_detail_value(details.get(key))
+        if value is not None:
+            summary[key] = value
+    if "application_name" not in summary and details.get("message"):
+        application_name = extract_safe_application_name(str(details["message"]))
+        if application_name:
+            summary["application_name"] = application_name
+    if "message" in details:
+        summary["raw_message_retained"] = bool(details.get("message"))
+    elif details.get("raw_message_retained") is False:
+        summary["raw_message_retained"] = False
+    return summary or None
 
 
 def _public_event(event: dict[str, Any]) -> dict[str, Any]:
     """Return UI-safe event metadata without raw detail payloads."""
 
     result = dict(event)
+    detail_summary = _public_detail_summary(result)
     result.pop("details", None)
+    if detail_summary:
+        result["detail_summary"] = detail_summary
     result["source_label"] = SOURCE_LABELS.get(result.get("source", ""), result.get("source", "Unknown").replace("-", " "))
     return result
 
@@ -77,6 +140,7 @@ def build_bootstrap(database: Database, *, days: int = 7) -> dict[str, Any]:
         "events": [_public_event(event.as_dict()) for event in database.list_events(limit=120)],
         "incidents": [public_incident(item) for item in database.recent_incidents(limit=20)],
         "validation": build_host_validation_report(database, days=days),
+        "automation": automation_snapshot(database),
     }
 
 
@@ -100,6 +164,16 @@ def create_investigation(database: Database, body: dict[str, Any]) -> dict[str, 
     summary["incident_id"] = incident.id
     summary["hypotheses"] = [_public_hypothesis(item) for item in summary["hypotheses"]]
     return {"summary": summary, "incident": public_incident(stored)}
+
+
+def record_overhead(database: Database) -> dict[str, Any]:
+    """Record a short local watcher-footprint sample for the health view."""
+
+    report = measure_watcher_overhead(interval_seconds=15, warmup_seconds=2, sample_seconds=5)
+    measurement_id = database.record_overhead_measurement(report)
+    public_report = dict(report)
+    public_report.pop("process_id", None)
+    return {"measurement_id": measurement_id, "report": public_report}
 
 
 class UiRequestHandler(BaseHTTPRequestHandler):
@@ -166,6 +240,8 @@ class UiRequestHandler(BaseHTTPRequestHandler):
             if path == "/api/bootstrap":
                 days = max(1, min(int(query.get("days", "7")), 3650))
                 payload = self._with_database(lambda db: build_bootstrap(db, days=days))
+            elif path == "/api/automation":
+                payload = self._with_database(automation_snapshot)
             elif path == "/api/timeline":
                 limit = max(1, min(int(query.get("limit", "120")), 500))
                 events = self._with_database(
@@ -209,8 +285,40 @@ class UiRequestHandler(BaseHTTPRequestHandler):
         try:
             body = self._body()
             if path == "/api/scan":
-                result = self._with_database(lambda db: Scanner(db).scan())
+                result = self._with_database(run_automated_scan)
                 payload = {"scan": result.as_dict()}
+            elif path == "/api/automation/config":
+                def update_config(database: Database) -> dict[str, Any]:
+                    update_automation_config(database, body)
+                    return {"automation": automation_snapshot(database)}
+
+                payload = self._with_database(update_config)
+            elif path == "/api/automation/watcher":
+                action = str(body.get("action", "")).strip().casefold()
+
+                def update_watcher(database: Database) -> dict[str, Any]:
+                    scan = None
+                    if action == "enable":
+                        enable_watcher(database, body.get("interval_seconds"))
+                    elif action == "disable":
+                        disable_watcher(database)
+                    elif action == "run":
+                        scan = run_automated_scan(database)
+                    else:
+                        raise ValueError("Watcher action must be enable, disable, or run")
+                    result: dict[str, Any] = {"automation": automation_snapshot(database)}
+                    if scan is not None:
+                        result["scan"] = scan.as_dict()
+                    return result
+
+                payload = self._with_database(update_watcher)
+            elif path == "/api/automation/notifications/read":
+                ids = body.get("ids")
+                if ids is not None and not isinstance(ids, list):
+                    raise ValueError("Notification ids must be an array")
+                payload = self._with_database(lambda db: {"automation": mark_notifications_read(db, ids)})
+            elif path == "/api/overhead":
+                payload = self._with_database(record_overhead)
             elif path == "/api/investigations":
                 payload = self._with_database(lambda db: create_investigation(db, body))
             elif path.startswith("/api/incidents/") and path.endswith("/feedback"):
@@ -228,7 +336,7 @@ class UiRequestHandler(BaseHTTPRequestHandler):
                 self._error(404, "Difftrail UI endpoint not found")
                 return
             self._send(200, payload)
-        except (ValueError, OSError) as exc:
+        except (RuntimeError, ValueError, OSError) as exc:
             self._error(400, str(exc))
 
 

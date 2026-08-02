@@ -6,6 +6,7 @@ from typing import Any, Callable
 
 from ..correlation import infer_subsystem
 from ..models import Event, SnapshotItem, parse_datetime
+from ..privacy import extract_safe_application_name
 from .powershell import PowerShellError, run_json
 
 
@@ -394,6 +395,17 @@ $rows | Sort-Object TimeCreated | ConvertTo-Json -Depth 5 -Compress
                 title, subsystem, action, severity = "Application crash detected", infer_subsystem(message), "crash", "high"
             else:
                 title, subsystem, action, severity = "Windows reliability event detected", infer_subsystem(message), "reliability_event", "medium"
+            application_name = extract_safe_application_name(message) if event_number in {1000, 1002} else None
+            details = {
+                "event_id": event_number,
+                "log_name": _text(row, "LogName"),
+                "provider": _text(row, "ProviderName"),
+                "level": _text(row, "Level"),
+                "record_id": _text(row, "RecordId"),
+                "message": message,
+            }
+            if application_name:
+                details["application_name"] = application_name
             events.append(
                 Event(
                     occurred_at=occurred_at,
@@ -401,17 +413,10 @@ $rows | Sort-Object TimeCreated | ConvertTo-Json -Depth 5 -Compress
                     subsystem=subsystem,
                     action=action,
                     title=title,
-                    entity=_text(row, "ProviderName"),
+                    entity=application_name or _text(row, "ProviderName"),
                     severity=severity,
                     source="eventlog",
-                    details={
-                        "event_id": event_number,
-                        "log_name": _text(row, "LogName"),
-                        "provider": _text(row, "ProviderName"),
-                        "level": _text(row, "Level"),
-                        "record_id": _text(row, "RecordId"),
-                        "message": message,
-                    },
+                    details=details,
                     event_id=event_id,
                 )
             )

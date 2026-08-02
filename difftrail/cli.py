@@ -8,12 +8,12 @@ import time
 from pathlib import Path
 
 from . import __version__
+from .automation import run_automated_scan
 from .correlation import infer_subsystem, investigation_summary, rank_candidates
 from .db import Database
 from .demo import seed_demo
 from .host_validation import build_host_validation_report
 from .models import IncidentRequest, iso_datetime, parse_datetime, utc_now
-from .service import Scanner
 from .simulation import run_controlled_fixture_suite, simulate_nvidia_driver_switch
 
 
@@ -47,7 +47,7 @@ def _format_event(event) -> str:
 
 def command_scan(args: argparse.Namespace) -> int:
     with _database(args) as database:
-        result = Scanner(database).scan()
+        result = run_automated_scan(database)
         if args.json:
             _print_json(result.as_dict())
         else:
@@ -188,12 +188,13 @@ def command_status(args: argparse.Namespace) -> int:
 
 
 def command_watch(args: argparse.Namespace) -> int:
+    if args.interval < 15 or args.interval > 86_400:
+        raise ValueError("The watcher interval must be between 15 and 86400 seconds")
     with _database(args) as database:
         print(f"Difftrail watcher running every {args.interval} seconds. Press Ctrl+C to stop.")
         try:
-            scanner = Scanner(database)
             while True:
-                result = scanner.scan()
+                result = run_automated_scan(database)
                 print(
                     f"Scan {result.status}: {result.state_events} changes, "
                     f"{result.symptom_events} symptoms across {result.sources} sources."

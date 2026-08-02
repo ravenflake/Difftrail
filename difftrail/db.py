@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .models import Event, Incident, IncidentRequest, SnapshotItem, ensure_utc, iso_datetime, parse_datetime, utc_now
-from .privacy import redact_text, redact_value
+from .privacy import extract_safe_application_name, redact_text, redact_value
 
 
 DEFAULT_RETENTION_DAYS = 30
@@ -25,6 +25,12 @@ IGNORED_SNAPSHOT_FIELDS: dict[str, frozenset[str]] = {
     "tasks": frozenset({"state"}),
     "devices": frozenset({"name", "manufacturer", "status"}),
 }
+
+# BITS is a trigger-start service. Win32_Service can report its trigger state
+# as an Auto/Running or Manual/Stopped pair between scans even when no durable
+# service configuration changed. Keep the raw values in event details, but do
+# not turn this known oscillation into a journal event.
+TRIGGER_START_SERVICES = frozenset({"bits"})
 
 
 REMOVED_SUBSYSTEMS = {
@@ -112,9 +118,31 @@ CREATE TABLE IF NOT EXISTS overhead_measurements (
     disk_write_mb REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS automation_actions (
+    id TEXT PRIMARY KEY,
+    event_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    incident_id TEXT,
+    UNIQUE(event_id, action)
+);
+
+CREATE TABLE IF NOT EXISTS automation_notifications (
+    id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    event_id TEXT,
+    incident_id TEXT,
+    read_at TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_scans_started_at ON scans(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_incidents_created_at ON incidents(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_overhead_measured_at ON overhead_measurements(measured_at DESC);
+CREATE INDEX IF NOT EXISTS idx_automation_notifications_created_at ON automation_notifications(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_automation_notifications_unread ON automation_notifications(read_at, created_at DESC);
 """
 
 
@@ -146,6 +174,18 @@ def _comparison_payload(source: str, payload: dict[str, Any]) -> dict[str, Any]:
     safe_payload = _comparison_value(source, "", redact_value(payload))
     ignored = IGNORED_SNAPSHOT_FIELDS.get(source, frozenset())
     return {key: value for key, value in safe_payload.items() if key not in ignored}
+
+
+def _is_bits_trigger_oscillation(source: str, before: dict[str, Any], after: dict[str, Any]) -> bool:
+    if source != "services":
+        return False
+    if str(before.get("name", "")).casefold() not in TRIGGER_START_SERVICES:
+        return False
+    if str(after.get("name", "")).casefold() not in TRIGGER_START_SERVICES:
+        return False
+    modes = {str(before.get("start_mode", "")).casefold(), str(after.get("start_mode", "")).casefold()}
+    states = {str(before.get("state", "")).casefold(), str(after.get("state", "")).casefold()}
+    return modes == {"auto", "manual"} and states == {"running", "stopped"}
 
 
 def _event_subsystem(source: str, stored_subsystem: str, title: str, entity: str, details: dict[str, Any]) -> str:
@@ -205,6 +245,34 @@ class Database:
             with self.connection:
                 for name, definition in missing:
                     self.connection.execute(f"ALTER TABLE incidents ADD COLUMN {name} {definition}")
+        self._backfill_safe_application_entities()
+
+    def _backfill_safe_application_entities(self) -> None:
+        """Add parsed executable labels to older local symptom records."""
+
+        if self.get_meta("migration:safe-application-entities") == "1":
+            return
+        rows = self.connection.execute(
+            "SELECT id, entity, details_json FROM events WHERE kind = 'symptom' AND source = 'eventlog'"
+        ).fetchall()
+        updates: list[tuple[str, str, str]] = []
+        generic_entities = {"", "Application Error", "Application Hang"}
+        for row in rows:
+            if row["entity"] not in generic_entities:
+                continue
+            details = json.loads(row["details_json"] or "{}")
+            application_name = details.get("application_name") or extract_safe_application_name(str(details.get("message", "")))
+            if not application_name:
+                continue
+            details["application_name"] = application_name
+            updates.append((application_name, _canonical_json(details), row["id"]))
+        with self.connection:
+            if updates:
+                self.connection.executemany("UPDATE events SET entity = ?, details_json = ? WHERE id = ?", updates)
+            self.connection.execute(
+                "INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                ("migration:safe-application-entities", "1"),
+            )
 
     def close(self) -> None:
         self.connection.close()
@@ -237,6 +305,119 @@ class Database:
             (key, value),
         )
         self.connection.commit()
+
+    def record_automation_action(
+        self,
+        event_id: str,
+        action: str,
+        *,
+        incident_id: str | None = None,
+        created_at: datetime | None = None,
+    ) -> bool:
+        """Record an automation action once so retries remain idempotent."""
+
+        before_changes = self.connection.total_changes
+        self.connection.execute(
+            """
+            INSERT OR IGNORE INTO automation_actions
+            (id, event_id, action, created_at, incident_id)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (str(uuid.uuid4()), event_id, action, iso_datetime(created_at or utc_now()), incident_id),
+        )
+        self.connection.commit()
+        return self.connection.total_changes > before_changes
+
+    def create_automation_notification(
+        self,
+        *,
+        kind: str,
+        title: str,
+        body: str,
+        event_id: str | None = None,
+        incident_id: str | None = None,
+        created_at: datetime | None = None,
+    ) -> str:
+        """Persist a safe, local notification for the desktop inbox."""
+
+        notification_id = str(uuid.uuid4())
+        self.connection.execute(
+            """
+            INSERT INTO automation_notifications
+            (id, created_at, kind, title, body, event_id, incident_id, read_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+            """,
+            (
+                notification_id,
+                iso_datetime(created_at or utc_now()),
+                redact_text(kind),
+                redact_text(title),
+                redact_text(body),
+                event_id,
+                incident_id,
+            ),
+        )
+        self.connection.commit()
+        return notification_id
+
+    def list_automation_notifications(
+        self,
+        *,
+        limit: int = 25,
+        unread_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        clauses = ["1 = 1"]
+        params: list[Any] = []
+        if unread_only:
+            clauses.append("read_at IS NULL")
+        params.append(max(1, min(limit, 100)))
+        rows = self.connection.execute(
+            f"""
+            SELECT id, created_at, kind, title, body, event_id, incident_id, read_at
+            FROM automation_notifications
+            WHERE {' AND '.join(clauses)}
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def unread_automation_notification_count(self) -> int:
+        row = self.connection.execute(
+            "SELECT COUNT(*) FROM automation_notifications WHERE read_at IS NULL"
+        ).fetchone()
+        return int(row[0])
+
+    def mark_automation_notifications_read(
+        self,
+        ids: Iterable[str] | None = None,
+        *,
+        read_at: datetime | None = None,
+    ) -> int:
+        timestamp = iso_datetime(read_at or utc_now())
+        if ids is None:
+            cursor = self.connection.execute(
+                "UPDATE automation_notifications SET read_at = ? WHERE read_at IS NULL",
+                (timestamp,),
+            )
+        else:
+            selected = [str(item) for item in ids if str(item)]
+            if not selected:
+                return 0
+            placeholders = ", ".join("?" for _ in selected)
+            cursor = self.connection.execute(
+                f"UPDATE automation_notifications SET read_at = ? WHERE read_at IS NULL AND id IN ({placeholders})",
+                [timestamp, *selected],
+            )
+        self.connection.commit()
+        return int(cursor.rowcount)
+
+    def automation_draft_count(self) -> int:
+        row = self.connection.execute(
+            "SELECT COUNT(*) FROM incidents WHERE status = 'draft'"
+        ).fetchone()
+        return int(row[0])
 
     def _safe_event(self, event: Event) -> tuple[Event, str, str]:
         safe_title = redact_text(event.title)
@@ -459,11 +640,19 @@ class Database:
             comparison_payload = _comparison_payload(source, item.payload)
             if old_payload is None:
                 action = item.action_on_add
-            elif _hash(_comparison_payload(source, old_payload)) != _hash(comparison_payload):
-                action = item.action_on_update
             else:
-                matched_previous_keys.add(previous_key)
-                continue
+                old_comparison_payload = _comparison_payload(source, old_payload)
+                if _is_bits_trigger_oscillation(source, old_payload, safe_payload):
+                    old_comparison_payload = dict(old_comparison_payload)
+                    comparison_payload = dict(comparison_payload)
+                    old_comparison_payload.pop("start_mode", None)
+                    comparison_payload.pop("start_mode", None)
+                changed = _hash(old_comparison_payload) != _hash(comparison_payload)
+                if changed:
+                    action = item.action_on_update
+                else:
+                    matched_previous_keys.add(previous_key)
+                    continue
             if previous_key is not None:
                 matched_previous_keys.add(previous_key)
             title_action = {
@@ -562,8 +751,16 @@ class Database:
         )
         self.connection.commit()
 
-    def create_incident(self, request: IncidentRequest, *, created_at: datetime | None = None) -> Incident:
-        incident = Incident(id=str(uuid.uuid4()), created_at=created_at or utc_now(), request=request)
+    def create_incident(
+        self,
+        request: IncidentRequest,
+        *,
+        created_at: datetime | None = None,
+        status: str = "investigating",
+    ) -> Incident:
+        if not status.strip():
+            raise ValueError("Incident status must not be empty")
+        incident = Incident(id=str(uuid.uuid4()), created_at=created_at or utc_now(), request=request, status=status)
         self.connection.execute(
             """
             INSERT INTO incidents

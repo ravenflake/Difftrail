@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { createInvestigation, loadBootstrap, loadTimeline, recordFeedback, runScan, waitForApi } from "./api";
+import { createInvestigation, loadBootstrap, loadTimeline, markAutomationNotificationsRead, recordFeedback, recordOverhead, runScan, updateAutomationConfig, updateAutomationWatcher, waitForApi } from "./api";
 import { makePreviewBootstrap } from "./mock";
-import type { Bootstrap, Incident, TimelineFilters, View } from "./types";
+import type { AutomationConfig, Bootstrap, Incident, TimelineFilters, View } from "./types";
 import { AppShell } from "./components/AppShell";
 import { BrandMark } from "./components/BrandMark";
 import { Icon } from "./components/Icon";
@@ -10,10 +10,11 @@ import { TimelineView } from "./views/TimelineView";
 import { InvestigateView } from "./views/InvestigateView";
 import { IncidentsView } from "./views/IncidentsView";
 import { HealthView } from "./views/HealthView";
+import { AutomationView } from "./views/AutomationView";
 
 function routeFromHash(): View {
   const route = window.location.hash.replace(/^#/, "") as View;
-  return ["home", "timeline", "investigate", "incidents", "health"].includes(route) ? route : "home";
+  return ["home", "timeline", "investigate", "incidents", "health", "automation"].includes(route) ? route : "home";
 }
 
 async function loadBootstrapWithRetry() {
@@ -36,8 +37,12 @@ export default function App() {
   const [connection, setConnection] = useState<"local" | "preview">("local");
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
+  const [recordingOverhead, setRecordingOverhead] = useState(false);
+  const [overheadError, setOverheadError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedIncidentId, setSelectedIncidentId] = useState<string | null>(null);
+  const [automationBusy, setAutomationBusy] = useState<"config" | "enable" | "disable" | "run" | "read" | null>(null);
+  const [automationError, setAutomationError] = useState<string | null>(null);
 
   const navigate = useCallback((next: View) => {
     window.location.hash = next;
@@ -68,6 +73,21 @@ export default function App() {
     return () => window.removeEventListener("hashchange", onHashChange);
   }, [refresh]);
 
+  useEffect(() => {
+    if (connection !== "local") return;
+    const poll = window.setInterval(() => {
+      void loadBootstrap()
+        .then((next) => {
+          setData(next);
+          setLoadError(null);
+        })
+        .catch(() => {
+          // Keep the last usable local state visible until the next retry.
+        });
+    }, 30_000);
+    return () => window.clearInterval(poll);
+  }, [connection]);
+
   const handleScan = useCallback(async () => {
     if (connection === "preview") {
       setLoadError("Start the local Difftrail UI API to scan the real journal.");
@@ -75,6 +95,23 @@ export default function App() {
     }
     setScanning(true);
     try { await runScan(); await refresh(); } catch (reason) { setLoadError(reason instanceof Error ? reason.message : "The scan could not be completed."); } finally { setScanning(false); }
+  }, [connection, refresh]);
+
+  const handleRecordOverhead = useCallback(async () => {
+    if (connection === "preview") {
+      setOverheadError("Start the local Difftrail UI API to record a real watcher footprint.");
+      return;
+    }
+    setRecordingOverhead(true);
+    setOverheadError(null);
+    try {
+      await recordOverhead();
+      await refresh();
+    } catch (reason) {
+      setOverheadError(reason instanceof Error ? reason.message : "The watcher footprint could not be recorded.");
+    } finally {
+      setRecordingOverhead(false);
+    }
   }, [connection, refresh]);
 
   const handleLoadTimeline = useCallback(async (filters: TimelineFilters) => {
@@ -100,6 +137,58 @@ export default function App() {
     setData((current) => current ? { ...current, incidents: current.incidents.map((incident) => incident.id === incidentId ? response.incident : incident) } : current);
   }, [connection]);
 
+  const handleAutomationConfig = useCallback(async (config: AutomationConfig) => {
+    if (connection === "preview") {
+      setAutomationError("Connect the local journal to save automation settings.");
+      return;
+    }
+    setAutomationBusy("config");
+    setAutomationError(null);
+    try {
+      const response = await updateAutomationConfig(config);
+      setData((current) => current ? { ...current, automation: response.automation } : current);
+    } catch (reason) {
+      setAutomationError(reason instanceof Error ? reason.message : "Automation settings could not be saved.");
+    } finally {
+      setAutomationBusy(null);
+    }
+  }, [connection]);
+
+  const handleAutomationWatcher = useCallback(async (action: "enable" | "disable" | "run", intervalSeconds?: number): Promise<boolean> => {
+    if (connection === "preview") {
+      setAutomationError("Connect the local journal to control background automation.");
+      return false;
+    }
+    setAutomationBusy(action);
+    setAutomationError(null);
+    try {
+      const interval = action === "enable" ? intervalSeconds ?? data?.automation.config.interval_seconds : undefined;
+      const response = await updateAutomationWatcher(action, interval);
+      if (action === "run") await refresh();
+      else setData((current) => current ? { ...current, automation: response.automation } : current);
+      return true;
+    } catch (reason) {
+      setAutomationError(reason instanceof Error ? reason.message : "The automation action could not be completed.");
+      return false;
+    } finally {
+      setAutomationBusy(null);
+    }
+  }, [connection, data?.automation.config.interval_seconds, refresh]);
+
+  const handleMarkAutomationRead = useCallback(async () => {
+    if (connection === "preview") return;
+    setAutomationBusy("read");
+    setAutomationError(null);
+    try {
+      const response = await markAutomationNotificationsRead();
+      setData((current) => current ? { ...current, automation: response.automation } : current);
+    } catch (reason) {
+      setAutomationError(reason instanceof Error ? reason.message : "Notifications could not be marked as read.");
+    } finally {
+      setAutomationBusy(null);
+    }
+  }, [connection]);
+
   const selectedIncident = useMemo(() => data?.incidents.find((incident) => incident.id === selectedIncidentId) || null, [data, selectedIncidentId]);
 
   if (loading || !data) return <LoadingScreen />;
@@ -111,7 +200,8 @@ export default function App() {
       {view === "timeline" && <TimelineView events={data.events} onLoad={handleLoadTimeline} />}
       {view === "investigate" && <InvestigateView busy={false} onInvestigate={handleInvestigate} />}
       {view === "incidents" && <IncidentsView incidents={data.incidents} selected={selectedIncident} onSelect={(incident) => setSelectedIncidentId(incident.id)} onNavigate={() => navigate("investigate")} onFeedback={handleFeedback} />}
-      {view === "health" && <HealthView data={data} />}
+      {view === "health" && <HealthView data={data} onRecordOverhead={handleRecordOverhead} recording={recordingOverhead} error={overheadError} />}
+      {view === "automation" && <AutomationView automation={data.automation} connection={connection} busy={automationBusy} error={automationError} onConfigSave={handleAutomationConfig} onWatcherAction={handleAutomationWatcher} onMarkRead={handleMarkAutomationRead} onNavigate={navigate} />}
     </AppShell>
   );
 }

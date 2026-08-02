@@ -32,4 +32,5 @@ $action = New-ScheduledTaskAction -Execute $python -Argument $arguments -Working
 $trigger = New-ScheduledTaskTrigger -AtLogOn
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Days 3650)
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Description "Difftrail local-first change journal watcher" -Force | Out-Null
-Write-Host "Installed $taskName to run at logon."
+Start-ScheduledTask -TaskName $taskName
+Write-Host "Installed and started $taskName. It will also start at logon."
