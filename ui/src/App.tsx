@@ -154,10 +154,10 @@ export default function App() {
     }
   }, [connection]);
 
-  const handleAutomationWatcher = useCallback(async (action: "enable" | "disable" | "run", intervalSeconds?: number) => {
+  const handleAutomationWatcher = useCallback(async (action: "enable" | "disable" | "run", intervalSeconds?: number): Promise<boolean> => {
     if (connection === "preview") {
       setAutomationError("Connect the local journal to control background automation.");
-      return;
+      return false;
     }
     setAutomationBusy(action);
     setAutomationError(null);
@@ -166,8 +166,10 @@ export default function App() {
       const response = await updateAutomationWatcher(action, interval);
       if (action === "run") await refresh();
       else setData((current) => current ? { ...current, automation: response.automation } : current);
+      return true;
     } catch (reason) {
       setAutomationError(reason instanceof Error ? reason.message : "The automation action could not be completed.");
+      return false;
     } finally {
       setAutomationBusy(null);
     }

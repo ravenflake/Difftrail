@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { AutomationConfig, AutomationNotification, AutomationSummary, View } from "../types";
 import { formatDateTime, relativeTime } from "../format";
 import { Icon } from "../components/Icon";
@@ -9,7 +9,7 @@ interface Props {
   busy: "config" | "enable" | "disable" | "run" | "read" | null;
   error: string | null;
   onConfigSave: (config: AutomationConfig) => Promise<void>;
-  onWatcherAction: (action: "enable" | "disable" | "run", intervalSeconds?: number) => Promise<void>;
+  onWatcherAction: (action: "enable" | "disable" | "run", intervalSeconds?: number) => Promise<boolean>;
   onMarkRead: () => Promise<void>;
   onNavigate: (view: View) => void;
 }
@@ -23,20 +23,46 @@ const intervalOptions = [
 
 export function AutomationView({ automation, connection, busy, error, onConfigSave, onWatcherAction, onMarkRead, onNavigate }: Props) {
   const [draft, setDraft] = useState<AutomationConfig>(automation.config);
+  const [intervalApplied, setIntervalApplied] = useState(false);
+  const intervalDoneTimer = useRef<number | null>(null);
   useEffect(() => setDraft(automation.config), [automation.config]);
+  useEffect(() => () => {
+    if (intervalDoneTimer.current !== null) window.clearTimeout(intervalDoneTimer.current);
+  }, []);
 
   const watcher = automation.watcher;
   const watcherInstalled = watcher.installed && watcher.state?.toLowerCase() !== "disabled";
   const watcherRunning = watcherInstalled && watcher.running;
   const canControl = connection === "local" && watcher.supported;
-  const dirty = JSON.stringify(draft) !== JSON.stringify(automation.config);
-  const statusLabel = !watcher.supported ? "Unavailable" : watcherRunning ? "Running" : watcherInstalled ? "Not running" : "Not enabled";
+  const intervalChanged = draft.interval_seconds !== automation.config.interval_seconds;
+  const rulesDirty = JSON.stringify({ ...draft, interval_seconds: automation.config.interval_seconds }) !== JSON.stringify(automation.config);
+  const statusLabel = !watcher.supported ? "Unavailable" : watcherRunning ? "Up to date" : watcherInstalled ? "Not running" : "Not enabled";
   const intervals = intervalOptions.some((option) => option.value === draft.interval_seconds)
     ? intervalOptions
     : [{ value: draft.interval_seconds, label: `Every ${formatInterval(draft.interval_seconds)}` }, ...intervalOptions];
 
   const setBoolean = (key: keyof Pick<AutomationConfig, "notifications_enabled" | "notify_on_crashes" | "notify_on_changes" | "notify_on_warnings" | "draft_investigations">) => {
     setDraft((current) => ({ ...current, [key]: !current[key] }));
+  };
+
+  const handleIntervalChange = (intervalSeconds: number) => {
+    if (intervalDoneTimer.current !== null) {
+      window.clearTimeout(intervalDoneTimer.current);
+      intervalDoneTimer.current = null;
+    }
+    setIntervalApplied(false);
+    setDraft((current) => ({ ...current, interval_seconds: intervalSeconds }));
+  };
+
+  const handleIntervalApply = async () => {
+    const applied = await onWatcherAction("enable", draft.interval_seconds);
+    if (!applied) return;
+    if (intervalDoneTimer.current !== null) window.clearTimeout(intervalDoneTimer.current);
+    setIntervalApplied(true);
+    intervalDoneTimer.current = window.setTimeout(() => {
+      setIntervalApplied(false);
+      intervalDoneTimer.current = null;
+    }, 2000);
   };
 
   return (
@@ -54,10 +80,10 @@ export function AutomationView({ automation, connection, busy, error, onConfigSa
           </div>
 
           <div className={`automation-status-block ${watcherRunning ? "is-enabled" : watcherInstalled ? "is-attention" : ""}`}>
-            <div className="automation-status-icon"><Icon name={watcherRunning ? "refresh" : watcherInstalled ? "alert" : "clock"} size={20} className={watcherRunning ? "spin" : ""} /></div>
+            <div className="automation-status-icon"><Icon name={watcherRunning ? "check" : watcherInstalled ? "alert" : "clock"} size={20} /></div>
             <div className="automation-status-copy">
-              <strong>{watcherRunning ? "Difftrail is collecting automatically" : watcherInstalled ? "Watcher is enabled but not running" : "Background collection is off"}</strong>
-              <span>{watcher.message || (watcherRunning ? "The watcher is running and keeping the local journal current." : "Enable the watcher when you want scans without opening the app.")}</span>
+              <strong>{watcherRunning ? "Journal is up to date" : watcherInstalled ? "Watcher is enabled but not running" : "Background collection is off"}</strong>
+              <span>{watcher.message || (watcherRunning ? `Watching for changes and checking every ${formatInterval(automation.config.interval_seconds)}.` : "Enable the watcher when you want scans without opening the app.")}</span>
             </div>
           </div>
 
@@ -68,7 +94,7 @@ export function AutomationView({ automation, connection, busy, error, onConfigSa
           </div>
 
           <div className="automation-actions">
-            <button type="button" className="button button-primary" onClick={() => void onWatcherAction("enable", draft.interval_seconds)} disabled={!canControl || busy !== null} aria-busy={busy === "enable"}>{busy === "enable" ? "Starting..." : watcherRunning ? "Apply interval" : watcherInstalled ? "Start watcher" : "Enable watcher"}</button>
+            <button type="button" className="button button-primary" onClick={() => void handleIntervalApply()} disabled={!canControl || !intervalChanged || intervalApplied || busy !== null} aria-busy={busy === "enable"}>{busy === "enable" ? "Applying..." : intervalApplied ? "Done" : "Apply interval"}</button>
             <button type="button" className="button button-secondary" onClick={() => void onWatcherAction("run")} disabled={!canControl || busy !== null} aria-busy={busy === "run"}>{busy === "run" ? "Scanning..." : "Run now"}</button>
             {watcherInstalled && <button type="button" className="button button-tertiary" onClick={() => void onWatcherAction("disable")} disabled={!canControl || busy !== null} aria-busy={busy === "disable"}>{busy === "disable" ? "Disabling..." : "Disable"}</button>}
           </div>
@@ -79,7 +105,7 @@ export function AutomationView({ automation, connection, busy, error, onConfigSa
           <div className="section-heading"><div><h3>Rules</h3><span className="section-subtitle">Choose what earns a notification or a draft.</span></div></div>
           <fieldset className="automation-fieldset">
             <legend>Scan interval</legend>
-            <label className="automation-select-label"><span>Run a scan</span><select value={draft.interval_seconds} onChange={(event) => setDraft((current) => ({ ...current, interval_seconds: Number(event.target.value) }))}>{intervals.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label>
+            <label className="automation-select-label"><span>Run a scan</span><select aria-label="Scan interval" value={draft.interval_seconds} onChange={(event) => handleIntervalChange(Number(event.target.value))}>{intervals.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label>
           </fieldset>
           <fieldset className="automation-fieldset automation-rules">
             <legend>Automation rules</legend>
@@ -89,7 +115,7 @@ export function AutomationView({ automation, connection, busy, error, onConfigSa
             <RuleToggle checked={draft.notify_on_warnings} onChange={() => setBoolean("notify_on_warnings")} label="Scan warnings" note="Provider coverage problems and partial scans." disabled={!draft.notifications_enabled} />
             <RuleToggle checked={draft.draft_investigations} onChange={() => setBoolean("draft_investigations")} label="Draft investigations" note="Prepare a reviewable incident for high-severity symptoms." />
           </fieldset>
-          <div className="automation-actions"><button type="button" className="button button-primary" onClick={() => void onConfigSave(draft)} disabled={!canControl || !dirty || busy !== null} aria-busy={busy === "config"}>{busy === "config" ? "Saving..." : "Save rules"}</button><span className="muted-count">{dirty ? "Unsaved changes" : "Saved"}</span></div>
+          <div className="automation-actions"><button type="button" className="button button-primary" onClick={() => void onConfigSave({ ...draft, interval_seconds: automation.config.interval_seconds })} disabled={!canControl || !rulesDirty || intervalChanged || busy !== null} aria-busy={busy === "config"}>{busy === "config" ? "Saving..." : "Save rules"}</button><span className="muted-count">{intervalChanged ? "Apply interval first" : rulesDirty ? "Unsaved changes" : "Saved"}</span></div>
         </section>
 
         <section className="panel automation-panel automation-inbox-panel">
