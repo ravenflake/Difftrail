@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "difftrail"
+version = "0.1.0"
+description = "A local-first Windows change journal and evidence-backed incident investigator."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{name = "Difftrail contributors"}]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/ravenflake/Difftrail"
+Repository = "https://github.com/ravenflake/Difftrail"
+Issues = "https://github.com/ravenflake/Difftrail/issues"
+
+[project.scripts]
+difftrail = "difftrail.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["difftrail*"]
