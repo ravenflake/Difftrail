@@ -69,6 +69,28 @@ If the package is installed into the active system Python, `-PythonPath` can be 
 
 Remove it with .\scripts\uninstall-watcher.ps1.
 
+After a few days of passive collection, build a redacted host-validation report:
+
+```powershell
+python -m difftrail --db "$env:LOCALAPPDATA\Difftrail\difftrail.db" validate-host --days 7
+python -m difftrail --db "$env:LOCALAPPDATA\Difftrail\difftrail.db" validate-host --days 7 --json
+```
+
+The report aggregates scan stability, provider-error counts, change volume, source/subsystem distributions, recorded watcher overhead, and user-labeled investigation outcomes. It does not include event details, paths, descriptions, raw messages, or process IDs. To record an overhead sample, install the optional validation dependency and run `overhead --record`; this measures a disposable watcher process and stores only numeric results:
+
+```powershell
+python -m pip install psutil
+python -m difftrail --db "$env:LOCALAPPDATA\Difftrail\difftrail.db" overhead --record --json
+```
+
+When an investigation has a known outcome, record it locally. The human investigation output and JSON both expose the opaque event ID needed for this command:
+
+```powershell
+python -m difftrail --db "$env:LOCALAPPDATA\Difftrail\difftrail.db" feedback <incident-id> --outcome correct --event-id <event-id>
+```
+
+Only explicitly labeled `correct` investigations contribute to the report's top-three measurement; `incorrect` and `unknown` remain separate outcomes.
+
 ## Validation
 
 The deterministic ground-truth harness creates known-cause scenarios with nearby distractors, missing evidence, counter-evidence, no-cause cases, and post-onset changes:
@@ -119,6 +141,7 @@ Important boundaries:
 - difftrail/correlation.py is deterministic and explainable. Its score orders results internally; users see High/Medium/Low plus evidence, not fake probability.
 - difftrail/validation.py measures diagnosis behavior against explicit ground truth.
 - difftrail/simulation.py contains safe Windows-shaped fixture replays for end-to-end validation; it does not invoke PowerShell.
+- difftrail/host_validation.py builds aggregate local validation reports without exporting journal content.
 - difftrail/overhead.py measures watcher resource use without changing system state.
 
 ## Test
@@ -127,13 +150,13 @@ Important boundaries:
 python -m unittest discover -s tests -v
 ```
 
-Tests cover deterministic ranking, distractors, counter-evidence, missing evidence, false positives, scanner-backed fixture replays, snapshot baselines, retention, redaction, search, source status, and collector failure handling.
+Tests cover deterministic ranking, distractors, counter-evidence, missing evidence, false positives, scanner-backed fixture replays, host-validation aggregation, incident feedback, snapshot baselines, retention, redaction, search, source status, and collector failure handling.
 
 ## Current limits and next validation
 
 App lifecycle history is inferred from current inventory snapshots, so events that happen entirely between scans cannot be recovered yet. Windows Update and driver history currently come from state snapshots rather than a complete historical provider. The validation suite is synthetic and proves ranking behavior under known inputs; it does not yet prove real-world causal accuracy.
 
-The safe scanner-backed scenarios now cover the first controlled MVP cases without changing Windows state. They validate capture and ranking mechanics, but remain synthetic evidence; real-world causal accuracy, longer/cross-machine overhead, install/uninstall noise, and replacement-interface usability still require validation.
+The safe scanner-backed scenarios now cover the first controlled MVP cases without changing Windows state. The `validate-host` report now makes passive real-host validation measurable, but real-world causal accuracy, longer/cross-machine overhead, install/uninstall noise, and replacement-interface usability still require evidence from actual use.
 
 ## Release status
 

@@ -11,6 +11,7 @@ from . import __version__
 from .correlation import infer_subsystem, investigation_summary, rank_candidates
 from .db import Database
 from .demo import seed_demo
+from .host_validation import build_host_validation_report
 from .models import IncidentRequest, iso_datetime, parse_datetime, utc_now
 from .service import Scanner
 from .simulation import run_controlled_fixture_suite, simulate_nvidia_driver_switch
@@ -140,11 +141,34 @@ def command_investigate(args: argparse.Namespace) -> int:
                     print(f"   + {evidence.signal}: {evidence.explanation}")
                 for evidence in hypothesis.counter_evidence:
                     print(f"   - {evidence.signal}: {evidence.explanation}")
+                print(f"   Event ID: {hypothesis.event.event_id}")
                 print(f"   Next step: {hypothesis.next_action}")
                 print(
                     f"   Safe diagnostic: {hypothesis.safe_diagnostic['label']} "
                     f"({hypothesis.safe_diagnostic['target']}; open manually)"
                 )
+    return 0
+
+
+def command_feedback(args: argparse.Namespace) -> int:
+    with _database(args) as database:
+        incident = database.record_incident_feedback(
+            args.incident_id,
+            args.outcome,
+            event_id=args.event_id,
+        )
+        result = {
+            "incident_id": incident["id"],
+            "outcome": incident["feedback"]["outcome"],
+            "event_id": incident["feedback"]["event_id"],
+            "recorded_at": incident["feedback"]["recorded_at"],
+        }
+        if args.json:
+            _print_json(result)
+        else:
+            selected = f" for event {result['event_id']}" if result["event_id"] else ""
+            print(f"Feedback recorded: {result['outcome']}{selected}.")
+            print(f"Incident: {result['incident_id']}")
     return 0
 
 
@@ -239,6 +263,9 @@ def command_overhead(args: argparse.Namespace) -> int:
         warmup_seconds=args.warmup,
         sample_seconds=args.duration,
     )
+    if getattr(args, "record", False):
+        with _database(args) as database:
+            report["recorded_measurement_id"] = database.record_overhead_measurement(report)
     _print_json(report) if args.json else print(
         f"Watcher overhead over {report['sample_seconds']}s: "
         f"CPU {report['process_tree_cpu_percent']:.3f}% | "
@@ -246,6 +273,48 @@ def command_overhead(args: argparse.Namespace) -> int:
         f"disk read {report['disk_read_mb']:.3f} MB | "
         f"disk write {report['disk_write_mb']:.3f} MB"
     )
+    return 0
+
+
+def command_validate_host(args: argparse.Namespace) -> int:
+    with _database(args) as database:
+        report = build_host_validation_report(database, days=args.days)
+    if args.json:
+        _print_json(report)
+    else:
+        scans = report["scans"]
+        journal = report["journal"]
+        overhead = report["overhead"]
+        investigations = report["investigations"]
+        provider_errors = scans["provider_error_count"]
+        quiet_rate = scans["quiet_rate"]
+        quiet_text = "n/a" if quiet_rate is None else f"{quiet_rate:.1%}"
+        print(f"Host validation report: last {args.days} days")
+        print(
+            f"Scans: {scans['total']} | quiet {scans['quiet']} "
+            f"({quiet_text}) | "
+            f"provider errors {provider_errors}."
+        )
+        print(
+            f"Journal: {journal['changes']} changes, {journal['symptoms']} symptoms "
+            f"({journal['changes_per_day']:.2f} changes/day)."
+        )
+        if overhead["measurements"]:
+            print(
+                f"Overhead samples: {overhead['measurements']} | "
+                f"CPU mean/peak {overhead['cpu_percent_mean']:.3f}%/{overhead['cpu_percent_peak']:.3f}% | "
+                f"RSS mean/peak {overhead['rss_mb_mean']:.2f}/{overhead['rss_mb_peak']:.2f} MB."
+            )
+        else:
+            print("Overhead: no recorded measurements. Use `overhead --record` to add one.")
+        feedback = investigations["with_feedback"]
+        top3_rate = investigations["correct_cause_top3_rate"]
+        top3_text = "n/a" if top3_rate is None else f"{top3_rate:.1%}"
+        print(
+            f"Investigations: {investigations['total']} | feedback {feedback} | "
+            f"correct-cause top-3 {investigations['correct_cause_top3_hits']}/{investigations['outcomes']['correct']} ({top3_text})."
+        )
+        print("Privacy: aggregate local report; raw evidence and paths are omitted.")
     return 0
 
 
@@ -300,6 +369,13 @@ def build_parser() -> argparse.ArgumentParser:
     investigate.add_argument("--json", action="store_true")
     investigate.set_defaults(func=command_investigate)
 
+    feedback = subparsers.add_parser("feedback", help="Record whether an investigation's selected cause was correct")
+    feedback.add_argument("incident_id")
+    feedback.add_argument("--outcome", choices=["correct", "incorrect", "unknown"], required=True)
+    feedback.add_argument("--event-id", help="Event ID for the cause judged correct; required for --outcome correct")
+    feedback.add_argument("--json", action="store_true")
+    feedback.set_defaults(func=command_feedback)
+
     status = subparsers.add_parser("status", help="Show local journal status")
     status.add_argument("--json", action="store_true")
     status.set_defaults(func=command_status)
@@ -323,8 +399,17 @@ def build_parser() -> argparse.ArgumentParser:
     overhead.add_argument("--interval", type=int, default=15)
     overhead.add_argument("--warmup", type=float, default=8.0)
     overhead.add_argument("--duration", type=float, default=10.0)
+    overhead.add_argument("--record", action="store_true", help="Store aggregate numeric results in the selected local database")
     overhead.add_argument("--json", action="store_true")
     overhead.set_defaults(func=command_overhead)
+
+    validate_host = subparsers.add_parser(
+        "validate-host",
+        help="Build an aggregate local report from real scans, overhead samples, and labeled investigations",
+    )
+    validate_host.add_argument("--days", type=int, default=7)
+    validate_host.add_argument("--json", action="store_true")
+    validate_host.set_defaults(func=command_validate_host)
 
     return parser
 

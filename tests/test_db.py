@@ -1,3 +1,4 @@
+import sqlite3
 import tempfile
 import unittest
 from datetime import timedelta
@@ -8,6 +9,35 @@ from difftrail.models import Event, IncidentRequest, SnapshotItem, utc_now
 
 
 class DatabaseTests(unittest.TestCase):
+    def test_old_journal_gets_additive_feedback_columns(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "legacy.db"
+            connection = sqlite3.connect(path)
+            connection.execute(
+                """
+                CREATE TABLE incidents (
+                    id TEXT PRIMARY KEY,
+                    created_at TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    subsystem TEXT NOT NULL,
+                    onset_start TEXT NOT NULL,
+                    onset_end TEXT NOT NULL,
+                    lookback_days INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    result_json TEXT NOT NULL DEFAULT '[]'
+                )
+                """
+            )
+            connection.commit()
+            connection.close()
+
+            with Database(path) as database:
+                columns = {
+                    row[1]
+                    for row in database.connection.execute("PRAGMA table_info(incidents)").fetchall()
+                }
+                self.assertTrue({"feedback_outcome", "feedback_event_id", "feedback_at"}.issubset(columns))
+
     def test_first_snapshot_is_quiet_and_second_snapshot_emits_transition(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             with Database(Path(folder) / "journal.db") as database:

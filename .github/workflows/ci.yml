@@ -34,3 +34,6 @@ jobs:
 
       - name: Run scanner-backed fixture validation
         run: python -m difftrail validate-scenarios
+
+      - name: Run host-report smoke test
+        run: python -m difftrail --db :memory: validate-host --json

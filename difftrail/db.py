@@ -89,8 +89,32 @@ CREATE TABLE IF NOT EXISTS incidents (
     onset_end TEXT NOT NULL,
     lookback_days INTEGER NOT NULL,
     status TEXT NOT NULL,
-    result_json TEXT NOT NULL DEFAULT '[]'
+    result_json TEXT NOT NULL DEFAULT '[]',
+    feedback_outcome TEXT,
+    feedback_event_id TEXT,
+    feedback_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS overhead_measurements (
+    id TEXT PRIMARY KEY,
+    measured_at TEXT NOT NULL,
+    interval_seconds INTEGER NOT NULL,
+    warmup_seconds REAL NOT NULL,
+    sample_seconds REAL NOT NULL,
+    startup_process_tree_cpu_percent REAL NOT NULL,
+    process_tree_cpu_percent REAL NOT NULL,
+    startup_rss_mb_peak REAL NOT NULL,
+    rss_mb_mean REAL NOT NULL,
+    rss_mb_peak REAL NOT NULL,
+    startup_disk_read_mb REAL NOT NULL,
+    startup_disk_write_mb REAL NOT NULL,
+    disk_read_mb REAL NOT NULL,
+    disk_write_mb REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_scans_started_at ON scans(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_incidents_created_at ON incidents(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_overhead_measured_at ON overhead_measurements(measured_at DESC);
 """
 
 
@@ -158,6 +182,29 @@ class Database:
         self.connection.execute("PRAGMA synchronous = NORMAL")
         self.connection.executescript(SCHEMA)
         self.connection.commit()
+        self._ensure_schema_compatibility()
+
+    def _ensure_schema_compatibility(self) -> None:
+        """Add additive columns needed by journals created by older MVP builds."""
+
+        columns = {
+            row[1]
+            for row in self.connection.execute("PRAGMA table_info(incidents)").fetchall()
+        }
+        migrations = {
+            "feedback_outcome": "TEXT",
+            "feedback_event_id": "TEXT",
+            "feedback_at": "TEXT",
+        }
+        missing = [
+            (name, definition)
+            for name, definition in migrations.items()
+            if name not in columns
+        ]
+        if missing:
+            with self.connection:
+                for name, definition in missing:
+                    self.connection.execute(f"ALTER TABLE incidents ADD COLUMN {name} {definition}")
 
     def close(self) -> None:
         self.connection.close()
@@ -312,6 +359,54 @@ class Database:
         else:
             row = self.connection.execute("SELECT COUNT(*) FROM events").fetchone()
         return int(row[0])
+
+    def event_summary(
+        self,
+        *,
+        since: datetime | None = None,
+        until: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Return aggregate event counts without materializing raw evidence."""
+
+        clauses: list[str] = []
+        params: list[Any] = []
+        if since is not None:
+            clauses.append("occurred_at >= ?")
+            params.append(iso_datetime(since))
+        if until is not None:
+            clauses.append("occurred_at <= ?")
+            params.append(iso_datetime(until))
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self.connection.execute(
+            f"""
+            SELECT kind, source, subsystem, COUNT(*) AS event_count
+            FROM events
+            {where}
+            GROUP BY kind, source, subsystem
+            """,
+            params,
+        ).fetchall()
+        changes_by_source: dict[str, int] = {}
+        changes_by_subsystem: dict[str, int] = {}
+        symptoms_by_subsystem: dict[str, int] = {}
+        changes = 0
+        symptoms = 0
+        for row in rows:
+            count = int(row["event_count"])
+            if row["kind"] == "change":
+                changes += count
+                changes_by_source[row["source"]] = changes_by_source.get(row["source"], 0) + count
+                changes_by_subsystem[row["subsystem"]] = changes_by_subsystem.get(row["subsystem"], 0) + count
+            elif row["kind"] == "symptom":
+                symptoms += count
+                symptoms_by_subsystem[row["subsystem"]] = symptoms_by_subsystem.get(row["subsystem"], 0) + count
+        return {
+            "changes": changes,
+            "symptoms": symptoms,
+            "changes_by_source": dict(sorted(changes_by_source.items())),
+            "changes_by_subsystem": dict(sorted(changes_by_subsystem.items())),
+            "symptoms_by_subsystem": dict(sorted(symptoms_by_subsystem.items())),
+        }
 
     def is_empty(self) -> bool:
         """Return whether this database is safe to use for a fixture replay."""
@@ -497,6 +592,42 @@ class Database:
         )
         self.connection.commit()
 
+    def record_incident_feedback(
+        self,
+        incident_id: str,
+        outcome: str,
+        *,
+        event_id: str | None = None,
+        recorded_at: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Record a user's local assessment of an investigation result."""
+
+        if outcome not in {"correct", "incorrect", "unknown"}:
+            raise ValueError("outcome must be correct, incorrect, or unknown")
+        incident = self.get_incident(incident_id)
+        if incident is None:
+            raise ValueError(f"Unknown incident: {incident_id}")
+        if outcome == "correct" and not event_id:
+            raise ValueError("A correct outcome requires --event-id for top-three measurement")
+        if event_id:
+            event_row = self.connection.execute("SELECT id FROM events WHERE id = ?", (event_id,)).fetchone()
+            if event_row is None:
+                raise ValueError(f"Unknown event: {event_id}")
+        timestamp = iso_datetime(recorded_at or utc_now())
+        self.connection.execute(
+            """
+            UPDATE incidents
+            SET feedback_outcome = ?, feedback_event_id = ?, feedback_at = ?
+            WHERE id = ?
+            """,
+            (outcome, event_id, timestamp, incident_id),
+        )
+        self.connection.commit()
+        updated = self.get_incident(incident_id)
+        if updated is None:  # pragma: no cover - the row was checked above
+            raise ValueError(f"Unknown incident: {incident_id}")
+        return updated
+
     @staticmethod
     def _incident_row(row: sqlite3.Row) -> dict[str, Any]:
         return {
@@ -509,11 +640,153 @@ class Database:
             "lookback_days": row["lookback_days"],
             "status": row["status"],
             "results": json.loads(row["result_json"] or "[]"),
+            "feedback": {
+                "outcome": row["feedback_outcome"],
+                "event_id": row["feedback_event_id"],
+                "recorded_at": row["feedback_at"],
+            },
         }
 
     def get_incident(self, incident_id: str) -> dict[str, Any] | None:
         row = self.connection.execute("SELECT * FROM incidents WHERE id = ?", (incident_id,)).fetchone()
         return self._incident_row(row) if row else None
+
+    def list_incidents(
+        self,
+        *,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        limit: int = 10_000,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if since is not None:
+            clauses.append("created_at >= ?")
+            params.append(iso_datetime(since))
+        if until is not None:
+            clauses.append("created_at <= ?")
+            params.append(iso_datetime(until))
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(max(1, min(limit, 100_000)))
+        rows = self.connection.execute(
+            f"SELECT * FROM incidents {where} ORDER BY created_at DESC LIMIT ?", params
+        ).fetchall()
+        return [self._incident_row(row) for row in rows]
+
+    def list_scans(
+        self,
+        *,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        limit: int = 100_000,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if since is not None:
+            clauses.append("started_at >= ?")
+            params.append(iso_datetime(since))
+        if until is not None:
+            clauses.append("started_at <= ?")
+            params.append(iso_datetime(until))
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(max(1, min(limit, 100_000)))
+        rows = self.connection.execute(
+            f"SELECT * FROM scans {where} ORDER BY started_at ASC LIMIT ?", params
+        ).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                summary = json.loads(row["summary_json"] or "{}")
+            except json.JSONDecodeError:
+                summary = {}
+            result.append(
+                {
+                    "id": row["id"],
+                    "started_at": row["started_at"],
+                    "finished_at": row["finished_at"],
+                    "status": row["status"],
+                    "summary": summary if isinstance(summary, dict) else {},
+                }
+            )
+        return result
+
+    def record_overhead_measurement(
+        self,
+        report: dict[str, Any],
+        *,
+        measured_at: datetime | None = None,
+    ) -> str:
+        """Persist numeric watcher overhead without storing process details."""
+
+        fields = (
+            "interval_seconds",
+            "warmup_seconds",
+            "sample_seconds",
+            "startup_process_tree_cpu_percent",
+            "process_tree_cpu_percent",
+            "startup_rss_mb_peak",
+            "rss_mb_mean",
+            "rss_mb_peak",
+            "startup_disk_read_mb",
+            "startup_disk_write_mb",
+            "disk_read_mb",
+            "disk_write_mb",
+        )
+        try:
+            values = [report[field] for field in fields]
+        except KeyError as exc:
+            raise ValueError(f"Overhead report is missing {exc.args[0]}") from exc
+        measurement_id = str(uuid.uuid4())
+        self.connection.execute(
+            """
+            INSERT INTO overhead_measurements
+            (id, measured_at, interval_seconds, warmup_seconds, sample_seconds,
+             startup_process_tree_cpu_percent, process_tree_cpu_percent,
+             startup_rss_mb_peak, rss_mb_mean, rss_mb_peak,
+             startup_disk_read_mb, startup_disk_write_mb, disk_read_mb, disk_write_mb)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                measurement_id,
+                iso_datetime(measured_at or utc_now()),
+                int(values[0]),
+                float(values[1]),
+                float(values[2]),
+                float(values[3]),
+                float(values[4]),
+                float(values[5]),
+                float(values[6]),
+                float(values[7]),
+                float(values[8]),
+                float(values[9]),
+                float(values[10]),
+                float(values[11]),
+            ),
+        )
+        self.connection.commit()
+        return measurement_id
+
+    def list_overhead_measurements(
+        self,
+        *,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        limit: int = 10_000,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if since is not None:
+            clauses.append("measured_at >= ?")
+            params.append(iso_datetime(since))
+        if until is not None:
+            clauses.append("measured_at <= ?")
+            params.append(iso_datetime(until))
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(max(1, min(limit, 100_000)))
+        rows = self.connection.execute(
+            f"SELECT * FROM overhead_measurements {where} ORDER BY measured_at ASC LIMIT ?", params
+        ).fetchall()
+        return [dict(row) for row in rows]
 
     def prune_sensitive_symptom_details(self, *, retain_days: int = 30, as_of: datetime | None = None) -> int:
         """Drop raw Event Log messages after the short evidence-retention window."""
@@ -539,10 +812,7 @@ class Database:
         return len(updates)
 
     def recent_incidents(self, limit: int = 10) -> list[dict[str, Any]]:
-        rows = self.connection.execute(
-            "SELECT * FROM incidents ORDER BY created_at DESC LIMIT ?", (max(1, min(limit, 100)),)
-        ).fetchall()
-        return [self._incident_row(row) for row in rows]
+        return self.list_incidents(limit=max(1, min(limit, 100)))
 
     def source_status(self) -> list[dict[str, Any]]:
         sources = ("updates", "apps", "drivers", "services", "tasks", "startup", "devices")
