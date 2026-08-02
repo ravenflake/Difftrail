@@ -44,3 +44,17 @@ class CorrelationTests(unittest.TestCase):
         request = IncidentRequest("audio stopped working", now - timedelta(hours=1), now, "audio", 7)
         hypotheses = rank_candidates(events, request)
         self.assertTrue(hypotheses[0].counter_evidence)
+
+    def test_unrelated_application_symptoms_do_not_support_graphics_changes(self) -> None:
+        now = utc_now()
+        events = [
+            Event(now - timedelta(hours=6), "change", "startup", "added", "Background service added", source="services", event_id="service"),
+            Event(now - timedelta(hours=5), "change", "application", "updated", "Chat app updated", source="apps", event_id="app"),
+            Event(now - timedelta(minutes=30), "symptom", "application", "crash", "Application crash detected", source="eventlog", event_id="app-crash"),
+        ]
+        request = IncidentRequest("graphics started failing", now - timedelta(hours=1), now, "graphics", 7)
+        hypotheses = rank_candidates(events, request)
+        by_id = {hypothesis.event.event_id: hypothesis for hypothesis in hypotheses}
+        self.assertEqual(by_id["service"].confidence, "Low")
+        self.assertEqual(by_id["app"].confidence, "Low")
+        self.assertIn("No related symptom event", by_id["service"].evidence[2].explanation)

@@ -95,6 +95,16 @@ def _relevance(incident_subsystem: str, event_subsystem: str) -> tuple[float, st
     return 0.12, f"The change is in {event_subsystem}, which is not a close match for {incident_subsystem}."
 
 
+def _subsystem_matches(incident_subsystem: str, symptom_subsystem: str) -> bool:
+    """Keep symptom support inside the user's selected problem area."""
+
+    return (
+        incident_subsystem == "general"
+        or symptom_subsystem == incident_subsystem
+        or symptom_subsystem in COMPATIBLE_SUBSYSTEMS.get(incident_subsystem, set())
+    )
+
+
 def _temporal_score(gap_hours: float) -> float:
     if gap_hours < 0:
         return 0.0
@@ -175,6 +185,7 @@ def rank_candidates(
             symptom
             for symptom in symptoms
             if event_time <= ensure_utc(symptom.occurred_at) <= onset_end
+            and _subsystem_matches(request.subsystem, symptom.subsystem)
             and (
                 symptom.subsystem == event.subsystem
                 or symptom.subsystem in COMPATIBLE_SUBSYSTEMS.get(event.subsystem, set())
