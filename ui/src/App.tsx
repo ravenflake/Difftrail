@@ -3,6 +3,7 @@ import { createInvestigation, loadBootstrap, loadTimeline, recordFeedback, runSc
 import { makePreviewBootstrap } from "./mock";
 import type { Bootstrap, Incident, TimelineFilters, View } from "./types";
 import { AppShell } from "./components/AppShell";
+import { BrandMark } from "./components/BrandMark";
 import { Icon } from "./components/Icon";
 import { HomeView } from "./views/HomeView";
 import { TimelineView } from "./views/TimelineView";
@@ -116,5 +117,5 @@ export default function App() {
 }
 
 function LoadingScreen() {
-  return <div className="loading-screen"><div className="brand-mark large" aria-hidden="true"><span /></div><span>Opening the local journal…</span></div>;
+  return <div className="loading-screen"><BrandMark size={52} className="loading-brand-mark" /><span>Opening the local journal…</span></div>;
 }

@@ -1,6 +1,7 @@
 import type { Bootstrap, Incident, View } from "../types";
 import { formatDateTime, relativeTime, subsystemLabel } from "../format";
 import { Icon } from "../components/Icon";
+import { BrandMark } from "../components/BrandMark";
 import { EventRow } from "../components/EventRow";
 import { Metric } from "../components/Metric";
 
@@ -30,9 +31,7 @@ export function HomeView({ data, onNavigate, onOpenIncident }: Props) {
           </div>
         </div>
         <div className="hero-status-art" aria-hidden="true">
-          <div className="orbit orbit-one" />
-          <div className="orbit orbit-two" />
-          <div className="orbit-core"><Icon name={attention ? "alert" : "spark"} size={27} /></div>
+          <BrandMark size={174} className="hero-brand-mark" />
         </div>
       </section>
 

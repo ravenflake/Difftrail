@@ -1,13 +1,14 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::error::Error;
+use std::fs::OpenOptions;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tauri::Manager;
 
@@ -26,16 +27,19 @@ struct BackendProcess(Mutex<Option<Child>>);
 
 fn database_path() -> PathBuf {
     if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
-        return PathBuf::from(local_app_data).join("Difftrail").join("difftrail.db");
+        return PathBuf::from(local_app_data)
+            .join("Difftrail")
+            .join("difftrail.db");
     }
     PathBuf::from("difftrail.db")
 }
 
 fn workspace_root(app: &tauri::AppHandle) -> Result<PathBuf, Box<dyn Error>> {
-    let resource_dir = app
-        .path()
-        .resource_dir()
-        .map_err(|error| io::Error::other(format!("Could not locate the installed resource directory: {error}")))?;
+    let resource_dir = app.path().resource_dir().map_err(|error| {
+        io::Error::other(format!(
+            "Could not locate the installed resource directory: {error}"
+        ))
+    })?;
     Ok(resource_dir.join("backend"))
 }
 
@@ -89,6 +93,34 @@ fn backend_output(logs: &BackendLog) -> String {
     }
 }
 
+fn startup_log_path() -> PathBuf {
+    if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+        return PathBuf::from(local_app_data)
+            .join("Difftrail")
+            .join("startup-errors.log");
+    }
+    PathBuf::from("difftrail-startup-errors.log")
+}
+
+fn record_startup_failure(error: &dyn Error) -> io::Result<()> {
+    let path = startup_log_path();
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut log = OpenOptions::new().create(true).append(true).open(path)?;
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default();
+    writeln!(
+        log,
+        "[{timestamp}] Difftrail backend startup failed:\n{error}\n"
+    )
+}
+
 fn api_is_ready() -> bool {
     let address = format!("{API_HOST}:{API_PORT}");
     let Ok(mut stream) = TcpStream::connect_timeout(
@@ -100,10 +132,8 @@ fn api_is_ready() -> bool {
     let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
     if stream
         .write_all(
-            format!(
-                "GET /api/health HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n"
-            )
-            .as_bytes(),
+            format!("GET /api/health HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n")
+                .as_bytes(),
         )
         .is_err()
     {
@@ -118,13 +148,12 @@ fn api_is_ready() -> bool {
     status.starts_with("HTTP/1.0 200") || status.starts_with("HTTP/1.1 200")
 }
 
-fn wait_for_api_ready(child: &mut Child, logs: &BackendLog) -> Result<(), Box<dyn Error>> {
+fn wait_for_api_ready(child: &mut Child) -> Result<(), Box<dyn Error>> {
     let deadline = Instant::now() + API_READY_TIMEOUT;
     loop {
         if let Some(status) = child.try_wait()? {
             return Err(Box::new(io::Error::other(format!(
-                "the backend exited before the API became ready ({status}); {}",
-                backend_output(logs)
+                "the backend exited before the API became ready ({status})"
             ))));
         }
         if api_is_ready() {
@@ -134,9 +163,8 @@ fn wait_for_api_ready(child: &mut Child, logs: &BackendLog) -> Result<(), Box<dy
             return Err(Box::new(io::Error::new(
                 io::ErrorKind::TimedOut,
                 format!(
-                    "the backend did not expose /api/health within {} seconds; {}",
-                    API_READY_TIMEOUT.as_secs(),
-                    backend_output(logs)
+                    "the backend did not expose /api/health within {} seconds",
+                    API_READY_TIMEOUT.as_secs()
                 ),
             )));
         }
@@ -146,7 +174,11 @@ fn wait_for_api_ready(child: &mut Child, logs: &BackendLog) -> Result<(), Box<dy
 
 fn start_local_api(app: &tauri::AppHandle) -> Result<Child, Box<dyn Error>> {
     let db = database_path();
-    let resource_root = workspace_root(app)?;
+    let resource_root = workspace_root(app).map_err(|error| {
+        Box::new(io::Error::other(format!(
+            "{error}; backend output: no backend output was captured"
+        ))) as Box<dyn Error>
+    })?;
     let bundled_backend = resource_root.join(BACKEND_EXECUTABLE);
     let mut command;
 
@@ -159,7 +191,7 @@ fn start_local_api(app: &tauri::AppHandle) -> Result<Child, Box<dyn Error>> {
             return Err(Box::new(io::Error::new(
                 io::ErrorKind::NotFound,
                 format!(
-                    "the bundled Difftrail backend is missing at {}",
+                    "the bundled Difftrail backend is missing at {}; backend output: no backend output was captured",
                     bundled_backend.display()
                 ),
             )));
@@ -167,7 +199,11 @@ fn start_local_api(app: &tauri::AppHandle) -> Result<Child, Box<dyn Error>> {
 
         #[cfg(debug_assertions)]
         {
-            let root = source_root()?;
+            let root = source_root().map_err(|error| {
+                Box::new(io::Error::other(format!(
+                    "{error}; backend output: no backend output was captured"
+                ))) as Box<dyn Error>
+            })?;
             let python = std::env::var_os("DIFFTRAIL_PYTHON").unwrap_or_else(|| "python".into());
             command = Command::new(python);
             command.current_dir(root);
@@ -196,17 +232,20 @@ fn start_local_api(app: &tauri::AppHandle) -> Result<Child, Box<dyn Error>> {
     let mut child = command.spawn().map_err(|error| {
         io::Error::new(
             error.kind(),
-            format!("could not start the Difftrail backend process: {error}"),
+            format!(
+                "could not start the Difftrail backend process: {error}; backend output: no backend output was captured"
+            ),
         )
     })?;
     let stdout = capture_output(child.stdout.take(), "stdout");
     let stderr = capture_output(child.stderr.take(), "stderr");
 
-    if let Err(error) = wait_for_api_ready(&mut child, &stdout) {
+    if let Err(error) = wait_for_api_ready(&mut child) {
         let _ = child.kill();
         let _ = child.wait();
         return Err(Box::new(io::Error::other(format!(
-            "Difftrail backend startup failed: {error}; stderr: {}",
+            "Difftrail backend startup failed: {error}; stdout: {}; stderr: {}",
+            backend_output(&stdout),
             backend_output(&stderr)
         ))));
     }
@@ -218,7 +257,7 @@ fn main() {
     tauri::Builder::default()
         .setup(|app| {
             let backend = start_local_api(app.handle()).map_err(|error| {
-                eprintln!("Difftrail backend startup failed: {error}");
+                let _ = record_startup_failure(error.as_ref());
                 error
             })?;
             app.manage(BackendProcess(Mutex::new(Some(backend))));

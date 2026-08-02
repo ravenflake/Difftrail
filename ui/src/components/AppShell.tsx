@@ -1,6 +1,7 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { Status, View } from "../types";
 import { Icon, type IconName } from "./Icon";
+import { BrandMark } from "./BrandMark";
 import { relativeTime } from "../format";
 import { applyTheme, getStoredThemeMode, getSystemTheme, persistThemeMode, type Theme, type ThemeMode } from "../theme";
 
@@ -35,6 +36,10 @@ export function AppShell({ view, status, version, connection, scanning, onNaviga
   const partial = status.last_scan?.status === "partial";
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => getStoredThemeMode());
   const [systemTheme, setSystemTheme] = useState<Theme>(() => getSystemTheme());
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const mobileMenuButtonRef = useRef<HTMLButtonElement>(null);
+  const mobileCloseButtonRef = useRef<HTMLButtonElement>(null);
+  const mobileNavWasOpen = useRef(false);
   const theme = themeMode === "system" ? systemTheme : themeMode;
 
   useEffect(() => {
@@ -52,39 +57,60 @@ export function AppShell({ view, status, version, connection, scanning, onNaviga
     return () => media.removeEventListener("change", handleChange);
   }, []);
 
+  useEffect(() => {
+    if (!mobileNavOpen) {
+      if (mobileNavWasOpen.current) mobileMenuButtonRef.current?.focus();
+      mobileNavWasOpen.current = false;
+      return;
+    }
+
+    mobileNavWasOpen.current = true;
+    mobileCloseButtonRef.current?.focus();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setMobileNavOpen(false);
+        return;
+      }
+      if (event.key === "Tab") {
+        const drawer = document.getElementById("mobile-navigation");
+        const focusable = drawer?.querySelectorAll<HTMLElement>("button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])");
+        if (!focusable?.length) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [mobileNavOpen]);
+
   const toggleTheme = () => setThemeMode(theme === "dark" ? "light" : "dark");
   const useSystemTheme = () => setThemeMode("system");
+  const closeMobileNav = () => setMobileNavOpen(false);
+  const navigateFromMobileNav = (next: View) => {
+    onNavigate(next);
+    closeMobileNav();
+  };
 
   return (
     <div className="app-frame">
       <aside className="sidebar" aria-label="Main navigation">
         <div className="brand-lockup">
-          <div className="brand-mark" aria-hidden="true"><span /></div>
+          <BrandMark size={31} className="sidebar-brand-mark" />
           <div>
             <div className="brand-name">Difftrail</div>
             <div className="brand-tagline">Know what changed.</div>
           </div>
         </div>
 
-        <nav className="nav-list">
-          <div className="nav-label">Workspace</div>
-          {navItems.map((item) => (
-            <button
-              type="button"
-              key={item.id}
-              className={`nav-item ${view === item.id ? "is-active" : ""}`}
-              onClick={() => onNavigate(item.id)}
-              aria-current={view === item.id ? "page" : undefined}
-              title={item.description}
-            >
-              <span className="nav-icon"><Icon name={item.icon} size={17} /></span>
-              <span className="nav-copy">
-                <span>{item.label}</span>
-                <small>{item.description}</small>
-              </span>
-            </button>
-          ))}
-        </nav>
+        <NavigationList view={view} onNavigate={onNavigate} />
 
         <div className="sidebar-bottom">
           <ThemeControl theme={theme} mode={themeMode} onToggle={toggleTheme} onUseSystem={useSystemTheme} />
@@ -92,20 +118,56 @@ export function AppShell({ view, status, version, connection, scanning, onNaviga
         </div>
       </aside>
 
+      {mobileNavOpen && <button type="button" className="mobile-nav-scrim" aria-label="Close navigation menu" onClick={closeMobileNav} />}
+      <div
+        id="mobile-navigation"
+        className="mobile-nav-drawer"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="mobile-navigation-title"
+        hidden={!mobileNavOpen}
+      >
+        <div className="mobile-nav-header">
+          <span id="mobile-navigation-title">Workspace navigation</span>
+          <button ref={mobileCloseButtonRef} type="button" className="mobile-nav-close" aria-label="Close navigation menu" onClick={closeMobileNav}>
+            <Icon name="close" size={19} />
+          </button>
+        </div>
+        <NavigationList view={view} onNavigate={navigateFromMobileNav} />
+      </div>
+
       <div className="main-column">
         <header className="topbar">
-          <div className="mobile-brand"><span className="brand-mark small" aria-hidden="true"><span /></span>Difftrail</div>
+          <button
+            ref={mobileMenuButtonRef}
+            type="button"
+            className="mobile-menu-button"
+            aria-label={mobileNavOpen ? "Close navigation menu" : "Open navigation menu"}
+            aria-expanded={mobileNavOpen}
+            aria-controls="mobile-navigation"
+            aria-haspopup="dialog"
+            onClick={() => setMobileNavOpen((open) => !open)}
+          >
+            <Icon name={mobileNavOpen ? "close" : "menu"} size={19} />
+          </button>
+          <div className="mobile-brand"><BrandMark size={24} className="mobile-brand-mark" />Difftrail</div>
           <div className="topbar-title">
             <span className="eyebrow">Workspace</span>
             <h1>{titles[view]}</h1>
           </div>
           <div className="topbar-actions">
             <ThemeControl compact theme={theme} mode={themeMode} onToggle={toggleTheme} onUseSystem={useSystemTheme} />
-            <div className={`connection-pill ${connection === "preview" ? "is-preview" : ""}`}>
-              <span className="status-dot" />
-              {connection === "local" ? "Local journal" : "Preview data"}
+            <div
+              className={`connection-pill ${connection === "preview" ? "is-preview" : ""}`}
+              role="status"
+              aria-live="polite"
+              title={connection === "local" ? "Connected to the local journal" : "Showing preview data"}
+            >
+              <span className="status-dot" aria-hidden="true" />
+              <span className="connection-label-full">{connection === "local" ? "Local journal" : "Preview data"}</span>
+              <span className="connection-label-compact">{connection === "local" ? "Local" : "Preview"}</span>
             </div>
-            <button type="button" className="button button-secondary scan-button" onClick={onScan} disabled={scanning}>
+            <button type="button" className="button button-secondary scan-button" aria-label={scanning ? "Scanning" : "Scan now"} onClick={onScan} disabled={scanning}>
               <Icon name="refresh" size={15} className={scanning ? "spin" : ""} />
               {scanning ? "Scanning" : "Scan now"}
             </button>
@@ -128,6 +190,35 @@ export function AppShell({ view, status, version, connection, scanning, onNaviga
         </footer>
       </div>
     </div>
+  );
+}
+
+interface NavigationListProps {
+  view: View;
+  onNavigate: (view: View) => void;
+}
+
+function NavigationList({ view, onNavigate }: NavigationListProps) {
+  return (
+    <nav className="nav-list" aria-label="Workspace navigation">
+      <div className="nav-label">Workspace</div>
+      {navItems.map((item) => (
+        <button
+          type="button"
+          key={item.id}
+          className={`nav-item ${view === item.id ? "is-active" : ""}`}
+          onClick={() => onNavigate(item.id)}
+          aria-current={view === item.id ? "page" : undefined}
+          title={item.description}
+        >
+          <span className="nav-icon"><Icon name={item.icon} size={17} /></span>
+          <span className="nav-copy">
+            <span>{item.label}</span>
+            <small>{item.description}</small>
+          </span>
+        </button>
+      ))}
+    </nav>
   );
 }
 

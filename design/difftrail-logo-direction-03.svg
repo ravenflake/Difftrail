@@ -1,0 +1,115 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 900" role="img" aria-labelledby="title desc">
+  <title id="title">Difftrail logo direction: refined offset D</title>
+  <desc id="desc">A refined compact D logo concept for Difftrail with slimmer UI-style strokes and a shorter amber change trail.</desc>
+
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#24363a" flood-opacity=".10" />
+    </filter>
+
+    <g id="refined-d" transform="translate(-4 0)">
+      <path d="M27 18V82H50C66 82 77 70 77 59" fill="none" stroke="currentColor" stroke-width="7.5" stroke-linecap="round" stroke-linejoin="round" />
+      <path d="M77 41C77 30 66 18 50 18H27" fill="none" stroke="currentColor" stroke-width="7.5" stroke-linecap="round" stroke-linejoin="round" />
+      <path d="M53 50H81" fill="none" stroke="#d6b06e" stroke-width="7.5" stroke-linecap="round" />
+      <circle cx="81" cy="50" r="3.75" fill="#d6b06e" />
+    </g>
+
+    <g id="refined-d-mono" transform="translate(-4 0)">
+      <path d="M27 18V82H50C66 82 77 70 77 59" fill="none" stroke="currentColor" stroke-width="7.5" stroke-linecap="round" stroke-linejoin="round" />
+      <path d="M77 41C77 30 66 18 50 18H27" fill="none" stroke="currentColor" stroke-width="7.5" stroke-linecap="round" stroke-linejoin="round" />
+      <path d="M53 50H81" fill="none" stroke="currentColor" stroke-width="7.5" stroke-linecap="round" />
+      <circle cx="81" cy="50" r="3.75" fill="currentColor" />
+    </g>
+
+    <style>
+      .ui-text { font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif; }
+      .eyebrow { fill: #6b787a; font-size: 12px; font-weight: 700; letter-spacing: 2.2px; }
+      .eyebrow-light { fill: #9bb0ae; font-size: 11px; font-weight: 700; letter-spacing: 2px; }
+      .body { fill: #59626b; font-size: 15px; }
+      .small { fill: #697579; font-size: 12px; }
+      .small-light { fill: #a6b5b6; font-size: 12px; }
+      .card-title { fill: #1f2b35; font-size: 17px; font-weight: 700; }
+      .card-copy { fill: #59626b; font-size: 13px; }
+      .wordmark { font-size: 37px; letter-spacing: -1.4px; }
+      .wordmark-small { font-size: 20px; letter-spacing: -.6px; }
+      .note-number { fill: #d6b06e; font-size: 15px; font-weight: 750; }
+    </style>
+  </defs>
+
+  <rect width="1400" height="900" fill="#f2efe8" />
+
+  <g class="ui-text">
+    <text x="72" y="64" class="eyebrow">DIFFTRAIL / LOGO DIRECTION 03</text>
+    <text x="72" y="119" fill="#1f2b35" font-size="46" font-weight="700" letter-spacing="-1.8">The offset D, refined</text>
+    <text x="72" y="153" class="body">Same concept, tuned to feel like it belongs beside Difftrail’s existing line icons.</text>
+
+    <g transform="translate(1067 52)">
+      <rect width="45" height="8" rx="4" fill="#1f3038" />
+      <rect x="55" width="45" height="8" rx="4" fill="#125e69" />
+      <rect x="110" width="45" height="8" rx="4" fill="#d6b06e" />
+      <text x="0" y="30" class="small">sidebar / teal / change point</text>
+    </g>
+
+    <!-- Recommended lockup -->
+    <g filter="url(#shadow)">
+      <rect x="72" y="205" width="760" height="260" rx="18" fill="#1f3038" />
+    </g>
+    <text x="106" y="244" class="eyebrow-light">RECOMMENDED LOCKUP</text>
+    <g transform="translate(112 279) scale(1.12)" color="#f5f1e8">
+      <use href="#refined-d" />
+    </g>
+    <text x="239" y="329" class="wordmark" fill="#f5f1e8" font-weight="700">Diff<tspan fill="#c5d3d0" font-weight="500">trail</tspan></text>
+    <text x="241" y="358" class="small-light">Know what changed.</text>
+    <path d="M239 389H706" stroke="#40575d" />
+    <text x="239" y="420" class="small-light">A familiar D, opened where the meaningful difference begins.</text>
+    <text x="239" y="440" class="small-light">The amber trail is short enough to stay quiet in the sidebar.</text>
+
+    <!-- Light and icon treatments -->
+    <rect x="860" y="205" width="468" height="260" rx="18" fill="#fffdf9" stroke="#e5e0d6" />
+    <text x="894" y="244" class="eyebrow">LIGHT + APP ICON</text>
+    <g filter="url(#shadow)">
+      <rect x="894" y="268" width="154" height="154" rx="34" fill="#1f3038" />
+    </g>
+    <g transform="translate(916 290) scale(1.24)" color="#f5f1e8">
+      <use href="#refined-d" />
+    </g>
+    <g transform="translate(1090 270) scale(.92)" color="#125e69">
+      <use href="#refined-d" />
+    </g>
+    <text x="1091" y="373" class="wordmark-small" fill="#1f2b35" font-weight="700">Diff<tspan fill="#59626b" font-weight="500">trail</tspan></text>
+    <text x="1091" y="401" class="small">deep teal or warm paper</text>
+
+    <!-- Refinements -->
+    <rect x="72" y="497" width="760" height="258" rx="18" fill="#fffdf9" stroke="#e5e0d6" />
+    <text x="106" y="537" class="eyebrow">WHAT CHANGED</text>
+    <text x="106" y="578" class="card-title">Same idea, calmer geometry.</text>
+
+    <text x="109" y="622" class="note-number">01</text>
+    <text x="149" y="622" fill="#1f2b35" font-size="14" font-weight="700">Slimmer stroke</text>
+    <text x="149" y="643" class="card-copy">Closer to the weight and round caps used by the existing UI icons.</text>
+
+    <text x="109" y="682" class="note-number">02</text>
+    <text x="149" y="682" fill="#1f2b35" font-size="14" font-weight="700">Tighter break</text>
+    <text x="149" y="703" class="card-copy">The bowl reads as a D first; the amber line becomes a precise change point.</text>
+
+    <text x="109" y="742" class="note-number">03</text>
+    <text x="149" y="742" fill="#1f2b35" font-size="14" font-weight="700">Shorter trail</text>
+    <text x="250" y="742" class="card-copy">Less visual noise, while the outward endpoint keeps the mark ownable.</text>
+
+    <!-- Scale / mono treatment -->
+    <rect x="860" y="497" width="468" height="258" rx="18" fill="#1f3038" />
+    <text x="894" y="537" class="eyebrow-light">SMALL + MONO</text>
+    <text x="894" y="578" fill="#f5f1e8" font-size="17" font-weight="700">Two safe fallbacks.</text>
+    <g transform="translate(912 603) scale(.22)" color="#f5f1e8"><use href="#refined-d" /></g>
+    <text x="950" y="622" class="small-light">24 px / color</text>
+    <g transform="translate(1086 603) scale(.22)" color="#f5f1e8"><use href="#refined-d-mono" /></g>
+    <text x="1124" y="622" class="small-light">24 px / mono</text>
+    <path d="M894 663H1294" stroke="#40575d" />
+    <text x="894" y="700" class="small-light">At tiny sizes, preserve the open center</text>
+    <text x="894" y="720" class="small-light">and amber/mono change line—not extra detail.</text>
+
+    <text x="72" y="832" class="eyebrow">DIRECTIONAL NOTE</text>
+    <text x="72" y="858" fill="#59626b" font-size="14">This is the version I’d carry into an implementation pass.</text>
+    <text x="1328" y="858" fill="#6b787a" font-size="12" text-anchor="end">VECTOR PREVIEW · NOT WIRED TO UI</text>
+  </g>
+</svg>
