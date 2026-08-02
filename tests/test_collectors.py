@@ -10,11 +10,14 @@ from difftrail.privacy import extract_safe_application_name
 class CollectorTests(unittest.TestCase):
     def test_powershell_collection_is_windowless_on_windows(self) -> None:
         completed = subprocess.CompletedProcess(["powershell.exe"], 0, "[]", "")
+        windowless_flag = 0x08000000
         with patch("difftrail.collectors.powershell.powershell_path", return_value="powershell.exe"), patch(
             "difftrail.collectors.powershell.subprocess.run", return_value=completed
-        ) as run, patch("difftrail._process.os.name", "nt"):
+        ) as run, patch("difftrail._process.os.name", "nt"), patch(
+            "difftrail._process.subprocess.CREATE_NO_WINDOW", windowless_flag, create=True
+        ):
             self.assertEqual(run_json("@() | ConvertTo-Json"), [])
-        self.assertEqual(run.call_args.kwargs["creationflags"], subprocess.CREATE_NO_WINDOW)
+        self.assertEqual(run.call_args.kwargs["creationflags"], windowless_flag)
 
         with patch("difftrail.collectors.powershell.powershell_path", return_value="powershell.exe"), patch(
             "difftrail.collectors.powershell.subprocess.run", return_value=completed

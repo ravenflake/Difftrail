@@ -156,12 +156,16 @@ def _run_powershell(script: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _task_status() -> dict[str, Any]:
+def _task_status(expected_database: Path | None = None) -> dict[str, Any]:
     if os.name != "nt":
         return _empty_watcher_status(
             supported=False,
             message="Scheduled task controls are available on Windows.",
         )
+
+    expected_database_literal = ""
+    if expected_database is not None:
+        expected_database_literal = str(expected_database).casefold().replace("'", "''")
 
     script = r"""
 $task = Get-ScheduledTask -TaskName 'Difftrail Watcher' -ErrorAction Stop
@@ -169,9 +173,11 @@ $info = Get-ScheduledTaskInfo -TaskName 'Difftrail Watcher' -ErrorAction Stop
 $action = $task.Actions | Select-Object -First 1
 $command = ([string]$action.Execute).ToLowerInvariant()
 $arguments = ([string]$action.Arguments).ToLowerInvariant()
+$expectedDatabase = '__EXPECTED_DATABASE__'
 $hasRepetition = @($task.Triggers | Where-Object { $_.Repetition -and $_.Repetition.Interval }).Count -gt 0
-$isHeadless = $command.EndsWith('\pythonw.exe') -or $command.EndsWith('\python.exe') -or $command.EndsWith('difftrail-watcher.exe')
+$isHeadless = $command.EndsWith('\pythonw.exe') -or $command.EndsWith('difftrail-watcher.exe')
 $isOneShot = $arguments.Contains('difftrail.watcher') -or $command.EndsWith('difftrail-watcher.exe')
+$databaseMatches = [string]::IsNullOrWhiteSpace($expectedDatabase) -or $arguments.Contains($expectedDatabase)
 $sentinel = [datetime]'2000-01-01'
 $last = $null
 $next = $null
@@ -179,12 +185,13 @@ if ($info.LastRunTime -and $info.LastRunTime -gt $sentinel) { $last = $info.Last
 if ($info.NextRunTime -and $info.NextRunTime -gt $sentinel) { $next = $info.NextRunTime.ToUniversalTime().ToString('o') }
 [pscustomobject]@{
     state = [string]$task.State
-    needs_repair = -not ($hasRepetition -and $isHeadless -and $isOneShot)
+    needs_repair = -not ($hasRepetition -and $isHeadless -and $isOneShot -and $databaseMatches)
     last_run_at = $last
     next_run_at = $next
     last_task_result = [int]$info.LastTaskResult
 } | ConvertTo-Json -Compress
 """
+    script = script.replace("__EXPECTED_DATABASE__", expected_database_literal)
     try:
         result = _run_powershell(script)
     except (OSError, subprocess.SubprocessError) as exc:
@@ -236,9 +243,12 @@ if ($info.NextRunTime -and $info.NextRunTime -gt $sentinel) { $next = $info.Next
 
 
 def automation_snapshot(database: Database) -> dict[str, Any]:
+    expected_database = None
+    if os.name == "nt" and str(database.path) != ":memory:":
+        expected_database = _database_file(database)
     return {
         "config": load_automation_config(database),
-        "watcher": _task_status(),
+        "watcher": _task_status(expected_database),
         "notifications": {
             "unread": database.unread_automation_notification_count(),
             "recent": database.list_automation_notifications(limit=25),
@@ -379,7 +389,12 @@ def _watcher_executable() -> Path:
 
     python = Path(sys.executable).resolve()
     windowless = python.with_name("pythonw.exe")
-    return windowless if windowless.is_file() else python
+    if not windowless.is_file():
+        raise RuntimeError(
+            f"The windowless Python interpreter is missing at {windowless}. "
+            "Install Python for Windows with pythonw.exe to run the background watcher without a console window."
+        )
+    return windowless
 
 
 def _fallback_task_action(database: Database) -> str:
@@ -441,7 +456,7 @@ def enable_watcher(database: Database, interval_seconds: int | None = None) -> d
     config = load_automation_config(database)
     config["interval_seconds"] = interval
     database.set_meta(AUTOMATION_META_KEY, json.dumps(config, sort_keys=True, separators=(",", ":")))
-    return _task_status()
+    return _task_status(database_file)
 
 
 def disable_watcher(database: Database) -> dict[str, Any]:

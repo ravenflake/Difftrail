@@ -5,6 +5,7 @@ import { BrandMark } from "./BrandMark";
 import { relativeTime } from "../format";
 import { applyTheme, getStoredThemeMode, getSystemTheme, persistThemeMode, type Theme, type ThemeMode } from "../theme";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { createMaximizeReadGate } from "../maximize-state";
 
 interface AppShellProps {
   view: View;
@@ -276,6 +277,7 @@ function WindowControls() {
   const [desktopWindow, setDesktopWindow] = useState<DesktopWindow | null>(null);
   const [maximized, setMaximized] = useState(false);
   const maximizePending = useRef(false);
+  const maximizedReadGate = useRef(createMaximizeReadGate());
 
   useEffect(() => {
     const currentWindow = getDesktopWindow();
@@ -285,9 +287,11 @@ function WindowControls() {
     let disposed = false;
     let stopListening: (() => void) | undefined;
     const syncMaximized = () => {
+      if (disposed) return;
+      const generation = maximizedReadGate.current.begin();
       void currentWindow.isMaximized()
         .then((isMaximized) => {
-          if (!disposed) setMaximized(isMaximized);
+          if (!disposed && maximizedReadGate.current.isCurrent(generation)) setMaximized(isMaximized);
         })
         .catch(() => undefined);
     };
@@ -302,6 +306,7 @@ function WindowControls() {
 
     return () => {
       disposed = true;
+      maximizedReadGate.current.invalidate();
       stopListening?.();
     };
   }, []);
@@ -317,10 +322,13 @@ function WindowControls() {
   const toggleMaximize = () => {
     if (maximizePending.current) return;
     maximizePending.current = true;
+    const generation = maximizedReadGate.current.begin();
     void desktopWindow.isMaximized()
       .then((isMaximized) => (isMaximized ? desktopWindow.unmaximize() : desktopWindow.maximize()))
       .then(() => desktopWindow.isMaximized())
-      .then(setMaximized)
+      .then((isMaximized) => {
+        if (maximizedReadGate.current.isCurrent(generation)) setMaximized(isMaximized);
+      })
       .catch((error) => {
         console.error("Difftrail window maximize toggle failed", error);
       })

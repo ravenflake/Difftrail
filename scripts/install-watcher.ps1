@@ -37,11 +37,10 @@ if ($ExecutablePath) {
 
     $pythonDirectory = Split-Path -Parent $python
     $windowlessPython = Join-Path $pythonDirectory "pythonw.exe"
-    $executable = if (Test-Path -LiteralPath $windowlessPython -PathType Leaf) {
-        (Resolve-Path -LiteralPath $windowlessPython).Path
-    } else {
-        $python
+    if (-not (Test-Path -LiteralPath $windowlessPython -PathType Leaf)) {
+        throw "A windowless Python interpreter (pythonw.exe) is required to install the Difftrail watcher. Install Python for Windows with pythonw.exe and retry."
     }
+    $executable = (Resolve-Path -LiteralPath $windowlessPython).Path
     $WorkingDirectory = $projectRoot
     $arguments = "-m difftrail.watcher"
 }
@@ -52,7 +51,7 @@ if ($DatabasePath) {
 $scheduledIntervalSeconds = [Math]::Max(60, $IntervalSeconds)
 $taskName = "Difftrail Watcher"
 $action = New-ScheduledTaskAction -Execute $executable -Argument $arguments -WorkingDirectory $WorkingDirectory
-$startTime = (Get-Date).AddSeconds(5)
+$startTime = (Get-Date).AddSeconds($scheduledIntervalSeconds)
 $periodicTrigger = New-ScheduledTaskTrigger `
     -Once `
     -At $startTime `
