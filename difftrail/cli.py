@@ -13,7 +13,7 @@ from .db import Database
 from .demo import seed_demo
 from .models import IncidentRequest, iso_datetime, parse_datetime, utc_now
 from .service import Scanner
-from .simulation import simulate_nvidia_driver_switch
+from .simulation import run_controlled_fixture_suite, simulate_nvidia_driver_switch
 
 
 def default_database_path() -> Path:
@@ -200,6 +200,37 @@ def command_validate(args: argparse.Namespace) -> int:
     return 0 if report["passed"] else 1
 
 
+def command_validate_scenarios(args: argparse.Namespace) -> int:
+    report = run_controlled_fixture_suite()
+    if args.json:
+        _print_json(report)
+    else:
+        checks = report["checks"]
+        print(
+            f"Controlled fixture suite: {'PASS' if report['passed'] else 'FAIL'} | "
+            f"{report['scenario_count']} scenarios | "
+            f"capture {'PASS' if checks['capture'] else 'FAIL'} | "
+            f"ranking {'PASS' if checks['ranking'] else 'FAIL'} | "
+            f"no false High {'PASS' if checks['no_false_high'] else 'FAIL'} | "
+            f"evidence {'PASS' if checks['evidence'] else 'FAIL'}"
+        )
+        for scenario in report["scenarios"]:
+            checks = scenario["checks"]
+            print(
+                f"{'PASS' if scenario['passed'] else 'FAIL':4} {scenario['name']} "
+                f"({scenario['replay']['state_events']} changes, {scenario['replay']['symptom_events']} symptoms; "
+                f"capture={'PASS' if checks['capture'] else 'FAIL'}, "
+                f"ranking={'PASS' if checks['ranking'] else 'FAIL'})"
+            )
+            for expectation in scenario["expectations"]:
+                print(
+                    f"     {'PASS' if expectation['passed'] else 'FAIL':4} "
+                    f"{expectation['source']} {expectation['title_contains'] or expectation['action']} "
+                    f"(rank={expectation['rank']})"
+                )
+    return 0 if report["passed"] else 1
+
+
 def command_overhead(args: argparse.Namespace) -> int:
     from .overhead import measure_watcher_overhead
 
@@ -280,6 +311,13 @@ def build_parser() -> argparse.ArgumentParser:
     validate = subparsers.add_parser("validate", help="Run deterministic ground-truth diagnosis scenarios")
     validate.add_argument("--json", action="store_true")
     validate.set_defaults(func=command_validate)
+
+    validate_scenarios = subparsers.add_parser(
+        "validate-scenarios",
+        help="Run safe scanner-backed fixture scenarios without changing Windows",
+    )
+    validate_scenarios.add_argument("--json", action="store_true")
+    validate_scenarios.set_defaults(func=command_validate_scenarios)
 
     overhead = subparsers.add_parser("overhead", help="Measure watcher CPU, memory, and process I/O")
     overhead.add_argument("--interval", type=int, default=15)

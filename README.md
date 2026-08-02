@@ -78,6 +78,15 @@ python -m difftrail validate
 python -m difftrail validate --json
 ```
 
+The scanner-backed fixture harness replays four safe Windows-shaped scenarios through the production collector normalizers, quiet baseline, SQLite diff, symptom ingestion, and investigation ranking. It uses disposable in-memory databases, so it cannot modify or contaminate a real journal:
+
+```powershell
+python -m difftrail validate-scenarios
+python -m difftrail validate-scenarios --json
+```
+
+The scenarios cover an audio endpoint replacement, service/task/startup additions, an application update, and a graphics driver change mixed with unrelated application and persistence changes. Each run checks that the baseline is quiet, the expected transitions are captured, the expected evidence appears in the top three, no unrelated change receives High confidence, and the evidence includes a safe diagnostic target. The audio scenario validates endpoint presence changes; the current Windows collector does not claim to observe the user's default-output setting itself.
+
 The resource validator measures the real watcher process and collector children during startup and steady state. It requires the optional psutil package only for this validation command; the application itself still has no third-party runtime dependency.
 
 ```powershell
@@ -109,6 +118,7 @@ Important boundaries:
 - difftrail/db.py stores normalized state and redacted evidence locally.
 - difftrail/correlation.py is deterministic and explainable. Its score orders results internally; users see High/Medium/Low plus evidence, not fake probability.
 - difftrail/validation.py measures diagnosis behavior against explicit ground truth.
+- difftrail/simulation.py contains safe Windows-shaped fixture replays for end-to-end validation; it does not invoke PowerShell.
 - difftrail/overhead.py measures watcher resource use without changing system state.
 
 ## Test
@@ -117,13 +127,13 @@ Important boundaries:
 python -m unittest discover -s tests -v
 ```
 
-Tests cover deterministic ranking, distractors, counter-evidence, missing evidence, false positives, snapshot baselines, retention, redaction, search, source status, and collector failure handling.
+Tests cover deterministic ranking, distractors, counter-evidence, missing evidence, false positives, scanner-backed fixture replays, snapshot baselines, retention, redaction, search, source status, and collector failure handling.
 
 ## Current limits and next validation
 
 App lifecycle history is inferred from current inventory snapshots, so events that happen entirely between scans cannot be recovered yet. Windows Update and driver history currently come from state snapshots rather than a complete historical provider. The validation suite is synthetic and proves ranking behavior under known inputs; it does not yet prove real-world causal accuracy.
 
-The next controlled Windows scenarios are the Notion MVP cases: driver change to graphics failure, audio/device change to audio failure, startup/service addition, install/uninstall noise, and multiple unrelated changes before a symptom. Those scenarios determine whether the current collector coverage and ranking are useful enough to expand.
+The safe scanner-backed scenarios now cover the first controlled MVP cases without changing Windows state. They validate capture and ranking mechanics, but remain synthetic evidence; real-world causal accuracy, longer/cross-machine overhead, install/uninstall noise, and replacement-interface usability still require validation.
 
 ## Release status
 
