@@ -40,6 +40,16 @@ When `--onset` is omitted, an investigation treats the problem as happening now 
 
 The first Tkinter desktop interface has been removed for now. The local engine remains usable through the CLI while a replacement interface is designed. A partial scan prints provider warnings instead of treating missing coverage as a clean result.
 
+For a realistic, safe driver-change test, use a new disposable database. The fixture runs the actual scanner and snapshot diff path with Windows-shaped NVIDIA records, then adds a simulated display-reset symptom; it does not call PowerShell or modify drivers:
+
+```powershell
+$simulationDb = Join-Path $env:LOCALAPPDATA "Difftrail\nvidia-switch-simulation.db"
+python -m difftrail --db $simulationDb simulate nvidia-driver-switch
+python -m difftrail --db $simulationDb investigate "graphics started failing" --subsystem graphics --json
+```
+
+The simulation requires an empty database so fixture evidence cannot be mixed with real host history. `seed-demo` remains useful for a quick event-only tour; this fixture is the stronger end-to-end test.
+
 For a real Windows journal, run an initial read-only scan and then keep the watcher running:
 
 ```powershell

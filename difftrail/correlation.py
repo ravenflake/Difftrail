@@ -37,6 +37,17 @@ COMPATIBLE_SUBSYSTEMS: dict[str, set[str]] = {
 }
 
 
+SOURCE_PRIORITY: dict[str, int] = {
+    "updates": 5,
+    "drivers": 5,
+    "devices": 4,
+    "services": 3,
+    "tasks": 3,
+    "startup": 3,
+    "apps": 1,
+}
+
+
 @dataclass(frozen=True)
 class Evidence:
     signal: str
@@ -269,7 +280,15 @@ def rank_candidates(
             )
         )
 
-    results.sort(key=lambda item: (-item.score, ensure_utc(item.event.occurred_at)), reverse=False)
+    results.sort(
+        key=lambda item: (
+            -item.score,
+            -SOURCE_PRIORITY.get(item.event.source, 0),
+            ensure_utc(item.event.occurred_at),
+            item.event.event_id or "",
+        ),
+        reverse=False,
+    )
     return results[: max(1, min(limit, 50))]
 
 

@@ -13,6 +13,7 @@ from .db import Database
 from .demo import seed_demo
 from .models import IncidentRequest, iso_datetime, parse_datetime, utc_now
 from .service import Scanner
+from .simulation import simulate_nvidia_driver_switch
 
 
 def default_database_path() -> Path:
@@ -69,6 +70,28 @@ def command_seed_demo(args: argparse.Namespace) -> int:
             print(f"Seeded {count} local demo events.")
         else:
             print("Demo data was not added because this database already contains events.")
+    return 0
+
+
+def command_simulate(args: argparse.Namespace) -> int:
+    with _database(args) as database:
+        if args.scenario == "nvidia-driver-switch":
+            result = simulate_nvidia_driver_switch(database)
+        else:  # pragma: no cover - argparse restricts this branch
+            raise ValueError(f"Unknown simulation scenario: {args.scenario}")
+        if args.json:
+            _print_json(result)
+        else:
+            print("Simulation complete: fixture data only; Windows state was not changed.")
+            print(
+                f"Baseline: {result['baseline']['state_events']} changes, "
+                f"{result['baseline']['symptom_events']} symptoms."
+            )
+            print(
+                f"Replay: {result['change_scan']['state_events']} changes, "
+                f"{result['change_scan']['symptom_events']} symptoms."
+            )
+            print(f"Next: {result['next_command']}")
     return 0
 
 
@@ -208,6 +231,11 @@ def build_parser() -> argparse.ArgumentParser:
     demo = subparsers.add_parser("seed-demo", help="Add a safe synthetic incident for first-run exploration")
     demo.add_argument("--json", action="store_true")
     demo.set_defaults(func=command_seed_demo)
+
+    simulate = subparsers.add_parser("simulate", help="Replay a safe local fixture scenario without touching Windows")
+    simulate.add_argument("scenario", choices=["nvidia-driver-switch"])
+    simulate.add_argument("--json", action="store_true")
+    simulate.set_defaults(func=command_simulate)
 
     timeline = subparsers.add_parser("timeline", help="Print the normalized change journal")
     timeline.add_argument("--limit", type=int, default=50)

@@ -313,6 +313,19 @@ class Database:
             row = self.connection.execute("SELECT COUNT(*) FROM events").fetchone()
         return int(row[0])
 
+    def is_empty(self) -> bool:
+        """Return whether this database is safe to use for a fixture replay."""
+
+        row = self.connection.execute(
+            """
+            SELECT
+                (SELECT COUNT(*) FROM events)
+                + (SELECT COUNT(*) FROM state_items)
+                + (SELECT COUNT(*) FROM incidents)
+            """
+        ).fetchone()
+        return int(row[0]) == 0
+
     def apply_snapshot(
         self,
         source: str,
