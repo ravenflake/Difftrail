@@ -36,4 +36,4 @@ jobs:
         run: python -m difftrail validate-scenarios
 
       - name: Run host-report smoke test
-        run: python -m difftrail --db :memory: validate-host --json
+        run: 'python -m difftrail --db ":memory:" validate-host --json'
