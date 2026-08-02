@@ -31,3 +31,6 @@ jobs:
 
       - name: Run deterministic validation
         run: python -m difftrail validate
+
+      - name: Run scanner-backed fixture validation
+        run: python -m difftrail validate-scenarios
