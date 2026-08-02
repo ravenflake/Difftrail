@@ -191,6 +191,7 @@ class UiRequestHandler(BaseHTTPRequestHandler):
                 days = max(1, min(int(query.get("days", "7")), 3650))
                 payload = self._with_database(
                     lambda db: {
+                        "api_port": self.server.server_address[1],
                         "status": db.status(),
                         "validation": build_host_validation_report(db, days=days),
                     }

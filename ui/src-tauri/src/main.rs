@@ -3,8 +3,8 @@
 use std::error::Error;
 use std::fs::OpenOptions;
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::net::TcpStream;
-use std::path::PathBuf;
+use std::net::{TcpListener, TcpStream};
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -13,7 +13,6 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::Manager;
 
 const API_HOST: &str = "127.0.0.1";
-const API_PORT: u16 = 45917;
 const API_READY_TIMEOUT: Duration = Duration::from_secs(15);
 const BACKEND_EXECUTABLE: &str = if cfg!(windows) {
     "difftrail-backend.exe"
@@ -24,6 +23,10 @@ const BACKEND_EXECUTABLE: &str = if cfg!(windows) {
 type BackendLog = Arc<Mutex<Vec<String>>>;
 
 struct BackendProcess(Mutex<Option<Child>>);
+
+struct ApiEndpoint {
+    port: u16,
+}
 
 fn database_path() -> PathBuf {
     if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
@@ -93,6 +96,13 @@ fn backend_output(logs: &BackendLog) -> String {
     }
 }
 
+fn select_api_port() -> Result<u16, Box<dyn Error>> {
+    let listener = TcpListener::bind((API_HOST, 0))?;
+    let port = listener.local_addr()?.port();
+    drop(listener);
+    Ok(port)
+}
+
 fn startup_log_path() -> PathBuf {
     if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
         return PathBuf::from(local_app_data)
@@ -102,8 +112,11 @@ fn startup_log_path() -> PathBuf {
     PathBuf::from("difftrail-startup-errors.log")
 }
 
-fn record_startup_failure(error: &dyn Error) -> io::Result<()> {
-    let path = startup_log_path();
+fn write_startup_failure(
+    path: &Path,
+    error: &dyn Error,
+    primary_log_error: Option<&dyn Error>,
+) -> io::Result<()> {
     if let Some(parent) = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -117,12 +130,39 @@ fn record_startup_failure(error: &dyn Error) -> io::Result<()> {
         .unwrap_or_default();
     writeln!(
         log,
-        "[{timestamp}] Difftrail backend startup failed:\n{error}\n"
-    )
+        "[{timestamp}] Difftrail backend startup failed:\n{error}"
+    )?;
+    if let Some(primary_log_error) = primary_log_error {
+        writeln!(log, "Primary startup log failure: {primary_log_error}")?;
+    }
+    writeln!(log)
 }
 
-fn api_is_ready() -> bool {
-    let address = format!("{API_HOST}:{API_PORT}");
+fn record_startup_failure(error: &dyn Error) -> io::Result<()> {
+    let path = startup_log_path();
+    write_startup_failure(&path, error, None)
+}
+
+fn report_startup_failure(error: &dyn Error) {
+    let Err(primary_log_error) = record_startup_failure(error) else {
+        return;
+    };
+
+    let fallback_path = std::env::temp_dir()
+        .join("Difftrail")
+        .join("startup-errors.log");
+    if let Err(fallback_log_error) =
+        write_startup_failure(&fallback_path, error, Some(&primary_log_error))
+    {
+        eprintln!(
+            "Difftrail backend startup failed: {error}; primary startup log failed: {primary_log_error}; fallback startup log failed at {}: {fallback_log_error}",
+            fallback_path.display()
+        );
+    }
+}
+
+fn api_is_ready(port: u16) -> bool {
+    let address = format!("{API_HOST}:{port}");
     let Ok(mut stream) = TcpStream::connect_timeout(
         &address.parse().expect("the loopback API address is valid"),
         Duration::from_millis(200),
@@ -140,15 +180,25 @@ fn api_is_ready() -> bool {
         return false;
     }
 
-    let mut response = [0_u8; 128];
-    let Ok(size) = stream.read(&mut response) else {
+    let mut response = Vec::with_capacity(4096);
+    let Ok(_) = stream.take(16 * 1024).read_to_end(&mut response) else {
         return false;
     };
-    let status = String::from_utf8_lossy(&response[..size]);
-    status.starts_with("HTTP/1.0 200") || status.starts_with("HTTP/1.1 200")
+    let response = String::from_utf8_lossy(&response);
+    let Some((headers, body)) = response.split_once("\r\n\r\n") else {
+        return false;
+    };
+    if !(headers.starts_with("HTTP/1.0 200") || headers.starts_with("HTTP/1.1 200")) {
+        return false;
+    }
+    let compact_body: String = body
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect();
+    compact_body.contains(&format!("\"api_port\":{port}"))
 }
 
-fn wait_for_api_ready(child: &mut Child) -> Result<(), Box<dyn Error>> {
+fn wait_for_api_ready(child: &mut Child, port: u16) -> Result<(), Box<dyn Error>> {
     let deadline = Instant::now() + API_READY_TIMEOUT;
     loop {
         if let Some(status) = child.try_wait()? {
@@ -156,7 +206,7 @@ fn wait_for_api_ready(child: &mut Child) -> Result<(), Box<dyn Error>> {
                 "the backend exited before the API became ready ({status})"
             ))));
         }
-        if api_is_ready() {
+        if api_is_ready(port) {
             return Ok(());
         }
         if Instant::now() >= deadline {
@@ -172,7 +222,7 @@ fn wait_for_api_ready(child: &mut Child) -> Result<(), Box<dyn Error>> {
     }
 }
 
-fn start_local_api(app: &tauri::AppHandle) -> Result<Child, Box<dyn Error>> {
+fn start_local_api(app: &tauri::AppHandle, port: u16) -> Result<Child, Box<dyn Error>> {
     let db = database_path();
     let resource_root = workspace_root(app).map_err(|error| {
         Box::new(io::Error::other(format!(
@@ -218,7 +268,7 @@ fn start_local_api(app: &tauri::AppHandle) -> Result<Child, Box<dyn Error>> {
         .arg("--host")
         .arg(API_HOST)
         .arg("--port")
-        .arg(API_PORT.to_string())
+        .arg(port.to_string())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -240,7 +290,7 @@ fn start_local_api(app: &tauri::AppHandle) -> Result<Child, Box<dyn Error>> {
     let stdout = capture_output(child.stdout.take(), "stdout");
     let stderr = capture_output(child.stderr.take(), "stderr");
 
-    if let Err(error) = wait_for_api_ready(&mut child) {
+    if let Err(error) = wait_for_api_ready(&mut child, port) {
         let _ = child.kill();
         let _ = child.wait();
         return Err(Box::new(io::Error::other(format!(
@@ -253,13 +303,25 @@ fn start_local_api(app: &tauri::AppHandle) -> Result<Child, Box<dyn Error>> {
     Ok(child)
 }
 
+#[tauri::command]
+fn api_port(endpoint: tauri::State<'_, ApiEndpoint>) -> u16 {
+    endpoint.port
+}
+
 fn main() {
     tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![api_port])
         .setup(|app| {
-            let backend = start_local_api(app.handle()).map_err(|error| {
-                let _ = record_startup_failure(error.as_ref());
+            let startup: Result<(Child, u16), Box<dyn Error>> = (|| {
+                let port = select_api_port()?;
+                let backend = start_local_api(app.handle(), port)?;
+                Ok((backend, port))
+            })();
+            let (backend, port) = startup.map_err(|error| {
+                report_startup_failure(error.as_ref());
                 error
             })?;
+            app.manage(ApiEndpoint { port });
             app.manage(BackendProcess(Mutex::new(Some(backend))));
             Ok(())
         })

@@ -136,7 +136,7 @@ export function AppShell({ view, status, version, connection, scanning, onNaviga
         <NavigationList view={view} onNavigate={navigateFromMobileNav} />
       </div>
 
-      <div className="main-column">
+      <div className="main-column" aria-hidden={mobileNavOpen ? "true" : undefined}>
         <header className="topbar">
           <button
             ref={mobileMenuButtonRef}

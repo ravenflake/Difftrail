@@ -117,5 +117,5 @@ export default function App() {
 }
 
 function LoadingScreen() {
-  return <div className="loading-screen"><BrandMark size={52} className="loading-brand-mark" /><span>Opening the local journal…</span></div>;
+  return <div className="loading-screen" role="status"><BrandMark size={52} className="loading-brand-mark" /><span>Opening the local journal…</span></div>;
 }

@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import type {
   Bootstrap,
   Incident,
@@ -7,14 +8,42 @@ import type {
   ScanSummary,
 } from "./types";
 
-const API_BASE = (import.meta.env.VITE_DIFFTRAIL_API_URL || "http://127.0.0.1:45917/api").replace(/\/$/, "");
+const DEFAULT_API_BASE = "http://127.0.0.1:45917/api";
+const CONFIGURED_API_BASE = (import.meta.env.VITE_DIFFTRAIL_API_URL || "").replace(/\/$/, "");
 const REQUEST_TIMEOUT_MS = 10_000;
+
+type ApiEndpoint = {
+  base: string;
+  port?: number;
+};
+
+let apiEndpointPromise: Promise<ApiEndpoint> | undefined;
+
+async function resolveApiEndpoint(): Promise<ApiEndpoint> {
+  if (CONFIGURED_API_BASE) return { base: CONFIGURED_API_BASE };
+
+  try {
+    const port = await invoke<number>("api_port");
+    if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+      throw new Error("Difftrail returned an invalid local API port");
+    }
+    return { base: `http://127.0.0.1:${port}/api`, port };
+  } catch {
+    return { base: DEFAULT_API_BASE };
+  }
+}
+
+function getApiEndpoint(): Promise<ApiEndpoint> {
+  apiEndpointPromise ??= resolveApiEndpoint();
+  return apiEndpointPromise;
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
-    const response = await fetch(`${API_BASE}${path}`, {
+    const endpoint = await getApiEndpoint();
+    const response = await fetch(`${endpoint.base}${path}`, {
       ...init,
       signal: controller.signal,
       headers: {
@@ -52,7 +81,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export async function waitForApi(): Promise<void> {
-  await request<{ status: unknown }>("/health");
+  const payload = await request<{ status: unknown; api_port?: number }>("/health");
+  const endpoint = await getApiEndpoint();
+  if (endpoint.port !== undefined && payload.api_port !== endpoint.port) {
+    throw new Error("Difftrail API health response belongs to a different launch");
+  }
 }
 
 export function loadBootstrap(days = 7): Promise<Bootstrap> {
@@ -96,4 +129,4 @@ export function recordFeedback(
   });
 }
 
-export { API_BASE };
+export const API_BASE = CONFIGURED_API_BASE || DEFAULT_API_BASE;
