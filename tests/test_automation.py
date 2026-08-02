@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 from subprocess import CompletedProcess
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -14,6 +15,7 @@ from difftrail.automation import (
     run_automated_scan,
     TASK_RESULT_HAS_NOT_RUN,
     _normalize_task_time,
+    _fallback_task_action,
     _run_task_script,
     _watcher_status_message,
     update_automation_config,
@@ -130,10 +132,35 @@ class AutomationTests(unittest.TestCase):
     def test_task_that_has_never_run_is_reported_as_not_started(self) -> None:
         self.assertEqual(
             _watcher_status_message("Ready", TASK_RESULT_HAS_NOT_RUN),
-            "The watcher is installed but has not started yet.",
+            "Background scans are scheduled but have not run yet.",
         )
         self.assertIsNone(_watcher_status_message("Running", 0))
+
+    def test_ready_task_with_successful_run_is_reported_as_scheduled(self) -> None:
+        self.assertEqual(_watcher_status_message("Ready", 0), "Background scans are scheduled.")
+
+    def test_legacy_task_is_reported_as_needing_repair(self) -> None:
+        self.assertEqual(
+            _watcher_status_message("Ready", 0, needs_repair=True),
+            "The background watcher needs to be updated.",
+        )
+
+    def test_fallback_task_uses_the_headless_one_shot_worker(self) -> None:
+        with TemporaryDirectory() as directory:
+            with Database(Path(directory) / "journal.db") as database, patch(
+                "difftrail.automation._watcher_executable", return_value=Path("pythonw.exe")
+            ):
+                action = _fallback_task_action(database)
+        self.assertIn("difftrail.watcher", action)
+        self.assertNotIn(" watch ", action)
 
     def test_source_installer_starts_task_in_current_session(self) -> None:
         script = Path(__file__).parents[1] / "scripts" / "install-watcher.ps1"
         self.assertIn("Start-ScheduledTask", script.read_text(encoding="utf-8"))
+        contents = script.read_text(encoding="utf-8")
+        self.assertIn("pythonw.exe", contents)
+        self.assertIn("New-ScheduledTaskTrigger", contents)
+        self.assertIn("-RepetitionInterval", contents)
+        self.assertIn("-Hidden", contents)
+        self.assertIn("-RestartCount", contents)
+        self.assertIn("difftrail.watcher", contents)

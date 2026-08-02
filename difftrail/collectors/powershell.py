@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from typing import Any
@@ -12,6 +13,14 @@ class PowerShellError(RuntimeError):
 
 def powershell_path() -> str | None:
     return shutil.which("powershell.exe") or shutil.which("pwsh.exe")
+
+
+def _hidden_process_kwargs() -> dict[str, int]:
+    """Prevent console-hosted PowerShell children from flashing on Windows."""
+
+    if os.name != "nt":
+        return {}
+    return {"creationflags": subprocess.CREATE_NO_WINDOW}
 
 
 def run_json(script: str, *, timeout: int = 45) -> list[dict[str, Any]]:
@@ -36,6 +45,7 @@ def run_json(script: str, *, timeout: int = 45) -> list[dict[str, Any]]:
         errors="replace",
         timeout=timeout,
         check=False,
+        **_hidden_process_kwargs(),
     )
     stdout = result.stdout.strip()
     if result.returncode != 0 and not stdout:

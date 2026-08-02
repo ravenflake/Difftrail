@@ -46,11 +46,6 @@ function getDesktopWindow(): DesktopWindow | null {
   }
 }
 
-function toggleDesktopWindow() {
-  const currentWindow = getDesktopWindow();
-  if (currentWindow) void currentWindow.toggleMaximize().catch(() => undefined);
-}
-
 export function AppShell({ view, status, version, connection, scanning, onNavigate, onScan, children }: AppShellProps) {
   const partial = status.last_scan?.status === "partial";
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => getStoredThemeMode());
@@ -166,8 +161,8 @@ export function AppShell({ view, status, version, connection, scanning, onNaviga
           >
             <Icon name={mobileNavOpen ? "close" : "menu"} size={19} />
           </button>
-          <div className="mobile-brand" data-tauri-drag-region onDoubleClick={toggleDesktopWindow}><BrandMark size={24} className="mobile-brand-mark" />Difftrail</div>
-          <div className="topbar-title topbar-drag-region" data-tauri-drag-region onDoubleClick={toggleDesktopWindow}>
+          <div className="mobile-brand" data-tauri-drag-region="deep"><BrandMark size={24} className="mobile-brand-mark" />Difftrail</div>
+          <div className="topbar-title topbar-drag-region" data-tauri-drag-region="deep">
             <h1>{titles[view]}</h1>
           </div>
           <div className="topbar-actions">
@@ -313,14 +308,19 @@ function WindowControls() {
   if (!desktopWindow) return null;
 
   const runWindowAction = (action: (currentWindow: DesktopWindow) => Promise<void>) => {
-    void action(desktopWindow).catch(() => undefined);
+    void action(desktopWindow).catch((error) => {
+      console.error("Difftrail window action failed", error);
+    });
   };
 
   const toggleMaximize = () => {
-    void desktopWindow.toggleMaximize()
+    void desktopWindow.isMaximized()
+      .then((isMaximized) => (isMaximized ? desktopWindow.unmaximize() : desktopWindow.maximize()))
       .then(() => desktopWindow.isMaximized())
       .then(setMaximized)
-      .catch(() => undefined);
+      .catch((error) => {
+        console.error("Difftrail window maximize toggle failed", error);
+      });
   };
 
   return (

@@ -17,6 +17,9 @@ ui/src-tauri/target/
 ui/src-tauri/gen/
 ui/src-tauri/resources/backend-build/
 ui/src-tauri/resources/backend/difftrail-backend.exe
+ui/src-tauri/resources/backend/difftrail-watcher.exe
+ui/src-tauri/resources/backend/install-watcher.ps1
+ui/src-tauri/resources/backend/uninstall-watcher.ps1
 ui-home.png
 ui-incident.png
 ui-timeline.png

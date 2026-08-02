@@ -8,6 +8,7 @@ interface Props {
   connection: "local" | "preview";
   busy: "config" | "enable" | "disable" | "run" | "read" | null;
   error: string | null;
+  notice: string | null;
   onConfigSave: (config: AutomationConfig) => Promise<void>;
   onWatcherAction: (action: "enable" | "disable" | "run", intervalSeconds?: number) => Promise<boolean>;
   onMarkRead: () => Promise<void>;
@@ -21,7 +22,7 @@ const intervalOptions = [
   { value: 3600, label: "Every hour" },
 ];
 
-export function AutomationView({ automation, connection, busy, error, onConfigSave, onWatcherAction, onMarkRead, onNavigate }: Props) {
+export function AutomationView({ automation, connection, busy, error, notice, onConfigSave, onWatcherAction, onMarkRead, onNavigate }: Props) {
   const [draft, setDraft] = useState<AutomationConfig>(automation.config);
   const [intervalApplied, setIntervalApplied] = useState(false);
   const intervalDoneTimer = useRef<number | null>(null);
@@ -33,10 +34,12 @@ export function AutomationView({ automation, connection, busy, error, onConfigSa
   const watcher = automation.watcher;
   const watcherInstalled = watcher.installed && watcher.state?.toLowerCase() !== "disabled";
   const watcherRunning = watcherInstalled && watcher.running;
+  const watcherAttention = watcherInstalled && (watcher.needs_repair || (!watcherRunning && watcher.last_task_result !== null && watcher.last_task_result !== 0));
+  const watcherNeedsSetup = !watcherInstalled || watcher.needs_repair;
   const canControl = connection === "local" && watcher.supported;
   const intervalChanged = draft.interval_seconds !== automation.config.interval_seconds;
   const rulesDirty = JSON.stringify({ ...draft, interval_seconds: automation.config.interval_seconds }) !== JSON.stringify(automation.config);
-  const statusLabel = !watcher.supported ? "Unavailable" : watcherRunning ? "Up to date" : watcherInstalled ? "Not running" : "Not enabled";
+  const statusLabel = !watcher.supported ? "Unavailable" : watcherRunning ? "Scanning" : watcherAttention ? "Needs attention" : watcherInstalled ? "Enabled" : "Not enabled";
   const intervals = intervalOptions.some((option) => option.value === draft.interval_seconds)
     ? intervalOptions
     : [{ value: draft.interval_seconds, label: `Every ${formatInterval(draft.interval_seconds)}` }, ...intervalOptions];
@@ -76,26 +79,26 @@ export function AutomationView({ automation, connection, busy, error, onConfigSa
         <section className="panel automation-panel automation-watcher-panel">
           <div className="section-heading">
             <div><h3>Background watcher</h3><span className="section-subtitle">The existing read-only collector, managed through Windows Task Scheduler.</span></div>
-            <span className={`automation-badge ${watcherRunning ? "is-enabled" : watcherInstalled ? "is-attention" : ""}`}><span className="status-dot" />{statusLabel}</span>
+            <span className={`automation-badge ${watcherAttention ? "is-attention" : watcherInstalled ? "is-enabled" : ""}`}><span className="status-dot" />{statusLabel}</span>
           </div>
 
-          <div className={`automation-status-block ${watcherRunning ? "is-enabled" : watcherInstalled ? "is-attention" : ""}`}>
-            <div className="automation-status-icon"><Icon name={watcherRunning ? "check" : watcherInstalled ? "alert" : "clock"} size={20} /></div>
+          <div className={`automation-status-block ${watcherAttention ? "is-attention" : watcherInstalled ? "is-enabled" : ""}`}>
+            <div className="automation-status-icon"><Icon name={watcherAttention ? "alert" : watcherInstalled ? "check" : "clock"} size={20} /></div>
             <div className="automation-status-copy">
-              <strong>{watcherRunning ? "Journal is up to date" : watcherInstalled ? "Watcher is enabled but not running" : "Background collection is off"}</strong>
-              <span>{watcher.message || (watcherRunning ? `Watching for changes and checking every ${formatInterval(automation.config.interval_seconds)}.` : "Enable the watcher when you want scans without opening the app.")}</span>
+              <strong>{watcherRunning ? "A background scan is running" : watcherAttention ? "Background collection needs attention" : watcherInstalled ? "Background collection is enabled" : "Background collection is off"}</strong>
+              <span>{watcher.message || (watcherRunning ? "The local journal is being refreshed now." : watcherInstalled ? `Background scans are scheduled every ${formatInterval(automation.config.interval_seconds)}.` : "Enable the watcher when you want scans without opening the app.")}</span>
             </div>
           </div>
 
           <div className="automation-meta-grid">
             <AutomationMeta label="Interval" value={formatInterval(automation.config.interval_seconds)} />
-            <AutomationMeta label="Last task run" value={watcher.last_run_at ? relativeTime(watcher.last_run_at) : "Not recorded"} detail={watcher.last_run_at ? formatDateTime(watcher.last_run_at) : undefined} />
-            <AutomationMeta label="Next task run" value={watcher.next_run_at ? relativeTime(watcher.next_run_at) : "At next logon"} detail={watcher.next_run_at ? formatDateTime(watcher.next_run_at) : undefined} />
+            <AutomationMeta label="Last background scan" value={watcher.last_run_at ? relativeTime(watcher.last_run_at) : "Not recorded"} detail={watcher.last_run_at ? formatDateTime(watcher.last_run_at) : undefined} />
+            <AutomationMeta label="Next background scan" value={watcher.next_run_at ? relativeTime(watcher.next_run_at) : "At next logon"} detail={watcher.next_run_at ? formatDateTime(watcher.next_run_at) : undefined} />
           </div>
 
           <div className="automation-actions">
-            <button type="button" className="button button-primary" onClick={() => void handleIntervalApply()} disabled={!canControl || !intervalChanged || intervalApplied || busy !== null} aria-busy={busy === "enable"}>{busy === "enable" ? "Applying..." : intervalApplied ? "Done" : "Apply interval"}</button>
-            <button type="button" className="button button-secondary" onClick={() => void onWatcherAction("run")} disabled={!canControl || busy !== null} aria-busy={busy === "run"}>{busy === "run" ? "Scanning..." : "Run now"}</button>
+            <button type="button" className="button button-primary" onClick={() => void handleIntervalApply()} disabled={!canControl || (!intervalChanged && !watcherNeedsSetup) || intervalApplied || busy !== null} aria-busy={busy === "enable"}>{busy === "enable" ? (watcherNeedsSetup ? "Enabling..." : "Applying...") : intervalApplied ? "Done" : watcherNeedsSetup ? "Enable watcher" : "Apply interval"}</button>
+            <button type="button" className="button button-secondary" onClick={() => void onWatcherAction("run")} disabled={!canControl || busy !== null} aria-busy={busy === "run"}>{busy === "run" ? "Scanning..." : "Scan now"}</button>
             {watcherInstalled && <button type="button" className="button button-tertiary" onClick={() => void onWatcherAction("disable")} disabled={!canControl || busy !== null} aria-busy={busy === "disable"}>{busy === "disable" ? "Disabling..." : "Disable"}</button>}
           </div>
           {!canControl && <p className="panel-footnote">{connection === "preview" ? "Connect the local journal to manage automation." : watcher.message || "This control is only available on Windows."}</p>}
@@ -128,6 +131,7 @@ export function AutomationView({ automation, connection, busy, error, onConfigSa
       </div>
 
       {error && <div className="form-error" role="alert"><Icon name="alert" size={14} /> {error}</div>}
+      {notice && <div className="automation-run-notice" role="status"><Icon name="check" size={14} /> {notice}</div>}
       <p className="panel-footnote automation-boundary">Automation observes, records, and drafts. It does not change Windows settings or apply remediation without your action.</p>
     </div>
   );
