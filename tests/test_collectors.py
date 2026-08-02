@@ -1,4 +1,3 @@
-import os
 import subprocess
 import unittest
 from unittest.mock import patch
@@ -13,13 +12,15 @@ class CollectorTests(unittest.TestCase):
         completed = subprocess.CompletedProcess(["powershell.exe"], 0, "[]", "")
         with patch("difftrail.collectors.powershell.powershell_path", return_value="powershell.exe"), patch(
             "difftrail.collectors.powershell.subprocess.run", return_value=completed
-        ) as run:
+        ) as run, patch("difftrail._process.os.name", "nt"):
             self.assertEqual(run_json("@() | ConvertTo-Json"), [])
+        self.assertEqual(run.call_args.kwargs["creationflags"], subprocess.CREATE_NO_WINDOW)
 
-        if os.name == "nt":
-            self.assertEqual(run.call_args.kwargs["creationflags"], subprocess.CREATE_NO_WINDOW)
-        else:
-            self.assertNotIn("creationflags", run.call_args.kwargs)
+        with patch("difftrail.collectors.powershell.powershell_path", return_value="powershell.exe"), patch(
+            "difftrail.collectors.powershell.subprocess.run", return_value=completed
+        ) as run, patch("difftrail._process.os.name", "posix"):
+            self.assertEqual(run_json("@() | ConvertTo-Json"), [])
+        self.assertNotIn("creationflags", run.call_args.kwargs)
 
     def test_application_event_identity_is_safe_and_stable(self) -> None:
         self.assertEqual(

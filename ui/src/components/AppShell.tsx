@@ -275,6 +275,7 @@ function ThemeControl({ theme, mode, compact = false, onToggle, onUseSystem }: T
 function WindowControls() {
   const [desktopWindow, setDesktopWindow] = useState<DesktopWindow | null>(null);
   const [maximized, setMaximized] = useState(false);
+  const maximizePending = useRef(false);
 
   useEffect(() => {
     const currentWindow = getDesktopWindow();
@@ -314,12 +315,17 @@ function WindowControls() {
   };
 
   const toggleMaximize = () => {
+    if (maximizePending.current) return;
+    maximizePending.current = true;
     void desktopWindow.isMaximized()
       .then((isMaximized) => (isMaximized ? desktopWindow.unmaximize() : desktopWindow.maximize()))
       .then(() => desktopWindow.isMaximized())
       .then(setMaximized)
       .catch((error) => {
         console.error("Difftrail window maximize toggle failed", error);
+      })
+      .finally(() => {
+        maximizePending.current = false;
       });
   };
 

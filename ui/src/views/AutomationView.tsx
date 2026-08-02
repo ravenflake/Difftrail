@@ -39,7 +39,7 @@ export function AutomationView({ automation, connection, busy, error, notice, on
   const canControl = connection === "local" && watcher.supported;
   const intervalChanged = draft.interval_seconds !== automation.config.interval_seconds;
   const rulesDirty = JSON.stringify({ ...draft, interval_seconds: automation.config.interval_seconds }) !== JSON.stringify(automation.config);
-  const statusLabel = !watcher.supported ? "Unavailable" : watcherRunning ? "Scanning" : watcherAttention ? "Needs attention" : watcherInstalled ? "Enabled" : "Not enabled";
+  const statusLabel = !watcher.supported ? "Unavailable" : watcherAttention ? "Needs attention" : watcherRunning ? "Scanning" : watcherInstalled ? "Enabled" : "Not enabled";
   const intervals = intervalOptions.some((option) => option.value === draft.interval_seconds)
     ? intervalOptions
     : [{ value: draft.interval_seconds, label: `Every ${formatInterval(draft.interval_seconds)}` }, ...intervalOptions];
@@ -85,7 +85,7 @@ export function AutomationView({ automation, connection, busy, error, notice, on
           <div className={`automation-status-block ${watcherAttention ? "is-attention" : watcherInstalled ? "is-enabled" : ""}`}>
             <div className="automation-status-icon"><Icon name={watcherAttention ? "alert" : watcherInstalled ? "check" : "clock"} size={20} /></div>
             <div className="automation-status-copy">
-              <strong>{watcherRunning ? "A background scan is running" : watcherAttention ? "Background collection needs attention" : watcherInstalled ? "Background collection is enabled" : "Background collection is off"}</strong>
+              <strong>{watcherAttention ? "Background collection needs attention" : watcherRunning ? "A background scan is running" : watcherInstalled ? "Background collection is enabled" : "Background collection is off"}</strong>
               <span>{watcher.message || (watcherRunning ? "The local journal is being refreshed now." : watcherInstalled ? `Background scans are scheduled every ${formatInterval(automation.config.interval_seconds)}.` : "Enable the watcher when you want scans without opening the app.")}</span>
             </div>
           </div>

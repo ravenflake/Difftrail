@@ -49,13 +49,14 @@ if ($ExecutablePath) {
 if ($DatabasePath) {
     $arguments = "$arguments --db `"$DatabasePath`"".Trim()
 }
+$scheduledIntervalSeconds = [Math]::Max(60, $IntervalSeconds)
 $taskName = "Difftrail Watcher"
 $action = New-ScheduledTaskAction -Execute $executable -Argument $arguments -WorkingDirectory $WorkingDirectory
 $startTime = (Get-Date).AddSeconds(5)
 $periodicTrigger = New-ScheduledTaskTrigger `
     -Once `
     -At $startTime `
-    -RepetitionInterval (New-TimeSpan -Seconds $IntervalSeconds) `
+    -RepetitionInterval (New-TimeSpan -Seconds $scheduledIntervalSeconds) `
     -RepetitionDuration (New-TimeSpan -Days 3650)
 $periodicTrigger.Repetition.StopAtDurationEnd = $false
 $logonTrigger = New-ScheduledTaskTrigger -AtLogOn
@@ -70,4 +71,4 @@ $settings = New-ScheduledTaskSettingsSet `
     -ExecutionTimeLimit (New-TimeSpan -Hours 2)
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger @($periodicTrigger, $logonTrigger) -Settings $settings -Description "Difftrail local-first background journal scans" -Force | Out-Null
 Start-ScheduledTask -TaskName $taskName
-Write-Host "Installed and started $taskName. It will also scan every $IntervalSeconds seconds and start at logon."
+Write-Host "Installed and started $taskName. It will also scan every $scheduledIntervalSeconds seconds and start at logon."

@@ -19,6 +19,7 @@ from typing import Any, Iterable
 from .correlation import investigation_summary, rank_candidates
 from .db import Database
 from .models import Event, IncidentRequest
+from ._process import _hidden_process_kwargs
 
 
 TASK_NAME = "Difftrail Watcher"
@@ -141,14 +142,6 @@ def _powershell_executable() -> str | None:
     return shutil.which("powershell.exe") or shutil.which("powershell") or shutil.which("pwsh")
 
 
-def _hidden_process_kwargs() -> dict[str, int]:
-    """Keep console-based Windows helpers invisible when called by the GUI."""
-
-    if os.name != "nt":
-        return {}
-    return {"creationflags": subprocess.CREATE_NO_WINDOW}
-
-
 def _run_powershell(script: str) -> subprocess.CompletedProcess[str]:
     executable = _powershell_executable()
     if not executable:
@@ -177,7 +170,7 @@ $action = $task.Actions | Select-Object -First 1
 $command = ([string]$action.Execute).ToLowerInvariant()
 $arguments = ([string]$action.Arguments).ToLowerInvariant()
 $hasRepetition = @($task.Triggers | Where-Object { $_.Repetition -and $_.Repetition.Interval }).Count -gt 0
-$isHeadless = $command.EndsWith('\pythonw.exe') -or $command.EndsWith('difftrail-watcher.exe')
+$isHeadless = $command.EndsWith('\pythonw.exe') -or $command.EndsWith('\python.exe') -or $command.EndsWith('difftrail-watcher.exe')
 $isOneShot = $arguments.Contains('difftrail.watcher') -or $command.EndsWith('difftrail-watcher.exe')
 $sentinel = [datetime]'2000-01-01'
 $last = $null
