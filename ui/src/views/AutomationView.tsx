@@ -26,10 +26,11 @@ export function AutomationView({ automation, connection, busy, error, onConfigSa
   useEffect(() => setDraft(automation.config), [automation.config]);
 
   const watcher = automation.watcher;
-  const watcherEnabled = watcher.installed && watcher.state?.toLowerCase() !== "disabled";
+  const watcherInstalled = watcher.installed && watcher.state?.toLowerCase() !== "disabled";
+  const watcherRunning = watcherInstalled && watcher.running;
   const canControl = connection === "local" && watcher.supported;
   const dirty = JSON.stringify(draft) !== JSON.stringify(automation.config);
-  const statusLabel = !watcher.supported ? "Unavailable" : watcherEnabled ? (watcher.running ? "Running" : "Enabled") : "Not enabled";
+  const statusLabel = !watcher.supported ? "Unavailable" : watcherRunning ? "Running" : watcherInstalled ? "Not running" : "Not enabled";
   const intervals = intervalOptions.some((option) => option.value === draft.interval_seconds)
     ? intervalOptions
     : [{ value: draft.interval_seconds, label: `Every ${formatInterval(draft.interval_seconds)}` }, ...intervalOptions];
@@ -49,14 +50,14 @@ export function AutomationView({ automation, connection, busy, error, onConfigSa
         <section className="panel automation-panel automation-watcher-panel">
           <div className="section-heading">
             <div><h3>Background watcher</h3><span className="section-subtitle">The existing read-only collector, managed through Windows Task Scheduler.</span></div>
-            <span className={`automation-badge ${watcherEnabled ? "is-enabled" : ""}`}><span className="status-dot" />{statusLabel}</span>
+            <span className={`automation-badge ${watcherRunning ? "is-enabled" : watcherInstalled ? "is-attention" : ""}`}><span className="status-dot" />{statusLabel}</span>
           </div>
 
-          <div className={`automation-status-block ${watcherEnabled ? "is-enabled" : ""}`}>
-            <div className="automation-status-icon"><Icon name={watcher.running ? "refresh" : "clock"} size={20} className={watcher.running ? "spin" : ""} /></div>
+          <div className={`automation-status-block ${watcherRunning ? "is-enabled" : watcherInstalled ? "is-attention" : ""}`}>
+            <div className="automation-status-icon"><Icon name={watcherRunning ? "refresh" : watcherInstalled ? "alert" : "clock"} size={20} className={watcherRunning ? "spin" : ""} /></div>
             <div className="automation-status-copy">
-              <strong>{watcherEnabled ? "Difftrail is collecting automatically" : "Background collection is off"}</strong>
-              <span>{watcher.message || (watcherEnabled ? "The watcher will start at user logon and keep the local journal current." : "Enable the watcher when you want scans without opening the app.")}</span>
+              <strong>{watcherRunning ? "Difftrail is collecting automatically" : watcherInstalled ? "Watcher is enabled but not running" : "Background collection is off"}</strong>
+              <span>{watcher.message || (watcherRunning ? "The watcher is running and keeping the local journal current." : "Enable the watcher when you want scans without opening the app.")}</span>
             </div>
           </div>
 
@@ -67,9 +68,9 @@ export function AutomationView({ automation, connection, busy, error, onConfigSa
           </div>
 
           <div className="automation-actions">
-            <button type="button" className="button button-primary" onClick={() => void onWatcherAction("enable", draft.interval_seconds)} disabled={!canControl || busy !== null} aria-busy={busy === "enable"}>{busy === "enable" ? "Enabling..." : watcherEnabled ? "Apply interval" : "Enable watcher"}</button>
+            <button type="button" className="button button-primary" onClick={() => void onWatcherAction("enable", draft.interval_seconds)} disabled={!canControl || busy !== null} aria-busy={busy === "enable"}>{busy === "enable" ? "Starting..." : watcherRunning ? "Apply interval" : watcherInstalled ? "Start watcher" : "Enable watcher"}</button>
             <button type="button" className="button button-secondary" onClick={() => void onWatcherAction("run")} disabled={!canControl || busy !== null} aria-busy={busy === "run"}>{busy === "run" ? "Scanning..." : "Run now"}</button>
-            {watcherEnabled && <button type="button" className="button button-tertiary" onClick={() => void onWatcherAction("disable")} disabled={!canControl || busy !== null} aria-busy={busy === "disable"}>{busy === "disable" ? "Disabling..." : "Disable"}</button>}
+            {watcherInstalled && <button type="button" className="button button-tertiary" onClick={() => void onWatcherAction("disable")} disabled={!canControl || busy !== null} aria-busy={busy === "disable"}>{busy === "disable" ? "Disabling..." : "Disable"}</button>}
           </div>
           {!canControl && <p className="panel-footnote">{connection === "preview" ? "Connect the local journal to manage automation." : watcher.message || "This control is only available on Windows."}</p>}
         </section>

@@ -22,6 +22,7 @@ from .models import Event, IncidentRequest
 
 
 TASK_NAME = "Difftrail Watcher"
+TASK_RESULT_HAS_NOT_RUN = 0x41303
 MIN_INTERVAL_SECONDS = 15
 MAX_INTERVAL_SECONDS = 86_400
 AUTOMATION_META_KEY = "automation:config"
@@ -217,7 +218,7 @@ if ($info.NextRunTime -and $info.NextRunTime -gt $sentinel) { $next = $info.Next
         "last_run_at": _normalize_task_time(payload.get("last_run_at")),
         "next_run_at": _normalize_task_time(payload.get("next_run_at")),
         "last_task_result": last_task_result,
-        "message": None,
+        "message": _watcher_status_message(state, last_task_result),
     }
 
 
@@ -251,6 +252,17 @@ def _task_failure_message(result: subprocess.CompletedProcess[str]) -> str:
     if "cannot find" in output or "not found" in output:
         return "Could not update the Difftrail scheduled task because the selected executable or script was not found."
     return "Could not update the Difftrail scheduled task. Check the local Python installation and Task Scheduler service."
+
+
+def _watcher_status_message(state: str, last_task_result: int | None) -> str | None:
+    normalized_state = state.casefold()
+    if normalized_state == "disabled":
+        return "The watcher task is disabled."
+    if normalized_state == "running":
+        return None
+    if last_task_result == TASK_RESULT_HAS_NOT_RUN:
+        return "The watcher is installed but has not started yet."
+    return "The watcher is installed but not running."
 
 
 def _run_elevated(executable: str, arguments: list[str]) -> subprocess.CompletedProcess[str]:
@@ -372,6 +384,7 @@ def enable_watcher(database: Database, interval_seconds: int | None = None) -> d
                 "/F",
             ]
         )
+        _run_schtasks(["/Run", "/TN", TASK_NAME])
     config = load_automation_config(database)
     config["interval_seconds"] = interval
     database.set_meta(AUTOMATION_META_KEY, json.dumps(config, sort_keys=True, separators=(",", ":")))

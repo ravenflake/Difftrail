@@ -12,8 +12,10 @@ from difftrail.automation import (
     mark_notifications_read,
     process_scan_events,
     run_automated_scan,
+    TASK_RESULT_HAS_NOT_RUN,
     _normalize_task_time,
     _run_task_script,
+    _watcher_status_message,
     update_automation_config,
 )
 from difftrail.db import Database
@@ -124,3 +126,14 @@ class AutomationTests(unittest.TestCase):
     def test_task_scheduler_never_run_sentinel_is_hidden(self) -> None:
         self.assertIsNone(_normalize_task_time("1999-11-30T00:00:00"))
         self.assertEqual(_normalize_task_time("2026-08-02T10:15:00Z"), "2026-08-02T10:15:00Z")
+
+    def test_task_that_has_never_run_is_reported_as_not_started(self) -> None:
+        self.assertEqual(
+            _watcher_status_message("Ready", TASK_RESULT_HAS_NOT_RUN),
+            "The watcher is installed but has not started yet.",
+        )
+        self.assertIsNone(_watcher_status_message("Running", 0))
+
+    def test_source_installer_starts_task_in_current_session(self) -> None:
+        script = Path(__file__).parents[1] / "scripts" / "install-watcher.ps1"
+        self.assertIn("Start-ScheduledTask", script.read_text(encoding="utf-8"))
