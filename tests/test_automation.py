@@ -17,6 +17,7 @@ from difftrail.automation import (
     _normalize_task_time,
     _fallback_task_action,
     _run_task_script,
+    _watcher_task_needs_repair,
     _watcher_status_message,
     update_automation_config,
 )
@@ -145,6 +146,54 @@ class AutomationTests(unittest.TestCase):
             "The background watcher needs to be updated.",
         )
 
+    def test_task_status_requires_exact_watcher_arguments(self) -> None:
+        database = Path(r"C:\Data\journal.db")
+        frozen_executable = Path(r"C:\Difftrail\difftrail-watcher.exe")
+
+        self.assertFalse(
+            _watcher_task_needs_repair(
+                r"C:\Python\pythonw.exe",
+                r'-m difftrail.watcher --db "C:\Data\journal.db"',
+                has_repetition=True,
+                expected_database=database,
+            )
+        )
+        for arguments in (
+            r'-m other_module --db "C:\Data\journal.db" difftrail.watcher.backup',
+            r'-m difftrail.watcher --db "C:\Data\journal.db.bak"',
+            r'-m difftrail.watcher --db "C:\Data\prefix-journal.db"',
+            r'-m difftrail.watcher --db "C:\Data\journal.db" --db "C:\Other\journal.db"',
+            r'--db "C:\Data\journal.db" -m other_module',
+        ):
+            with self.subTest(arguments=arguments):
+                self.assertTrue(
+                    _watcher_task_needs_repair(
+                        r"C:\Python\pythonw.exe",
+                        arguments,
+                        has_repetition=True,
+                        expected_database=database,
+                    )
+                )
+
+        self.assertFalse(
+            _watcher_task_needs_repair(
+                str(frozen_executable),
+                r'--db "C:\Data\journal.db"',
+                has_repetition=True,
+                expected_database=database,
+                expected_executable=frozen_executable,
+            )
+        )
+        self.assertTrue(
+            _watcher_task_needs_repair(
+                r"C:\Other\difftrail-watcher.exe",
+                r'--db "C:\Data\journal.db"',
+                has_repetition=True,
+                expected_database=database,
+                expected_executable=frozen_executable,
+            )
+        )
+
     def test_fallback_task_uses_the_headless_one_shot_worker(self) -> None:
         with TemporaryDirectory() as directory:
             with Database(Path(directory) / "journal.db") as database, patch(
@@ -161,7 +210,7 @@ class AutomationTests(unittest.TestCase):
         self.assertIn("pythonw.exe", contents)
         automation_source = Path(__file__).parents[1].joinpath("difftrail", "automation.py").read_text(encoding="utf-8")
         self.assertIn("windowless Python interpreter", automation_source)
-        self.assertIn("databaseMatches", automation_source)
+        self.assertIn("_watcher_task_needs_repair", automation_source)
         self.assertIn("New-ScheduledTaskTrigger", contents)
         self.assertIn("-RepetitionInterval", contents)
         self.assertIn("[Math]::Max(60, $IntervalSeconds)", contents)

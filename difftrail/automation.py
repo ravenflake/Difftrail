@@ -9,6 +9,7 @@ drafts. It never applies a Windows remediation on its own.
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -57,6 +58,7 @@ _CRASH_TOKENS = (
     "bugcheck",
     "error",
 )
+_TASK_ARGUMENT_PATTERN = re.compile(r'"([^"]*)"|(\S+)')
 
 
 def _validated_interval(value: Any) -> int:
@@ -156,16 +158,69 @@ def _run_powershell(script: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _task_status(expected_database: Path | None = None) -> dict[str, Any]:
+def _task_arguments(raw_arguments: str) -> list[str]:
+    """Tokenize the simple Windows Task Scheduler argument form we create."""
+
+    normalized = str(raw_arguments or "").casefold()
+    return [
+        match.group(1) if match.group(1) is not None else match.group(2)
+        for match in _TASK_ARGUMENT_PATTERN.finditer(normalized)
+    ]
+
+
+def _watcher_task_needs_repair(
+    command: str,
+    raw_arguments: str,
+    *,
+    has_repetition: bool,
+    expected_database: Path | None = None,
+    expected_executable: Path | None = None,
+) -> bool:
+    """Return whether a scheduled watcher action is missing required invariants."""
+
+    normalized_command = str(command or "").strip().casefold().strip('"')
+    arguments = _task_arguments(raw_arguments)
+    is_python_watcher = normalized_command.endswith(r"\pythonw.exe")
+    is_frozen_watcher = normalized_command.endswith("difftrail-watcher.exe")
+    executable_matches = (
+        expected_executable is None
+        or normalized_command == str(expected_executable).casefold()
+    )
+    has_watcher_module = any(
+        token == "-m" and index + 1 < len(arguments) and arguments[index + 1] == "difftrail.watcher"
+        for index, token in enumerate(arguments)
+    )
+    is_one_shot = is_frozen_watcher or (is_python_watcher and has_watcher_module)
+    database_values = [
+        arguments[index + 1]
+        for index, token in enumerate(arguments[:-1])
+        if token == "--db"
+    ]
+    database_matches = (
+        expected_database is None
+        or (
+            len(database_values) == 1
+            and database_values[0] == str(expected_database).casefold()
+        )
+    )
+    return not (
+        has_repetition
+        and (is_python_watcher or is_frozen_watcher)
+        and executable_matches
+        and is_one_shot
+        and database_matches
+    )
+
+
+def _task_status(
+    expected_database: Path | None = None,
+    expected_executable: Path | None = None,
+) -> dict[str, Any]:
     if os.name != "nt":
         return _empty_watcher_status(
             supported=False,
             message="Scheduled task controls are available on Windows.",
         )
-
-    expected_database_literal = ""
-    if expected_database is not None:
-        expected_database_literal = str(expected_database).casefold().replace("'", "''")
 
     script = r"""
 $task = Get-ScheduledTask -TaskName 'Difftrail Watcher' -ErrorAction Stop
@@ -173,11 +228,7 @@ $info = Get-ScheduledTaskInfo -TaskName 'Difftrail Watcher' -ErrorAction Stop
 $action = $task.Actions | Select-Object -First 1
 $command = ([string]$action.Execute).ToLowerInvariant()
 $arguments = ([string]$action.Arguments).ToLowerInvariant()
-$expectedDatabase = '__EXPECTED_DATABASE__'
 $hasRepetition = @($task.Triggers | Where-Object { $_.Repetition -and $_.Repetition.Interval }).Count -gt 0
-$isHeadless = $command.EndsWith('\pythonw.exe') -or $command.EndsWith('difftrail-watcher.exe')
-$isOneShot = $arguments.Contains('difftrail.watcher') -or $command.EndsWith('difftrail-watcher.exe')
-$databaseMatches = [string]::IsNullOrWhiteSpace($expectedDatabase) -or $arguments.Contains($expectedDatabase)
 $sentinel = [datetime]'2000-01-01'
 $last = $null
 $next = $null
@@ -185,13 +236,14 @@ if ($info.LastRunTime -and $info.LastRunTime -gt $sentinel) { $last = $info.Last
 if ($info.NextRunTime -and $info.NextRunTime -gt $sentinel) { $next = $info.NextRunTime.ToUniversalTime().ToString('o') }
 [pscustomobject]@{
     state = [string]$task.State
-    needs_repair = -not ($hasRepetition -and $isHeadless -and $isOneShot -and $databaseMatches)
+    command = $command
+    arguments = $arguments
+    has_repetition = $hasRepetition
     last_run_at = $last
     next_run_at = $next
     last_task_result = [int]$info.LastTaskResult
 } | ConvertTo-Json -Compress
 """
-    script = script.replace("__EXPECTED_DATABASE__", expected_database_literal)
     try:
         result = _run_powershell(script)
     except (OSError, subprocess.SubprocessError) as exc:
@@ -227,7 +279,13 @@ if ($info.NextRunTime -and $info.NextRunTime -gt $sentinel) { $next = $info.Next
         last_task_result = int(payload["last_task_result"]) if payload.get("last_task_result") is not None else None
     except (TypeError, ValueError):
         last_task_result = None
-    needs_repair = bool(payload.get("needs_repair", False))
+    needs_repair = _watcher_task_needs_repair(
+        str(payload.get("command") or ""),
+        str(payload.get("arguments") or ""),
+        has_repetition=bool(payload.get("has_repetition", False)),
+        expected_database=expected_database,
+        expected_executable=expected_executable,
+    )
     return {
         "task_name": TASK_NAME,
         "supported": True,
@@ -246,9 +304,10 @@ def automation_snapshot(database: Database) -> dict[str, Any]:
     expected_database = None
     if os.name == "nt" and str(database.path) != ":memory:":
         expected_database = _database_file(database)
+    expected_executable = _expected_watcher_executable() if os.name == "nt" else None
     return {
         "config": load_automation_config(database),
-        "watcher": _task_status(expected_database),
+        "watcher": _task_status(expected_database, expected_executable),
         "notifications": {
             "unread": database.unread_automation_notification_count(),
             "recent": database.list_automation_notifications(limit=25),
@@ -378,11 +437,20 @@ def _task_install_script() -> Path | None:
     return candidate if candidate.is_file() else None
 
 
+def _expected_watcher_executable() -> Path | None:
+    """Return the bundled watcher path when the desktop app is frozen."""
+
+    if not getattr(sys, "frozen", False):
+        return None
+    return Path(sys.executable).resolve().with_name(WATCHER_EXECUTABLE_NAME)
+
+
 def _watcher_executable() -> Path:
     """Return the console-free executable used by the scheduled task."""
 
     if getattr(sys, "frozen", False):
-        candidate = Path(sys.executable).resolve().with_name(WATCHER_EXECUTABLE_NAME)
+        candidate = _expected_watcher_executable()
+        assert candidate is not None
         if not candidate.is_file():
             raise RuntimeError(f"The bundled background watcher is missing at {candidate}")
         return candidate
@@ -456,7 +524,7 @@ def enable_watcher(database: Database, interval_seconds: int | None = None) -> d
     config = load_automation_config(database)
     config["interval_seconds"] = interval
     database.set_meta(AUTOMATION_META_KEY, json.dumps(config, sort_keys=True, separators=(",", ":")))
-    return _task_status(database_file)
+    return _task_status(database_file, _expected_watcher_executable())
 
 
 def disable_watcher(database: Database) -> dict[str, Any]:
@@ -468,7 +536,8 @@ def disable_watcher(database: Database) -> dict[str, Any]:
         _run_task_script(uninstall_script, [])
     else:
         _run_schtasks(["/Delete", "/TN", TASK_NAME, "/F"])
-    return _task_status()
+    expected_database = None if str(database.path) == ":memory:" else _database_file(database)
+    return _task_status(expected_database, _expected_watcher_executable())
 
 
 def _is_crash_signal(event: Event) -> bool:
