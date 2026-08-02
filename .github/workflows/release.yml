@@ -1,0 +1,110 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  validate-version:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Validate release tag and metadata
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import re
+          import tomllib
+          from pathlib import Path
+
+          tag = os.environ["RELEASE_TAG"]
+          match = re.fullmatch(r"v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", tag)
+          if match is None:
+              raise SystemExit(f"Release tag must match vMAJOR.MINOR.PATCH, got {tag!r}")
+          expected = ".".join(match.groups())
+
+          with Path("pyproject.toml").open("rb") as handle:
+              python_version = tomllib.load(handle)["project"]["version"]
+          with Path("ui/package.json").open(encoding="utf-8") as handle:
+              ui_version = json.load(handle)["version"]
+          with Path("ui/src-tauri/tauri.conf.json").open(encoding="utf-8") as handle:
+              tauri_version = json.load(handle)["version"]
+          with Path("ui/src-tauri/Cargo.toml").open("rb") as handle:
+              cargo_version = tomllib.load(handle)["package"]["version"]
+          with Path("ui/src-tauri/Cargo.lock").open("rb") as handle:
+              lock_packages = tomllib.load(handle)["package"]
+          lock_version = next(item["version"] for item in lock_packages if item["name"] == "difftrail-desktop")
+
+          versions = {
+              "pyproject.toml": python_version,
+              "ui/package.json": ui_version,
+              "ui/src-tauri/tauri.conf.json": tauri_version,
+              "ui/src-tauri/Cargo.toml": cargo_version,
+              "ui/src-tauri/Cargo.lock": lock_version,
+          }
+          mismatches = {path: version for path, version in versions.items() if version != expected}
+          if mismatches:
+              details = ", ".join(f"{path}={version!r}" for path, version in mismatches.items())
+              raise SystemExit(f"Release {tag} expects {expected}; metadata mismatch: {details}")
+          print(f"Validated {tag}: {expected} matches all release metadata")
+          PY
+
+  publish-artifact:
+    needs: validate-version
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install UI dependencies
+        run: npm ci
+
+      - name: Install backend build tooling
+        run: python -m pip install --disable-pip-version-check "pyinstaller>=6.0"
+
+      - name: Build Windows installer
+        run: npm run desktop:build
+
+      - name: Publish Windows installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: difftrail-windows-installer-${{ github.ref_name }}
+          path: ui/src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
+          retention-days: 30

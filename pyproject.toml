@@ -7,9 +7,13 @@ name = "difftrail"
 version = "0.1.0"
 description = "A local-first Windows change journal and evidence-backed incident investigator."
 readme = "README.md"
+license = {file = "LICENSE"}
 requires-python = ">=3.11"
 authors = [{name = "Difftrail contributors"}]
 dependencies = []
+
+[project.optional-dependencies]
+build = ["pyinstaller>=6.0"]
 
 [project.urls]
 Homepage = "https://github.com/ravenflake/Difftrail"

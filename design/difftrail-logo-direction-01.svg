@@ -1,0 +1,118 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 900" role="img" aria-labelledby="title desc">
+  <title id="title">Difftrail logo direction: the change trail</title>
+  <desc id="desc">A design sheet showing a vector logo concept for Difftrail, a system change journal.</desc>
+
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#24363a" flood-opacity=".10" />
+    </filter>
+
+    <g id="trail-mark">
+      <path d="M26 18V34C26 44 34 52 44 52H67" fill="none" stroke="currentColor" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" />
+      <path d="M67 52H45C35 52 27 60 27 70V82" fill="none" stroke="currentColor" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" />
+      <path d="M67 52H82" fill="none" stroke="#d6b06e" stroke-width="9" stroke-linecap="round" />
+      <circle cx="26" cy="18" r="4.5" fill="#d6b06e" />
+      <circle cx="82" cy="52" r="4.5" fill="#d6b06e" />
+    </g>
+
+    <g id="trail-mark-mono">
+      <path d="M26 18V34C26 44 34 52 44 52H67" fill="none" stroke="currentColor" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" />
+      <path d="M67 52H45C35 52 27 60 27 70V82" fill="none" stroke="currentColor" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" />
+      <path d="M67 52H82" fill="none" stroke="currentColor" stroke-width="9" stroke-linecap="round" />
+      <circle cx="26" cy="18" r="4.5" fill="currentColor" />
+      <circle cx="82" cy="52" r="4.5" fill="currentColor" />
+    </g>
+
+    <style>
+      .ui-text { font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif; }
+      .eyebrow { fill: #6b787a; font-size: 12px; font-weight: 700; letter-spacing: 2.2px; }
+      .eyebrow-light { fill: #9bb0ae; font-size: 11px; font-weight: 700; letter-spacing: 2px; }
+      .body { fill: #59626b; font-size: 15px; }
+      .small { fill: #697579; font-size: 12px; }
+      .small-light { fill: #a6b5b6; font-size: 12px; }
+      .card-title { fill: #1f2b35; font-size: 17px; font-weight: 700; }
+      .card-copy { fill: #59626b; font-size: 13px; }
+      .wordmark { font-size: 37px; letter-spacing: -1.4px; }
+      .wordmark-small { font-size: 20px; letter-spacing: -.6px; }
+      .note-number { fill: #d6b06e; font-size: 15px; font-weight: 750; }
+    </style>
+  </defs>
+
+  <rect width="1400" height="900" fill="#f2efe8" />
+
+  <g class="ui-text">
+    <text x="72" y="64" class="eyebrow">DIFFTRAIL / LOGO DIRECTION 01</text>
+    <text x="72" y="119" fill="#1f2b35" font-size="46" font-weight="700" letter-spacing="-1.8">The change trail</text>
+    <text x="72" y="153" class="body">A calm, compact mark for finding what moved between two system states.</text>
+
+    <g transform="translate(1067 52)">
+      <rect width="45" height="8" rx="4" fill="#1f3038" />
+      <rect x="55" width="45" height="8" rx="4" fill="#125e69" />
+      <rect x="110" width="45" height="8" rx="4" fill="#d6b06e" />
+      <text x="0" y="30" class="small">sidebar / teal / change point</text>
+    </g>
+
+    <!-- Sidebar lockup -->
+    <g filter="url(#shadow)">
+      <rect x="72" y="205" width="760" height="260" rx="18" fill="#1f3038" />
+    </g>
+    <text x="106" y="244" class="eyebrow-light">SIDEBAR LOCKUP</text>
+    <g transform="translate(112 279) scale(1.08)" color="#f5f1e8">
+      <use href="#trail-mark" />
+    </g>
+    <text x="239" y="329" class="wordmark" fill="#f5f1e8" font-weight="700">Diff<tspan fill="#c5d3d0" font-weight="500">trail</tspan></text>
+    <text x="241" y="358" class="small-light">Know what changed.</text>
+    <path d="M239 389H706" stroke="#40575d" />
+    <text x="239" y="420" class="small-light">A readable path with one deliberate offshoot.</text>
+    <text x="239" y="440" class="small-light">The amber node is the change worth investigating.</text>
+
+    <!-- App icon -->
+    <rect x="860" y="205" width="468" height="260" rx="18" fill="#fffdf9" stroke="#e5e0d6" />
+    <text x="894" y="244" class="eyebrow">APP ICON</text>
+    <g filter="url(#shadow)">
+      <rect x="894" y="268" width="154" height="154" rx="34" fill="#1f3038" />
+    </g>
+    <g transform="translate(916 290) scale(1.24)" color="#f5f1e8">
+      <use href="#trail-mark" />
+    </g>
+    <text x="1090" y="320" class="wordmark-small" fill="#1f2b35" font-weight="700">Diff<tspan fill="#59626b" font-weight="500">trail</tspan></text>
+    <text x="1091" y="347" class="small">deep teal tile + warm change point</text>
+    <text x="1091" y="380" class="card-copy">The icon stays legible without</text>
+    <text x="1091" y="399" class="card-copy">depending on the wordmark.</text>
+
+    <!-- Why it fits -->
+    <rect x="72" y="497" width="760" height="258" rx="18" fill="#fffdf9" stroke="#e5e0d6" />
+    <text x="106" y="537" class="eyebrow">WHY THIS FITS</text>
+    <text x="106" y="578" class="card-title">A small visual story, in three moves.</text>
+
+    <text x="109" y="622" class="note-number">01</text>
+    <text x="149" y="622" fill="#1f2b35" font-size="14" font-weight="700">Trail</text>
+    <text x="149" y="643" class="card-copy">The rounded line feels like a quiet history, not a warning badge.</text>
+
+    <text x="109" y="682" class="note-number">02</text>
+    <text x="149" y="682" fill="#1f2b35" font-size="14" font-weight="700">Diff</text>
+    <text x="149" y="703" class="card-copy">The short offshoot makes “something moved” visible at a glance.</text>
+
+    <text x="109" y="742" class="note-number">03</text>
+    <text x="149" y="742" fill="#1f2b35" font-size="14" font-weight="700">Evidence</text>
+    <text x="211" y="742" class="card-copy">Amber stays an accent, matching the UI’s active/attention language.</text>
+
+    <!-- Scale test -->
+    <rect x="860" y="497" width="468" height="258" rx="18" fill="#1f3038" />
+    <text x="894" y="537" class="eyebrow-light">SMALL-SIZE TEST</text>
+    <text x="894" y="578" fill="#f5f1e8" font-size="17" font-weight="700">Still a trail at 16 px.</text>
+    <g transform="translate(912 606) scale(.18)" color="#f5f1e8"><use href="#trail-mark" /></g>
+    <text x="942" y="625" class="small-light">16 px</text>
+    <g transform="translate(1005 593) scale(.26)" color="#f5f1e8"><use href="#trail-mark" /></g>
+    <text x="1041" y="625" class="small-light">24 px</text>
+    <g transform="translate(1110 574) scale(.36)" color="#f5f1e8"><use href="#trail-mark" /></g>
+    <text x="1160" y="625" class="small-light">32 px</text>
+    <path d="M894 663H1294" stroke="#40575d" />
+    <text x="894" y="700" class="small-light">Use the same mark in the sidebar, loading state,</text>
+    <text x="894" y="720" class="small-light">taskbar icon, and installer artwork.</text>
+
+    <text x="72" y="832" class="eyebrow">DIRECTIONAL NOTE</text>
+    <text x="72" y="858" fill="#59626b" font-size="14">Keep the wordmark quiet; let the amber node do the explaining.</text>
+    <text x="1328" y="858" fill="#6b787a" font-size="12" text-anchor="end">VECTOR PREVIEW · NOT WIRED TO UI</text>
+  </g>
+</svg>

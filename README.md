@@ -38,7 +38,39 @@ python -m difftrail --db .\difftrail.db investigate "My graphics started crashin
 
 When `--onset` is omitted, an investigation treats the problem as happening now and includes changes from the preceding lookback window. Supply an ISO timestamp when investigating a historical incident.
 
-The first Tkinter desktop interface has been removed for now. The local engine remains usable through the CLI while a replacement interface is designed. A partial scan prints provider warnings instead of treating missing coverage as a clean result.
+The old Tkinter interface has been removed. The local engine remains usable through the CLI, and the replacement Windows desktop interface is now included under `ui/`.
+
+## Desktop interface
+
+The interface is a React/Vite front end in a lightweight Tauri shell. React owns presentation and interaction; the Python engine remains the source of truth behind a loopback-only JSON adapter. The UI never opens SQLite directly, and the adapter omits raw evidence details before data crosses into the browser.
+
+From the repository root, install the Python package as above, then start the desktop app:
+
+```powershell
+Set-Location .\ui
+npm install
+npm run desktop:dev
+```
+
+This starts Vite, the Tauri window, and a local Difftrail API on `127.0.0.1:45917`. The desktop shell uses the database at `%LOCALAPPDATA%\Difftrail\difftrail.db`. Set `$env:DIFFTRAIL_PYTHON` to an explicit interpreter path when the `python` command should not be used.
+
+For browser-only UI work, run the API and Vite separately:
+
+```powershell
+python -m difftrail --db "$env:LOCALAPPDATA\Difftrail\difftrail.db" ui --port 45917
+Set-Location .\ui
+npm run dev
+```
+
+Then open `http://127.0.0.1:5173`. If the API is unavailable, the UI uses a clearly labelled safe preview dataset so the layout can still be inspected; scans, investigations, and feedback require the local API.
+
+The current interface includes Overview, Timeline, Investigate, Incidents, and System health. The important user path is: review meaningful changes, describe a symptom, inspect ranked evidence and counter-evidence, then optionally label whether a candidate was useful. The UI does not claim causality beyond the deterministic evidence available in the local journal. Appearance follows the Windows system theme by default; the lower-left Appearance control can set a persistent light/dark preference or return to system behavior, with a reduced-motion-aware transition.
+
+The desktop shell keeps the sidebar and top-level status chrome fixed to the window. Only the main content column scrolls, using a thin themed scrollbar so navigation and Appearance stay anchored while reviewing longer evidence or investigation forms.
+
+A Windows NSIS installer can be built from `ui` with `npm run desktop:build`, and pull requests build it in the Windows CI job. Install the optional backend build tool first with `python -m pip install -e ".[build]"`. Installer builds package a self-contained PyInstaller backend under the Tauri resource directory; development mode intentionally launches the checked-out Python engine so the foundation remains easy to inspect and test.
+
+A partial scan prints provider warnings instead of treating missing coverage as a clean result.
 
 For a realistic, safe driver-change test, use a new disposable database. The fixture runs the actual scanner and snapshot diff path with Windows-shaped NVIDIA records, then adds a simulated display-reset symptom; it does not call PowerShell or modify drivers:
 
@@ -130,8 +162,10 @@ normalized SnapshotItem / Event models
 SQLite state + semantic journal
         |
 deterministic correlation engine
-        |
-CLI / JSON
+        |                 \
+CLI / JSON      loopback UI API
+                          |
+                    React / Tauri
 ```
 
 Important boundaries:
@@ -156,8 +190,25 @@ Tests cover deterministic ranking, distractors, counter-evidence, missing eviden
 
 App lifecycle history is inferred from current inventory snapshots, so events that happen entirely between scans cannot be recovered yet. Windows Update and driver history currently come from state snapshots rather than a complete historical provider. The validation suite is synthetic and proves ranking behavior under known inputs; it does not yet prove real-world causal accuracy.
 
-The safe scanner-backed scenarios now cover the first controlled MVP cases without changing Windows state. The `validate-host` report now makes passive real-host validation measurable, but real-world causal accuracy, longer/cross-machine overhead, install/uninstall noise, and replacement-interface usability still require evidence from actual use.
+The safe scanner-backed scenarios now cover the first controlled MVP cases without changing Windows state. The `validate-host` report now makes passive real-host validation measurable, and the replacement interface has a working local desktop path with browser-level interaction and accessibility checks. Real-world causal accuracy, longer/cross-machine overhead, install/uninstall noise, and self-contained installer/runtime behavior still require evidence from actual use.
 
 ## Release status
 
-This is an early, CLI-first MVP foundation. The deterministic tests and synthetic validation suite are passing, but real-world causal accuracy, longer and cross-machine overhead, and replacement-interface usability are still open validation work. The project does not make automatic system changes. Investigation output may name a Windows diagnostic surface to open manually; Difftrail never launches it or performs rollback, uninstall, disable, or repair actions.
+This is an early Windows-first MVP foundation with a usable local desktop interface. The deterministic tests and synthetic validation suite are passing, while real-world causal accuracy, longer and cross-machine overhead, and self-contained installer/runtime behavior remain open validation work. The project does not make automatic system changes. Investigation output may name a Windows diagnostic surface to open manually; Difftrail never launches it or performs rollback, uninstall, disable, or repair actions.
+
+## Versioning
+
+Difftrail follows [Semantic Versioning 2.0.0](https://semver.org/) for user-visible releases. The current `0.1.0` line is the first coherent MVP foundation and remains pre-1.0 while real-world validation and self-contained installer work are still open.
+
+- `MAJOR` is reserved for incompatible changes after the product reaches 1.0.
+- `MINOR` adds backward-compatible product functionality within the pre-1.0 MVP line.
+- `PATCH` contains backward-compatible fixes and maintenance.
+- Pre-releases use SemVer suffixes such as `-alpha.1`, `-beta.1`, and `-rc.1`.
+
+Release tags use the `vMAJOR.MINOR.PATCH` form. The Python package, UI package, Tauri configuration, and desktop shell metadata must carry the same release version. A `0.1.0` development build is not a claim of stable real-world diagnostic accuracy.
+
+The tag-triggered release workflow validates the tag format and all release metadata before publishing the Windows installer artifact.
+
+## License
+
+Difftrail is licensed under the GNU General Public License, version 3 only. See [LICENSE](LICENSE) for the complete terms. Third-party dependencies and bundled tools remain under their respective licenses.
