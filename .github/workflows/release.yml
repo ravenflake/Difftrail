@@ -34,10 +34,17 @@ jobs:
           from pathlib import Path
 
           tag = os.environ["RELEASE_TAG"]
-          match = re.fullmatch(r"v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", tag)
+          match = re.fullmatch(
+              r"v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
+              r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?",
+              tag,
+          )
           if match is None:
-              raise SystemExit(f"Release tag must match vMAJOR.MINOR.PATCH, got {tag!r}")
-          expected = ".".join(match.groups())
+              raise SystemExit(
+                  "Release tag must match vMAJOR.MINOR.PATCH with an optional "
+                  f"SemVer prerelease suffix, got {tag!r}"
+              )
+          expected = ".".join(match.group(index) for index in range(1, 4))
 
           with Path("pyproject.toml").open("rb") as handle:
               python_version = tomllib.load(handle)["project"]["version"]
@@ -108,3 +115,58 @@ jobs:
           path: ui/src-tauri/target/release/bundle/nsis/*-setup.exe
           if-no-files-found: error
           retention-days: 30
+
+  create-release:
+    needs: publish-artifact
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Download Windows installer
+        uses: actions/download-artifact@v4
+        with:
+          name: difftrail-windows-installer-${{ github.ref_name }}
+          path: release-assets
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          mapfile -t installers < <(find release-assets -type f -name '*-setup.exe' -print)
+          if (( ${#installers[@]} == 0 )); then
+            echo "No Windows installer was found in the downloaded artifact."
+            exit 1
+          fi
+
+          release_title="Difftrail $RELEASE_TAG"
+          prerelease=false
+          if [[ "$RELEASE_TAG" == "v0.1.0" ]]; then
+            release_title="Difftrail $RELEASE_TAG — MVP Foundation"
+            prerelease=true
+          elif [[ "$RELEASE_TAG" == *-* ]]; then
+            prerelease=true
+          fi
+
+          release_args=(
+            "$RELEASE_TAG"
+            "${installers[@]}"
+            --repo "$REPOSITORY"
+            --title "$release_title"
+            --generate-notes
+            --verify-tag
+          )
+
+          if [[ "$prerelease" == true ]]; then
+            release_args+=(--prerelease)
+          fi
+
+          if gh release view "$RELEASE_TAG" --repo "$REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "${installers[@]}" --repo "$REPOSITORY" --clobber
+          else
+            gh release create "${release_args[@]}"
+          fi
