@@ -1,3 +1,5 @@
+export { subsystemLabel } from "./subsystems";
+
 const SOURCE_LABELS: Record<string, string> = {
   updates: "Windows update",
   "event-log": "Windows signal",
@@ -11,25 +13,8 @@ const SOURCE_LABELS: Record<string, string> = {
   devices: "Device",
 };
 
-const SUBSYSTEM_LABELS: Record<string, string> = {
-  graphics: "Graphics",
-  audio: "Audio",
-  network: "Network",
-  bluetooth: "Bluetooth",
-  driver: "Drivers",
-  startup: "Startup",
-  "windows-update": "Windows update",
-  application: "Applications",
-  device: "Devices",
-  general: "General",
-};
-
 export function sourceLabel(source: string): string {
   return SOURCE_LABELS[source] || source.replace(/[-_]/g, " ");
-}
-
-export function subsystemLabel(subsystem: string): string {
-  return SUBSYSTEM_LABELS[subsystem] || subsystem.replace(/[-_]/g, " ");
 }
 
 export function kindLabel(kind: string): string {

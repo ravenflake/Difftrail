@@ -10,7 +10,8 @@
     "preview": "vite preview --host 127.0.0.1",
     "tauri": "tauri",
     "desktop:dev": "tauri dev",
-    "desktop:build": "tauri build"
+    "backend:build": "powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/build-backend.ps1",
+    "desktop:build": "npm run backend:build && tauri build"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.5.0",

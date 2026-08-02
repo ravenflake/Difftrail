@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { createInvestigation, loadBootstrap, loadTimeline, recordFeedback, runScan } from "./api";
+import { createInvestigation, loadBootstrap, loadTimeline, recordFeedback, runScan, waitForApi } from "./api";
 import { makePreviewBootstrap } from "./mock";
 import type { Bootstrap, Incident, TimelineFilters, View } from "./types";
 import { AppShell } from "./components/AppShell";
@@ -19,6 +19,7 @@ async function loadBootstrapWithRetry() {
   let lastError: unknown;
   for (let attempt = 0; attempt < 4; attempt += 1) {
     try {
+      await waitForApi();
       return await loadBootstrap();
     } catch (reason) {
       lastError = reason;

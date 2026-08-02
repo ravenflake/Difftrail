@@ -37,6 +37,9 @@ SOURCE_LABELS = {
     "windows-reliability": "Windows signal",
 }
 
+ALLOWED_ORIGINS = frozenset({"http://tauri.localhost", "http://127.0.0.1:5173"})
+MAX_REQUEST_BODY_BYTES = 64 * 1024
+
 
 def _public_event(event: dict[str, Any]) -> dict[str, Any]:
     """Return UI-safe event metadata without raw detail payloads."""
@@ -112,9 +115,12 @@ class UiRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(encoded)))
         self.send_header("Cache-Control", "no-store")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        origin = self.headers.get("Origin")
+        if origin in ALLOWED_ORIGINS:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Vary", "Origin")
         self.end_headers()
         self.wfile.write(encoded)
 
@@ -124,8 +130,15 @@ class UiRequestHandler(BaseHTTPRequestHandler):
     def _body(self) -> dict[str, Any]:
         try:
             length = int(self.headers.get("Content-Length", "0"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Content-Length must be an integer") from exc
+        if length < 0:
+            raise ValueError("Content-Length must not be negative")
+        if length > MAX_REQUEST_BODY_BYTES:
+            raise ValueError(f"Request body is too large (maximum {MAX_REQUEST_BODY_BYTES} bytes)")
+        try:
             payload = json.loads(self.rfile.read(length) or b"{}")
-        except (ValueError, json.JSONDecodeError) as exc:
+        except json.JSONDecodeError as exc:
             raise ValueError("Request body must be valid JSON") from exc
         if not isinstance(payload, dict):
             raise ValueError("Request body must be a JSON object")
@@ -140,6 +153,9 @@ class UiRequestHandler(BaseHTTPRequestHandler):
             return callback(database)
 
     def do_OPTIONS(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        if self.headers.get("Origin") not in ALLOWED_ORIGINS:
+            self._error(403, "Origin is not allowed")
+            return
         self._send(204, {})
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API

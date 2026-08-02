@@ -12,6 +12,9 @@ requires-python = ">=3.11"
 authors = [{name = "Difftrail contributors"}]
 dependencies = []
 
+[project.optional-dependencies]
+build = ["pyinstaller>=6.0"]
+
 [project.urls]
 Homepage = "https://github.com/ravenflake/Difftrail"
 Repository = "https://github.com/ravenflake/Difftrail"

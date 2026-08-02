@@ -68,7 +68,7 @@ The current interface includes Overview, Timeline, Investigate, Incidents, and S
 
 The desktop shell keeps the sidebar and top-level status chrome fixed to the window. Only the main content column scrolls, using a thin themed scrollbar so navigation and Appearance stay anchored while reviewing longer evidence or investigation forms.
 
-A Windows NSIS installer can be built from `ui` with `npm run desktop:build`, and pull requests build it in the Windows CI job. The distributed installer still needs a bundled Python runtime/interpreter strategy; development mode intentionally launches the checked-out Python engine so the foundation remains easy to inspect and test.
+A Windows NSIS installer can be built from `ui` with `npm run desktop:build`, and pull requests build it in the Windows CI job. Install the optional backend build tool first with `python -m pip install -e ".[build]"`. Installer builds package a self-contained PyInstaller backend under the Tauri resource directory; development mode intentionally launches the checked-out Python engine so the foundation remains easy to inspect and test.
 
 A partial scan prints provider warnings instead of treating missing coverage as a clean result.
 
@@ -206,6 +206,8 @@ Difftrail follows [Semantic Versioning 2.0.0](https://semver.org/) for user-visi
 - Pre-releases use SemVer suffixes such as `-alpha.1`, `-beta.1`, and `-rc.1`.
 
 Release tags use the `vMAJOR.MINOR.PATCH` form. The Python package, UI package, Tauri configuration, and desktop shell metadata must carry the same release version. A `0.1.0` development build is not a claim of stable real-world diagnostic accuracy.
+
+The tag-triggered release workflow validates the tag format and all release metadata before publishing the Windows installer artifact.
 
 ## License
 

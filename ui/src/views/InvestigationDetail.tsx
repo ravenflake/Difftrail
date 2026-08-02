@@ -45,7 +45,22 @@ export function InvestigationDetail({ incident, onFeedback }: Props) {
 
 function Candidate({ hypothesis, onFeedback, incidentId }: { hypothesis: Hypothesis; onFeedback: Props["onFeedback"]; incidentId: string }) {
   const [open, setOpen] = useState(false);
-  return <div className={`candidate ${open ? "is-open" : ""}`}><button type="button" className="candidate-toggle" onClick={() => setOpen((value) => !value)} aria-expanded={open}><span className={`confidence-mini confidence-${hypothesis.confidence.toLowerCase()}`}>{hypothesis.confidence}</span><span className="candidate-copy"><strong>{hypothesis.event.title}</strong><small>{subsystemLabel(hypothesis.event.subsystem)} · {relativeTime(hypothesis.event.occurred_at)}</small></span><Icon name="chevron" size={15} className={open ? "rotated" : ""} /></button>{open && <div className="candidate-body"><EvidenceList items={hypothesis.evidence} />{hypothesis.counter_evidence.length > 0 && <EvidenceList items={hypothesis.counter_evidence} counter />}<button type="button" className="quiet-link" onClick={() => onFeedback(incidentId, "correct", hypothesis.event.id || undefined)}>Mark this as the useful cause <Icon name="arrow" size={14} /></button></div>}</div>;
+  const [feedbackBusy, setFeedbackBusy] = useState(false);
+  const [feedbackError, setFeedbackError] = useState<string | null>(null);
+
+  async function giveFeedback() {
+    if (feedbackBusy) return;
+    setFeedbackBusy(true); setFeedbackError(null);
+    try {
+      await onFeedback(incidentId, "correct", hypothesis.event.id || undefined);
+    } catch (reason) {
+      setFeedbackError(reason instanceof Error ? reason.message : "Feedback could not be saved.");
+    } finally {
+      setFeedbackBusy(false);
+    }
+  }
+
+  return <div className={`candidate ${open ? "is-open" : ""}`}><button type="button" className="candidate-toggle" onClick={() => setOpen((value) => !value)} aria-expanded={open}><span className={`confidence-mini confidence-${hypothesis.confidence.toLowerCase()}`}>{hypothesis.confidence}</span><span className="candidate-copy"><strong>{hypothesis.event.title}</strong><small>{subsystemLabel(hypothesis.event.subsystem)} · {relativeTime(hypothesis.event.occurred_at)}</small></span><Icon name="chevron" size={15} className={open ? "rotated" : ""} /></button>{open && <div className="candidate-body"><EvidenceList items={hypothesis.evidence} />{hypothesis.counter_evidence.length > 0 && <EvidenceList items={hypothesis.counter_evidence} counter />}<button type="button" className="quiet-link" disabled={feedbackBusy} aria-busy={feedbackBusy} onClick={() => void giveFeedback()}>{feedbackBusy ? "Saving feedback…" : "Mark this as the useful cause"} <Icon name={feedbackBusy ? "clock" : "arrow"} size={14} /></button>{feedbackError && <div className="form-error" role="alert"><Icon name="alert" size={14} /> {feedbackError}</div>}</div>}</div>;
 }
 
 async function copyText(value: string) {

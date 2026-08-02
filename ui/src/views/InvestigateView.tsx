@@ -1,13 +1,12 @@
 import { FormEvent, useState } from "react";
 import type { InvestigationResponse } from "../types";
 import { Icon } from "../components/Icon";
+import { subsystemLabel, subsystemOptions } from "../subsystems";
 
 interface Props {
   busy: boolean;
   onInvestigate: (input: { description: string; subsystem?: string; onset?: string; lookback_days: number }) => Promise<InvestigationResponse>;
 }
-
-const subsystemOptions = ["general", "graphics", "audio", "network", "bluetooth", "driver", "startup", "windows-update", "application", "device"];
 
 export function InvestigateView({ busy, onInvestigate }: Props) {
   const [description, setDescription] = useState("");
@@ -23,7 +22,7 @@ export function InvestigateView({ busy, onInvestigate }: Props) {
     setError(null);
     setSubmitting(true);
     try {
-      await onInvestigate({ description: description.trim(), subsystem: subsystem === "general" ? undefined : subsystem, onset: onset || undefined, lookback_days: Number(lookback) });
+      await onInvestigate({ description: description.trim(), subsystem: subsystem === "general" ? undefined : subsystem, onset: localDateTimeToUtcIso(onset), lookback_days: Number(lookback) });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "The investigation could not be completed.");
     } finally {
@@ -42,7 +41,7 @@ export function InvestigateView({ busy, onInvestigate }: Props) {
           <div className="form-divider" />
           <div className="form-step"><span className="step-number">02</span><div><h3>Set the context</h3><p>These are starting points, not irreversible choices.</p></div></div>
           <div className="form-grid">
-            <label className="field-label"><span>Area <em>optional</em></span><select value={subsystem} onChange={(event) => setSubsystem(event.target.value)}>{subsystemOptions.map((option) => <option key={option} value={option}>{option === "general" ? "Let Difftrail infer it" : option.replace("windows-update", "Windows update")}</option>)}</select></label>
+            <label className="field-label"><span>Area <em>optional</em></span><select value={subsystem} onChange={(event) => setSubsystem(event.target.value)}>{subsystemOptions.map((option) => <option key={option} value={option}>{option === "general" ? "Let Difftrail infer it" : subsystemLabel(option)}</option>)}</select></label>
             <label className="field-label"><span>Look back</span><select value={lookback} onChange={(event) => setLookback(event.target.value)}><option value="1">24 hours</option><option value="3">3 days</option><option value="7">7 days</option><option value="14">14 days</option><option value="30">30 days</option></select></label>
           </div>
           <label className="field-label onset-field"><span>When did it begin? <em>optional</em></span><input type="datetime-local" value={onset} onChange={(event) => setOnset(event.target.value)} /><small>Leave blank if it is happening now.</small></label>
@@ -56,4 +55,10 @@ export function InvestigateView({ busy, onInvestigate }: Props) {
       </form>
     </div>
   );
+}
+
+function localDateTimeToUtcIso(value: string): string | undefined {
+  if (!value) return undefined;
+  const localDate = new Date(value);
+  return Number.isNaN(localDate.getTime()) ? undefined : localDate.toISOString();
 }
