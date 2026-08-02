@@ -96,6 +96,25 @@ class DatabaseTests(unittest.TestCase):
             database.save_events([event])
             self.assertEqual(database.list_events()[0].subsystem, "audio")
 
+    def test_legacy_nvidia_service_event_area_is_normalized_when_read(self) -> None:
+        with Database(":memory:") as database:
+            now = utc_now()
+            event = Event(
+                now,
+                "change",
+                "startup",
+                "updated",
+                "Service NVIDIA Display Container LS updated",
+                entity="NVDisplay.ContainerLocalSystem",
+                source="services",
+                details={
+                    "before": {"path": r"C:\Windows\System32\DriverStore\FileRepository\nv_old\Display.NvContainer\NVDisplay.Container.exe"},
+                    "after": {"path": r"C:\Windows\System32\DriverStore\FileRepository\nv_new\Display.NvContainer\NVDisplay.Container.exe"},
+                },
+            )
+            database.save_events([event])
+            self.assertEqual(database.list_events()[0].subsystem, "graphics")
+
     def test_status_exposes_structured_last_scan_summary(self) -> None:
         with Database(":memory:") as database:
             now = utc_now()

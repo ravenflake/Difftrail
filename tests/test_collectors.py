@@ -6,6 +6,22 @@ from difftrail.collectors.windows import WindowsCollector
 
 
 class CollectorTests(unittest.TestCase):
+    def test_nvidia_display_container_service_is_graphics(self) -> None:
+        collector = WindowsCollector()
+        items = collector._services(
+            [
+                {
+                    "Name": "NVDisplay.ContainerLocalSystem",
+                    "DisplayName": "NVIDIA Display Container LS",
+                    "PathName": r"C:\Windows\System32\DriverStore\FileRepository\nv_dispi.inf\Display.NvContainer\NVDisplay.Container.exe",
+                    "State": "Running",
+                    "StartMode": "Auto",
+                    "StartName": "LocalSystem",
+                }
+            ]
+        )
+        self.assertEqual(items[0].subsystem, "graphics")
+
     def test_nvidia_high_definition_audio_is_audio_not_graphics(self) -> None:
         collector = WindowsCollector()
         items = collector._devices(

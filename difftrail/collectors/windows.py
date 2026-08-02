@@ -32,6 +32,23 @@ def _subsystem_for_device(row: dict[str, Any]) -> str:
     return "driver"
 
 
+def _subsystem_for_service(row: dict[str, Any]) -> str:
+    text = " ".join(_text(row, key) for key in ("Name", "DisplayName", "PathName")).casefold()
+    if any(
+        token in text
+        for token in (
+            "nvidia display",
+            "nvdisplay",
+            "display.nvcontainer",
+            "amd display",
+            "radeon display",
+            "graphics container",
+        )
+    ) or ("driverstore" in text and "display" in text):
+        return "graphics"
+    return "startup"
+
+
 class WindowsCollector:
     """Read-only Windows event and state collector.
 
@@ -237,7 +254,7 @@ $rows | ConvertTo-Json -Depth 5 -Compress
             SnapshotItem(
                 source="services",
                 key=_text(row, "Name"),
-                subsystem="startup",
+                subsystem=_subsystem_for_service(row),
                 display_name=f"Service {_text(row, 'DisplayName', _text(row, 'Name'))}",
                 payload={
                     "name": _text(row, "Name"),

@@ -132,7 +132,7 @@ def _event_subsystem(source: str, stored_subsystem: str, title: str, entity: str
         if isinstance(value, dict):
             context_parts.extend(str(item) for item in value.values())
     context = " ".join(context_parts).casefold()
-    if source in {"devices", "drivers"}:
+    if source in {"devices", "drivers", "services"}:
         if any(token in context for token in ("audio", "sound", "speaker", "microphone", "realtek")):
             return "audio"
         if any(token in context for token in ("display", "graphics", "nvidia", "radeon", "geforce", "amd gpu")):
