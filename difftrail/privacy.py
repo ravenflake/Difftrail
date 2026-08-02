@@ -11,6 +11,8 @@ _USER_PATH = re.compile(r"(?i)([a-z]:\\Users\\)[^\\\s\"']+(?:\\[^\\\s\"']+)*")
 _PROFILE_PATH = re.compile(r"(?i)([a-z]:\\Documents and Settings\\)[^\\\s\"']+(?:\\[^\\\s\"']+)*")
 _UNC_USER_PATH = re.compile(r"(?i)(\\\\[^\\\s\\]+\\Users\\)[^\\\s\"']+(?:\\[^\\\s\"']+)*")
 _LONG_WHITESPACE = re.compile(r"[ \t]{2,}")
+_FAULTING_APPLICATION = re.compile(r"(?im)faulting application name:\s*([^,\r\n]+)")
+_HANGING_APPLICATION = re.compile(r"(?im)the program\s+([^\s,]+)\s+(?:version|stopped interacting)")
 
 
 def redact_text(value: str) -> str:
@@ -32,3 +34,22 @@ def redact_value(value: Any) -> Any:
     if isinstance(value, tuple):
         return [redact_value(item) for item in value]
     return value
+
+
+def extract_safe_application_name(message: str) -> str | None:
+    """Extract only an executable basename from a Windows event message."""
+
+    if not message:
+        return None
+    candidate = None
+    for pattern in (_FAULTING_APPLICATION, _HANGING_APPLICATION):
+        match = pattern.search(message)
+        if match:
+            candidate = match.group(1).strip().strip("\"'")
+            break
+    if not candidate:
+        return None
+    candidate = re.split(r"[\\/]", candidate)[-1].strip()
+    candidate = re.sub(r"[^A-Za-z0-9._() +\-]", "", candidate)
+    candidate = candidate[:128].strip()
+    return candidate or None

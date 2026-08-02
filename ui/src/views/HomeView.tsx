@@ -1,7 +1,6 @@
 import type { Bootstrap, Incident, View } from "../types";
 import { formatDateTime, relativeTime, subsystemLabel } from "../format";
 import { Icon } from "../components/Icon";
-import { BrandMark } from "../components/BrandMark";
 import { EventRow } from "../components/EventRow";
 import { Metric } from "../components/Metric";
 
@@ -20,19 +19,13 @@ export function HomeView({ data, onNavigate, onOpenIncident }: Props) {
 
   return (
     <div className="page-stack">
-      <section className={`hero-status ${attention ? "is-attention" : ""}`}>
-        <div className="hero-status-copy">
-          <div className="overline"><span className="live-pulse" /> {attention ? "Needs a look" : "Quietly observing"}</div>
-          <h2>{attention ? "One scan needs your attention." : "Your system has context."}</h2>
-          <p>{attention ? "Some sources returned warnings. Your existing journal is safe; review coverage before relying on a diagnosis." : "Difftrail is keeping a compact history of meaningful changes and symptoms on this PC."}</p>
-          <div className="hero-meta">
-            <span><Icon name="clock" size={14} /> Last scan {relativeTime(status.last_scan?.finished_at)}</span>
-            <span><Icon name="shield" size={14} /> Local journal</span>
-          </div>
+      <section className={`status-panel ${attention ? "is-attention" : ""}`}>
+        <div>
+          <div className="status-panel-label"><span className="live-pulse" /> {attention ? "Scan needs attention" : "Monitoring locally"}</div>
+          <strong>{attention ? "Review source warnings before investigating." : `${sourceCount}/${status.sources.length} sources capturing`}</strong>
+          <span>Last scan {relativeTime(status.last_scan?.finished_at)}</span>
         </div>
-        <div className="hero-status-art" aria-hidden="true">
-          <BrandMark size={174} className="hero-brand-mark" />
-        </div>
+        {attention && <button type="button" className="button button-secondary button-small" onClick={() => onNavigate("health")}>Review health <Icon name="arrow" size={14} /></button>}
       </section>
 
       <section className="metric-grid" aria-label="Journal summary">
@@ -68,17 +61,6 @@ export function HomeView({ data, onNavigate, onOpenIncident }: Props) {
         </section>
       </div>
 
-      <section className="panel quiet-baseline">
-        <div className="baseline-graphic" aria-hidden="true"><div /><div /><div /><div /><div /></div>
-        <div className="baseline-copy"><span className="eyebrow">A useful distinction</span><h3>Events, not logs.</h3><p>Difftrail keeps the story small enough to understand: what changed, when it changed, and what happened next. The underlying evidence stays local and can be inspected when you need it.</p></div>
-        <button type="button" className="button button-tertiary" onClick={() => onNavigate("timeline")}>See the journal <Icon name="arrow" size={15} /></button>
-      </section>
-
-      <section className="privacy-strip">
-        <div className="privacy-strip-icon"><Icon name="shield" size={18} /></div>
-        <div><strong>Private by default.</strong><span>No screenshots, document contents, or network uploads. The UI only receives redacted summaries from the local engine.</span></div>
-        <button type="button" className="quiet-link" onClick={() => onNavigate("health")}>Review health <Icon name="arrow" size={14} /></button>
-      </section>
     </div>
   );
 }

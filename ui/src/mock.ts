@@ -1,4 +1,4 @@
-import type { Bootstrap, EventRecord, Incident, ValidationReport } from "./types";
+import type { AutomationSummary, Bootstrap, EventRecord, Incident, ValidationReport } from "./types";
 
 const ago = (hours: number) => new Date(Date.now() - hours * 3_600_000).toISOString();
 
@@ -65,6 +65,30 @@ const validation: ValidationReport = {
   limits: ["This report measures collection and labeled ranking feedback; it is not causal proof.", "Longer and cross-machine data is still needed."],
 };
 
+const automation: AutomationSummary = {
+  config: {
+    interval_seconds: 300,
+    notifications_enabled: true,
+    notify_on_crashes: true,
+    notify_on_changes: true,
+    notify_on_warnings: true,
+    draft_investigations: true,
+  },
+  watcher: {
+    task_name: "Difftrail Watcher",
+    supported: false,
+    installed: false,
+    running: false,
+    state: null,
+    last_run_at: null,
+    next_run_at: null,
+    last_task_result: null,
+    message: "Connect the local journal to control background automation.",
+  },
+  notifications: { unread: 0, recent: [] },
+  drafts: 0,
+};
+
 export function makePreviewBootstrap(): Bootstrap {
   return {
     version: "preview",
@@ -82,5 +106,6 @@ export function makePreviewBootstrap(): Bootstrap {
     events: [symptom, graphicsChange, { ...graphicsChange, id: "preview-app-update", occurred_at: ago(17), subsystem: "application", title: "Discord updated", entity: "Discord", severity: "low", source: "apps", source_label: "Application" }, { ...graphicsChange, id: "preview-service", occurred_at: ago(30), subsystem: "startup", title: "Background service added", entity: "Difftrail Fixture Helper", severity: "medium", source: "services", source_label: "Service" }],
     incidents: [previewIncident],
     validation,
+    automation,
   };
 }

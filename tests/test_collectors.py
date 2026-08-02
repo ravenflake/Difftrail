@@ -3,9 +3,16 @@ from unittest.mock import patch
 
 from difftrail.collectors.powershell import PowerShellError
 from difftrail.collectors.windows import WindowsCollector
+from difftrail.privacy import extract_safe_application_name
 
 
 class CollectorTests(unittest.TestCase):
+    def test_application_event_identity_is_safe_and_stable(self) -> None:
+        self.assertEqual(
+            extract_safe_application_name(r"Faulting application name: C:\Games\Example.exe, version 1.0"),
+            "Example.exe",
+        )
+
     def test_nvidia_display_container_service_is_graphics(self) -> None:
         collector = WindowsCollector()
         items = collector._services(

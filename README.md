@@ -91,6 +91,8 @@ python -m difftrail --db "$env:LOCALAPPDATA\Difftrail\difftrail.db" watch --inte
 
 The watcher snapshots applications, Windows updates, drivers, services, scheduled tasks, startup entries, and present devices. The first successful snapshot of each source is a quiet baseline; later durable state transitions become journal events. Normal service/task runtime state, healthy device status, and localized app/driver display text are retained as context but do not create changes by themselves. NVIDIA/AMD display-container service package-path changes are classified as graphics evidence, while the Studio/Game Ready branch is not inferred unless Windows exposes explicit branch metadata. Event Log collection covers common application crashes/hangs, display-driver resets, unexpected restarts, and unexpected shutdowns.
 
+The desktop app's Automation screen can manage this scheduled task, run a scan on demand, store local notifications for high-value signals and provider warnings, and create reviewable investigation drafts. These automations observe and prepare evidence; they do not change Windows settings or apply remediation.
+
 To start it at logon, review the script and run PowerShell as the user who should own the task:
 
 ```powershell
@@ -98,6 +100,8 @@ To start it at logon, review the script and run PowerShell as the user who shoul
 ```
 
 If the package is installed into the active system Python, `-PythonPath` can be omitted. The script validates the selected interpreter before creating the scheduled task.
+
+Creating a logon task may require administrator approval on Windows. The desktop Automation screen retries through the UAC prompt when Task Scheduler returns `Access is denied`.
 
 Remove it with .\scripts\uninstall-watcher.ps1.
 

@@ -70,6 +70,62 @@ class DatabaseTests(unittest.TestCase):
             )
             self.assertEqual(database.apply_snapshot("services", [stable], occurred_at=now + timedelta(minutes=1)), [])
 
+    def test_bits_trigger_oscillation_is_quiet_but_real_config_change_is_recorded(self) -> None:
+        with Database(":memory:") as database:
+            now = utc_now()
+            running = SnapshotItem(
+                "services",
+                "BITS",
+                "startup",
+                "Service Background Intelligent Transfer Service",
+                {"name": "BITS", "state": "Running", "start_mode": "Auto", "start_name": "LocalSystem"},
+            )
+            stopped = SnapshotItem(
+                "services",
+                "BITS",
+                "startup",
+                "Service Background Intelligent Transfer Service",
+                {"name": "BITS", "state": "Stopped", "start_mode": "Manual", "start_name": "LocalSystem"},
+            )
+            self.assertEqual(database.apply_snapshot("services", [running], occurred_at=now), [])
+            self.assertEqual(database.apply_snapshot("services", [stopped], occurred_at=now + timedelta(minutes=5)), [])
+            self.assertEqual(database.apply_snapshot("services", [running], occurred_at=now + timedelta(minutes=10)), [])
+            disabled = SnapshotItem(
+                "services",
+                "BITS",
+                "startup",
+                "Service Background Intelligent Transfer Service",
+                {"name": "BITS", "state": "Running", "start_mode": "Disabled", "start_name": "LocalSystem"},
+            )
+            self.assertEqual(len(database.apply_snapshot("services", [disabled], occurred_at=now + timedelta(minutes=15))), 1)
+            self.assertEqual(database.count_events("change"), 1)
+
+    def test_legacy_eventlog_entities_are_backfilled_on_reopen(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "journal.db"
+            event = Event(
+                utc_now(),
+                "symptom",
+                "application",
+                "crash",
+                "Application crash detected",
+                entity="Application Error",
+                source="eventlog",
+                details={"message": r"Faulting application name: C:\Games\Example.exe, version 1.0"},
+            )
+            with Database(path) as database:
+                database.save_events([event])
+                database.connection.execute(
+                    "DELETE FROM meta WHERE key = ?",
+                    ("migration:safe-application-entities",),
+                )
+                database.connection.commit()
+
+            with Database(path) as database:
+                stored = database.list_events(kind="symptom")[0]
+                self.assertEqual(stored.entity, "Example.exe")
+                self.assertEqual(stored.details["application_name"], "Example.exe")
+
     def test_legacy_app_keys_are_migrated_without_false_events(self) -> None:
         with Database(":memory:") as database:
             now = utc_now()

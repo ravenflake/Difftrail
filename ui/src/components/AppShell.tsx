@@ -4,6 +4,7 @@ import { Icon, type IconName } from "./Icon";
 import { BrandMark } from "./BrandMark";
 import { relativeTime } from "../format";
 import { applyTheme, getStoredThemeMode, getSystemTheme, persistThemeMode, type Theme, type ThemeMode } from "../theme";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 interface AppShellProps {
   view: View;
@@ -16,12 +17,13 @@ interface AppShellProps {
   children: ReactNode;
 }
 
-const navItems: Array<{ id: View; label: string; icon: IconName; description: string }> = [
-  { id: "home", label: "Overview", icon: "home", description: "What deserves attention" },
-  { id: "timeline", label: "Timeline", icon: "timeline", description: "Meaningful system history" },
-  { id: "investigate", label: "Investigate", icon: "investigate", description: "Connect a problem to a change" },
-  { id: "incidents", label: "Incidents", icon: "incidents", description: "Your investigations" },
-  { id: "health", label: "System health", icon: "health", description: "Coverage and overhead" },
+const navItems: Array<{ id: View; label: string; icon: IconName }> = [
+  { id: "home", label: "Overview", icon: "home" },
+  { id: "timeline", label: "Timeline", icon: "timeline" },
+  { id: "investigate", label: "Investigate", icon: "investigate" },
+  { id: "incidents", label: "Incidents", icon: "incidents" },
+  { id: "health", label: "System health", icon: "health" },
+  { id: "automation", label: "Automation", icon: "clock" },
 ];
 
 const titles: Record<View, string> = {
@@ -30,7 +32,24 @@ const titles: Record<View, string> = {
   investigate: "Investigate a problem",
   incidents: "Incidents",
   health: "System health",
+  automation: "Automation",
 };
+
+type DesktopWindow = ReturnType<typeof getCurrentWindow>;
+
+function getDesktopWindow(): DesktopWindow | null {
+  if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) return null;
+  try {
+    return getCurrentWindow();
+  } catch {
+    return null;
+  }
+}
+
+function toggleDesktopWindow() {
+  const currentWindow = getDesktopWindow();
+  if (currentWindow) void currentWindow.toggleMaximize().catch(() => undefined);
+}
 
 export function AppShell({ view, status, version, connection, scanning, onNavigate, onScan, children }: AppShellProps) {
   const partial = status.last_scan?.status === "partial";
@@ -104,10 +123,7 @@ export function AppShell({ view, status, version, connection, scanning, onNaviga
       <aside className="sidebar" aria-label="Main navigation">
         <div className="brand-lockup">
           <BrandMark size={31} className="sidebar-brand-mark" />
-          <div>
-            <div className="brand-name">Difftrail</div>
-            <div className="brand-tagline">Know what changed.</div>
-          </div>
+          <div className="brand-name">Difftrail</div>
         </div>
 
         <NavigationList view={view} onNavigate={onNavigate} />
@@ -150,9 +166,8 @@ export function AppShell({ view, status, version, connection, scanning, onNaviga
           >
             <Icon name={mobileNavOpen ? "close" : "menu"} size={19} />
           </button>
-          <div className="mobile-brand"><BrandMark size={24} className="mobile-brand-mark" />Difftrail</div>
-          <div className="topbar-title">
-            <span className="eyebrow">Workspace</span>
+          <div className="mobile-brand" data-tauri-drag-region onDoubleClick={toggleDesktopWindow}><BrandMark size={24} className="mobile-brand-mark" />Difftrail</div>
+          <div className="topbar-title topbar-drag-region" data-tauri-drag-region onDoubleClick={toggleDesktopWindow}>
             <h1>{titles[view]}</h1>
           </div>
           <div className="topbar-actions">
@@ -171,6 +186,7 @@ export function AppShell({ view, status, version, connection, scanning, onNaviga
               <Icon name="refresh" size={15} className={scanning ? "spin" : ""} />
               {scanning ? "Scanning" : "Scan now"}
             </button>
+            <WindowControls />
           </div>
         </header>
 
@@ -201,7 +217,6 @@ interface NavigationListProps {
 function NavigationList({ view, onNavigate }: NavigationListProps) {
   return (
     <nav className="nav-list" aria-label="Workspace navigation">
-      <div className="nav-label">Workspace</div>
       {navItems.map((item) => (
         <button
           type="button"
@@ -209,12 +224,11 @@ function NavigationList({ view, onNavigate }: NavigationListProps) {
           className={`nav-item ${view === item.id ? "is-active" : ""}`}
           onClick={() => onNavigate(item.id)}
           aria-current={view === item.id ? "page" : undefined}
-          title={item.description}
+          title={item.label}
         >
           <span className="nav-icon"><Icon name={item.icon} size={17} /></span>
           <span className="nav-copy">
             <span>{item.label}</span>
-            <small>{item.description}</small>
           </span>
         </button>
       ))}
@@ -259,6 +273,67 @@ function ThemeControl({ theme, mode, compact = false, onToggle, onUseSystem }: T
       {!compact && mode !== "system" && (
         <button type="button" className="theme-system-link" onClick={onUseSystem}>Use system theme</button>
       )}
+    </div>
+  );
+}
+
+function WindowControls() {
+  const [desktopWindow, setDesktopWindow] = useState<DesktopWindow | null>(null);
+  const [maximized, setMaximized] = useState(false);
+
+  useEffect(() => {
+    const currentWindow = getDesktopWindow();
+    if (!currentWindow) return;
+
+    setDesktopWindow(currentWindow);
+    let disposed = false;
+    let stopListening: (() => void) | undefined;
+    const syncMaximized = () => {
+      void currentWindow.isMaximized()
+        .then((isMaximized) => {
+          if (!disposed) setMaximized(isMaximized);
+        })
+        .catch(() => undefined);
+    };
+
+    syncMaximized();
+    void currentWindow.onResized(syncMaximized)
+      .then((stop) => {
+        if (disposed) stop();
+        else stopListening = stop;
+      })
+      .catch(() => undefined);
+
+    return () => {
+      disposed = true;
+      stopListening?.();
+    };
+  }, []);
+
+  if (!desktopWindow) return null;
+
+  const runWindowAction = (action: (currentWindow: DesktopWindow) => Promise<void>) => {
+    void action(desktopWindow).catch(() => undefined);
+  };
+
+  const toggleMaximize = () => {
+    void desktopWindow.toggleMaximize()
+      .then(() => desktopWindow.isMaximized())
+      .then(setMaximized)
+      .catch(() => undefined);
+  };
+
+  return (
+    <div className="window-controls" role="group" aria-label="Window controls">
+      <button type="button" className="window-control" aria-label="Minimize Difftrail" title="Minimize" onClick={() => runWindowAction((currentWindow) => currentWindow.minimize())}>
+        <Icon name="minus" size={15} strokeWidth={1.8} />
+      </button>
+      <button type="button" className="window-control" aria-label={maximized ? "Restore Difftrail" : "Maximize Difftrail"} title={maximized ? "Restore" : "Maximize"} onClick={toggleMaximize}>
+        <Icon name={maximized ? "restore" : "maximize"} size={14} strokeWidth={1.7} />
+      </button>
+      <button type="button" className="window-control window-control-close" aria-label="Close Difftrail" title="Close" onClick={() => runWindowAction((currentWindow) => currentWindow.close())}>
+        <Icon name="close" size={15} strokeWidth={1.8} />
+      </button>
     </div>
   );
 }

@@ -25,9 +25,10 @@ export function TimelineView({ events, onLoad }: Props) {
   }, [filters, onLoad]);
 
   const grouped = groupByDay(visibleEvents);
+  const burstCount = Object.values(grouped).reduce((total, dayEvents) => total + groupBursts(dayEvents).filter((group) => group.length > 1).length, 0);
   return (
     <div className="page-stack">
-      <section className="page-intro split-intro"><div><span className="eyebrow">The semantic journal</span><h2>See the story, not the noise.</h2><p>Meaningful changes and symptoms, arranged around time. Select an event to see its local summary.</p></div><div className="intro-aside"><span className="intro-aside-number">{visibleEvents.length}</span><span>events in view</span></div></section>
+      <section className="view-header split-intro"><div><h2>Timeline</h2><p>Changes and symptoms recorded by the local journal.</p></div><div className="intro-aside"><span className="intro-aside-number">{visibleEvents.length}</span><span>events in view</span>{burstCount > 0 && <small>{burstCount} crash burst{burstCount === 1 ? "" : "s"} grouped</small>}</div></section>
       <section className="panel timeline-toolbar">
         <div className="filter-tabs" aria-label="Event type">
           {(["all", "change", "symptom"] as const).map((kind) => <button type="button" aria-pressed={filters.kind === kind} className={filters.kind === kind ? "is-selected" : ""} key={kind} onClick={() => setFilters((current) => ({ ...current, kind }))}>{kind === "all" ? "Everything" : kind === "change" ? "Changes" : "Symptoms"}</button>)}
@@ -39,7 +40,7 @@ export function TimelineView({ events, onLoad }: Props) {
       </section>
       <section className="timeline-stream" aria-live="polite">
         {loading && <div className="loading-line"><span className="loading-bar" /> Updating the journal…</div>}
-        {Object.entries(grouped).map(([day, dayEvents]) => <div className="timeline-day" key={day}><div className="day-label"><span>{day}</span><span className="day-rule" /></div><div className="timeline-events">{dayEvents.map((event) => <EventRow key={event.id || `${event.occurred_at}-${event.title}`} event={event} />)}</div></div>)}
+        {Object.entries(grouped).map(([day, dayEvents]) => <div className="timeline-day" key={day}><div className="day-label"><span>{day}</span><span className="day-rule" /></div><div className="timeline-events">{groupBursts(dayEvents).map((group) => <EventRow key={group[0].id || `${group[0].occurred_at}-${group[0].title}`} event={group[0]} groupedEvents={group.length > 1 ? group : undefined} />)}</div></div>)}
         {!visibleEvents.length && !loading && <div className="large-empty"><div className="empty-icon"><Icon name="timeline" size={22} /></div><h3>No events match that view.</h3><p>Try a broader area or run another scan when you expect something to have changed.</p></div>}
       </section>
     </div>
@@ -52,4 +53,33 @@ function groupByDay(events: EventRecord[]): Record<string, EventRecord[]> {
     (groups[key] ||= []).push(event);
     return groups;
   }, {});
+}
+
+const BURST_WINDOW_MS = 2 * 60 * 1000;
+
+function groupBursts(events: EventRecord[]): EventRecord[][] {
+  const groups: EventRecord[][] = [];
+  for (const event of events) {
+    const previous = groups[groups.length - 1];
+    if (previous && isBurstMember(previous[0], event)) {
+      const anchor = new Date(previous[0].occurred_at).getTime();
+      const current = new Date(event.occurred_at).getTime();
+      if (Number.isFinite(anchor) && Number.isFinite(current) && Math.abs(anchor - current) <= BURST_WINDOW_MS) {
+        previous.push(event);
+        continue;
+      }
+    }
+    groups.push([event]);
+  }
+  return groups;
+}
+
+function isBurstMember(first: EventRecord, candidate: EventRecord): boolean {
+  return first.kind === "symptom"
+    && candidate.kind === "symptom"
+    && first.action === candidate.action
+    && (first.action === "crash" || first.action === "hang")
+    && first.source === candidate.source
+    && first.subsystem === candidate.subsystem
+    && first.entity === candidate.entity;
 }
