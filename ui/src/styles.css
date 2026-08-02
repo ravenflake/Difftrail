@@ -64,11 +64,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .nav-copy small { color: #9bb0ae; font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .nav-item.is-active .nav-copy small { color: #b9cfca; }
 .sidebar-bottom { margin-top: auto; }
-.locality-card { display: flex; gap: 10px; padding: 13px 12px; border: 1px solid rgba(203, 226, 220, 0.14); border-radius: 10px; background: rgba(255, 255, 255, 0.045); }
-.locality-icon { display: grid; place-items: center; width: 28px; height: 28px; flex: 0 0 28px; color: #d3ba83; border-radius: 7px; background: rgba(208, 178, 109, 0.12); }
-.locality-card div:last-child { display: flex; flex-direction: column; gap: 3px; }
-.locality-card strong { color: #e5ece8; font-size: 11px; font-weight: 650; }
-.locality-card span { color: #8da4a0; font-size: 10px; line-height: 1.4; }
 .theme-control { margin-top: 16px; padding: 0 5px; }
 .theme-control-heading { display: flex; align-items: center; justify-content: space-between; margin: 0 7px 7px; color: #9bb0ae; font-size: 10px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
 .theme-control-mode { color: #728987; font-size: 9px; font-weight: 550; letter-spacing: 0.03em; text-transform: none; }
@@ -385,8 +380,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 [data-theme="dark"] .nav-item.is-active .nav-icon { color: #e4c486; }
 [data-theme="dark"] .nav-copy small { color: #8da5a2; }
 [data-theme="dark"] .nav-item.is-active .nav-copy small { color: #b9d2cc; }
-[data-theme="dark"] .locality-card { border-color: rgba(177, 218, 210, 0.16); background: rgba(255, 255, 255, 0.045); }
-[data-theme="dark"] .locality-card span { color: #89a19d; }
 [data-theme="dark"] .version-line { color: #78918e; }
 [data-theme="dark"] .topbar { background: rgba(17, 25, 28, 0.9); }
 [data-theme="dark"] .button-primary { color: #0d292b; background: #72d0c9; box-shadow: 0 3px 0 #398f91; }

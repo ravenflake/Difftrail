@@ -87,13 +87,6 @@ export function AppShell({ view, status, version, connection, scanning, onNaviga
         </nav>
 
         <div className="sidebar-bottom">
-          <div className="locality-card">
-            <div className="locality-icon"><Icon name="shield" size={16} /></div>
-            <div>
-              <strong>Local by default</strong>
-              <span>No cloud. No raw logs exported.</span>
-            </div>
-          </div>
           <ThemeControl theme={theme} mode={themeMode} onToggle={toggleTheme} onUseSystem={useSystemTheme} />
           <div className="version-line">Difftrail {version === "preview" ? "preview" : `v${version}`}</div>
         </div>

@@ -1,0 +1,46 @@
+# CodeRabbit reviews are intentionally focused on high-value, actionable findings.
+language: "en-US"
+early_access: false
+
+reviews:
+  profile: "quiet"
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  review_details: true
+  auto_review:
+    enabled: true
+    drafts: false
+  path_filters:
+    - "!**/dist/**"
+    - "!**/node_modules/**"
+    - "!**/target/**"
+    - "!**/package-lock.json"
+    - "!**/Cargo.lock"
+  path_instructions:
+    - path: "difftrail/**"
+      instructions: |
+        Preserve Difftrail's local-first and read-only safety boundary. Check that
+        causal language is supported by reproducible evidence, that raw evidence
+        and paths do not cross the UI boundary unnecessarily, and that provider
+        failures remain visible instead of becoming false clean results.
+    - path: "tests/**"
+      instructions: |
+        Prefer deterministic tests with explicit ground truth, distractors, and
+        evidence assertions. Flag tests that rely on the host's mutable Windows
+        state or that claim real-world causal accuracy without real evidence.
+    - path: "ui/src/**"
+      instructions: |
+        Review for accessible, restrained React UI patterns. Preserve the fixed
+        sidebar and window-edge content scroll behavior, system-theme default,
+        dark-mode parity, and redacted local API boundary. Avoid decorative UI
+        complexity that does not improve comprehension.
+    - path: ".github/**"
+      instructions: |
+        Keep workflow permissions least-privilege and ensure checks validate the
+        Python engine and the React/Tauri interface without unnecessary duplicate
+        runs.
+
+chat:
+  auto_reply: true

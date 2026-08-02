@@ -195,3 +195,14 @@ The safe scanner-backed scenarios now cover the first controlled MVP cases witho
 ## Release status
 
 This is an early Windows-first MVP foundation with a usable local desktop interface. The deterministic tests and synthetic validation suite are passing, while real-world causal accuracy, longer and cross-machine overhead, and installer packaging remain open validation work. The project does not make automatic system changes. Investigation output may name a Windows diagnostic surface to open manually; Difftrail never launches it or performs rollback, uninstall, disable, or repair actions.
+
+## Versioning
+
+Difftrail follows [Semantic Versioning 2.0.0](https://semver.org/) for user-visible releases. The current `0.1.0` line is the first coherent MVP foundation and remains pre-1.0 while real-world validation and self-contained installer work are still open.
+
+- `MAJOR` is reserved for incompatible changes after the product reaches 1.0.
+- `MINOR` adds backward-compatible product functionality within the pre-1.0 MVP line.
+- `PATCH` contains backward-compatible fixes and maintenance.
+- Pre-releases use SemVer suffixes such as `-alpha.1`, `-beta.1`, and `-rc.1`.
+
+Release tags use the `vMAJOR.MINOR.PATCH` form. The Python package, UI package, Tauri configuration, and desktop shell metadata must carry the same release version. A `0.1.0` development build is not a claim of stable real-world diagnostic accuracy.
