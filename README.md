@@ -205,9 +205,9 @@ Difftrail follows [Semantic Versioning 2.0.0](https://semver.org/) for user-visi
 - `PATCH` contains backward-compatible fixes and maintenance.
 - Pre-releases use SemVer suffixes such as `-alpha.1`, `-beta.1`, and `-rc.1`.
 
-Release tags use the `vMAJOR.MINOR.PATCH` form. The Python package, UI package, Tauri configuration, and desktop shell metadata must carry the same release version. A `0.1.0` development build is not a claim of stable real-world diagnostic accuracy.
+Release tags use the `vMAJOR.MINOR.PATCH` form, with optional SemVer prerelease suffixes such as `-alpha.1`, `-beta.1`, and `-rc.1`. The Python package, UI package, Tauri configuration, and desktop shell metadata must carry the same base release version. A `0.1.0` development build is not a claim of stable real-world diagnostic accuracy.
 
-The tag-triggered release workflow validates the tag format and all release metadata before publishing the Windows installer artifact.
+GitHub Release titles use `Difftrail vX.Y.Z — <short milestone>`. The initial release is named `Difftrail v0.1.0 — MVP Foundation`; prerelease builds are marked as prereleases on GitHub. The tag-triggered release workflow validates the tag format and all release metadata before attaching the Windows installer to the named GitHub Release.
 
 ## License
 
