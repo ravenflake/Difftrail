@@ -68,7 +68,7 @@ The current interface includes Overview, Timeline, Investigate, Incidents, and S
 
 The desktop shell keeps the sidebar and top-level status chrome fixed to the window. Only the main content column scrolls, using a thin themed scrollbar so navigation and Appearance stay anchored while reviewing longer evidence or investigation forms.
 
-A Windows installer build can be produced from `ui` with `npm run desktop:build` after the local Python runtime/interpreter strategy is settled for distribution. Development mode intentionally launches the checked-out Python engine so the foundation remains easy to inspect and test.
+A Windows NSIS installer can be built from `ui` with `npm run desktop:build`, and pull requests build it in the Windows CI job. The distributed installer still needs a bundled Python runtime/interpreter strategy; development mode intentionally launches the checked-out Python engine so the foundation remains easy to inspect and test.
 
 A partial scan prints provider warnings instead of treating missing coverage as a clean result.
 
@@ -190,11 +190,11 @@ Tests cover deterministic ranking, distractors, counter-evidence, missing eviden
 
 App lifecycle history is inferred from current inventory snapshots, so events that happen entirely between scans cannot be recovered yet. Windows Update and driver history currently come from state snapshots rather than a complete historical provider. The validation suite is synthetic and proves ranking behavior under known inputs; it does not yet prove real-world causal accuracy.
 
-The safe scanner-backed scenarios now cover the first controlled MVP cases without changing Windows state. The `validate-host` report now makes passive real-host validation measurable, and the replacement interface has a working local desktop path with browser-level interaction and accessibility checks. Real-world causal accuracy, longer/cross-machine overhead, install/uninstall noise, and installer packaging still require evidence from actual use.
+The safe scanner-backed scenarios now cover the first controlled MVP cases without changing Windows state. The `validate-host` report now makes passive real-host validation measurable, and the replacement interface has a working local desktop path with browser-level interaction and accessibility checks. Real-world causal accuracy, longer/cross-machine overhead, install/uninstall noise, and self-contained installer/runtime behavior still require evidence from actual use.
 
 ## Release status
 
-This is an early Windows-first MVP foundation with a usable local desktop interface. The deterministic tests and synthetic validation suite are passing, while real-world causal accuracy, longer and cross-machine overhead, and installer packaging remain open validation work. The project does not make automatic system changes. Investigation output may name a Windows diagnostic surface to open manually; Difftrail never launches it or performs rollback, uninstall, disable, or repair actions.
+This is an early Windows-first MVP foundation with a usable local desktop interface. The deterministic tests and synthetic validation suite are passing, while real-world causal accuracy, longer and cross-machine overhead, and self-contained installer/runtime behavior remain open validation work. The project does not make automatic system changes. Investigation output may name a Windows diagnostic surface to open manually; Difftrail never launches it or performs rollback, uninstall, disable, or repair actions.
 
 ## Versioning
 
@@ -206,3 +206,7 @@ Difftrail follows [Semantic Versioning 2.0.0](https://semver.org/) for user-visi
 - Pre-releases use SemVer suffixes such as `-alpha.1`, `-beta.1`, and `-rc.1`.
 
 Release tags use the `vMAJOR.MINOR.PATCH` form. The Python package, UI package, Tauri configuration, and desktop shell metadata must carry the same release version. A `0.1.0` development build is not a claim of stable real-world diagnostic accuracy.
+
+## License
+
+Difftrail is licensed under the GNU General Public License, version 3 only. See [LICENSE](LICENSE) for the complete terms. Third-party dependencies and bundled tools remain under their respective licenses.

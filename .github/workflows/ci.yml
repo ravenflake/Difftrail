@@ -64,6 +64,9 @@ jobs:
           cache: npm
           cache-dependency-path: ui/package-lock.json
 
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Install UI dependencies
         run: npm ci
 
@@ -72,3 +75,14 @@ jobs:
 
       - name: Build UI
         run: npm run build
+
+      - name: Build Windows installer
+        run: npm run desktop:build
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: difftrail-windows-installer
+          path: ui/src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
+          retention-days: 7
