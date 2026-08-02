@@ -14,6 +14,7 @@ use tauri::Manager;
 
 const API_HOST: &str = "127.0.0.1";
 const API_READY_TIMEOUT: Duration = Duration::from_secs(15);
+#[cfg(not(debug_assertions))]
 const BACKEND_EXECUTABLE: &str = if cfg!(windows) {
     "difftrail-backend.exe"
 } else {
@@ -37,6 +38,7 @@ fn database_path() -> PathBuf {
     PathBuf::from("difftrail.db")
 }
 
+#[cfg(not(debug_assertions))]
 fn workspace_root(app: &tauri::AppHandle) -> Result<PathBuf, Box<dyn Error>> {
     let resource_dir = app.path().resource_dir().map_err(|error| {
         io::Error::other(format!(
@@ -53,12 +55,9 @@ fn source_root() -> Result<PathBuf, io::Error> {
     }
 
     let current = std::env::current_dir()?;
-    if current.join("pyproject.toml").is_file() {
-        return Ok(current);
-    }
-    if let Some(parent) = current.parent() {
-        if parent.join("pyproject.toml").is_file() {
-            return Ok(parent.to_path_buf());
+    for ancestor in current.ancestors() {
+        if ancestor.join("pyproject.toml").is_file() {
+            return Ok(ancestor.to_path_buf());
         }
     }
     Err(io::Error::new(
@@ -222,22 +221,32 @@ fn wait_for_api_ready(child: &mut Child, port: u16) -> Result<(), Box<dyn Error>
     }
 }
 
-fn start_local_api(app: &tauri::AppHandle, port: u16) -> Result<Child, Box<dyn Error>> {
+fn start_local_api(_app: &tauri::AppHandle, port: u16) -> Result<Child, Box<dyn Error>> {
     let db = database_path();
-    let resource_root = workspace_root(app).map_err(|error| {
-        Box::new(io::Error::other(format!(
-            "{error}; backend output: no backend output was captured"
-        ))) as Box<dyn Error>
-    })?;
-    let bundled_backend = resource_root.join(BACKEND_EXECUTABLE);
     let mut command;
 
-    if bundled_backend.is_file() {
-        command = Command::new(&bundled_backend);
-        command.current_dir(&resource_root);
-    } else {
-        #[cfg(not(debug_assertions))]
-        {
+    #[cfg(debug_assertions)]
+    {
+        let root = source_root().map_err(|error| {
+            Box::new(io::Error::other(format!(
+                "{error}; backend output: no backend output was captured"
+            ))) as Box<dyn Error>
+        })?;
+        let python = std::env::var_os("DIFFTRAIL_PYTHON").unwrap_or_else(|| "python".into());
+        command = Command::new(python);
+        command.current_dir(root);
+        command.arg("-m").arg("difftrail");
+    }
+
+    #[cfg(not(debug_assertions))]
+    {
+        let resource_root = workspace_root(_app).map_err(|error| {
+            Box::new(io::Error::other(format!(
+                "{error}; backend output: no backend output was captured"
+            ))) as Box<dyn Error>
+        })?;
+        let bundled_backend = resource_root.join(BACKEND_EXECUTABLE);
+        if !bundled_backend.is_file() {
             return Err(Box::new(io::Error::new(
                 io::ErrorKind::NotFound,
                 format!(
@@ -246,19 +255,8 @@ fn start_local_api(app: &tauri::AppHandle, port: u16) -> Result<Child, Box<dyn E
                 ),
             )));
         }
-
-        #[cfg(debug_assertions)]
-        {
-            let root = source_root().map_err(|error| {
-                Box::new(io::Error::other(format!(
-                    "{error}; backend output: no backend output was captured"
-                ))) as Box<dyn Error>
-            })?;
-            let python = std::env::var_os("DIFFTRAIL_PYTHON").unwrap_or_else(|| "python".into());
-            command = Command::new(python);
-            command.current_dir(root);
-            command.arg("-m").arg("difftrail");
-        }
+        command = Command::new(&bundled_backend);
+        command.current_dir(&resource_root);
     }
 
     command
