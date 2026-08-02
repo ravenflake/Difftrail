@@ -11,3 +11,10 @@ difftrail.db
 *.db
 *.db-shm
 *.db-wal
+ui/node_modules/
+ui/dist/
+ui/src-tauri/target/
+ui/src-tauri/gen/
+ui-home.png
+ui-incident.png
+ui-timeline.png

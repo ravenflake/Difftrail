@@ -318,6 +318,13 @@ def command_validate_host(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_ui(args: argparse.Namespace) -> int:
+    from .ui_api import serve
+
+    serve(Path(args.db) if args.db else default_database_path(), host=args.host, port=args.port)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="difftrail", description="Local-first Windows change journal and investigator")
     parser.add_argument("--db", help=f"SQLite path (default: {default_database_path()})")
@@ -410,6 +417,11 @@ def build_parser() -> argparse.ArgumentParser:
     validate_host.add_argument("--days", type=int, default=7)
     validate_host.add_argument("--json", action="store_true")
     validate_host.set_defaults(func=command_validate_host)
+
+    ui = subparsers.add_parser("ui", help="Serve the local API used by the Difftrail desktop interface")
+    ui.add_argument("--host", default="127.0.0.1")
+    ui.add_argument("--port", type=int, default=45917)
+    ui.set_defaults(func=command_ui)
 
     return parser
 
