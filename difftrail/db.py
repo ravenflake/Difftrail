@@ -15,6 +15,29 @@ from .privacy import redact_text, redact_value
 DEFAULT_RETENTION_DAYS = 30
 
 
+# These fields describe runtime state or localized display metadata rather
+# than a durable configuration change. They remain in event details for
+# inspection, but do not decide whether a snapshot item changed.
+IGNORED_SNAPSHOT_FIELDS: dict[str, frozenset[str]] = {
+    "apps": frozenset({"name", "publisher"}),
+    "drivers": frozenset({"device_name", "manufacturer"}),
+    "services": frozenset({"display_name", "state"}),
+    "tasks": frozenset({"state"}),
+    "devices": frozenset({"name", "manufacturer", "status"}),
+}
+
+
+REMOVED_SUBSYSTEMS = {
+    "updates": "windows-update",
+    "apps": "application",
+    "drivers": "driver",
+    "services": "startup",
+    "tasks": "startup",
+    "startup": "startup",
+    "devices": "device",
+}
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
@@ -77,6 +100,46 @@ def _canonical_json(value: Any) -> str:
 
 def _hash(value: Any) -> str:
     return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def _comparison_value(source: str, key: str, value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(child_key): _comparison_value(source, str(child_key), child_value) for child_key, child_value in value.items()}
+    if isinstance(value, list):
+        return [_comparison_value(source, key, child) for child in value]
+    if not isinstance(value, str):
+        return value
+    normalized = value.replace("\x00", "").replace("\ufffd", "").replace("\ufffe", "").replace("\uffff", "")
+    # These fields are known to arrive with padding/replacement question
+    # marks from a few registry/service providers. A Windows path cannot
+    # contain a literal question mark, and version/date padding is not data.
+    if (source == "apps" and key in {"install_date", "version"}) or (source == "services" and key == "path"):
+        normalized = normalized.rstrip("?").rstrip()
+    return normalized
+
+
+def _comparison_payload(source: str, payload: dict[str, Any]) -> dict[str, Any]:
+    safe_payload = _comparison_value(source, "", redact_value(payload))
+    ignored = IGNORED_SNAPSHOT_FIELDS.get(source, frozenset())
+    return {key: value for key, value in safe_payload.items() if key not in ignored}
+
+
+def _event_subsystem(source: str, stored_subsystem: str, title: str, entity: str, details: dict[str, Any]) -> str:
+    """Normalize source-only/legacy event areas when reading the journal."""
+
+    context_parts = [title, entity]
+    for value in details.values():
+        if isinstance(value, dict):
+            context_parts.extend(str(item) for item in value.values())
+    context = " ".join(context_parts).casefold()
+    if source in {"devices", "drivers"}:
+        if any(token in context for token in ("audio", "sound", "speaker", "microphone", "realtek")):
+            return "audio"
+        if any(token in context for token in ("display", "graphics", "nvidia", "radeon", "geforce", "amd gpu")):
+            return "graphics"
+        if any(token in context for token in ("bluetooth", "wi-fi", "wifi", "wireless", "ethernet", "network")):
+            return "network"
+    return REMOVED_SUBSYSTEMS.get(stored_subsystem, stored_subsystem)
 
 
 class Database:
@@ -199,16 +262,17 @@ class Database:
 
     @staticmethod
     def _row_to_event(row: sqlite3.Row) -> Event:
+        details = json.loads(row["details_json"] or "{}")
         return Event(
             occurred_at=parse_datetime(row["occurred_at"]),
             kind=row["kind"],
-            subsystem=row["subsystem"],
+            subsystem=_event_subsystem(row["source"], row["subsystem"], row["title"], row["entity"], details),
             action=row["action"],
             title=row["title"],
             entity=row["entity"],
             severity=row["severity"],
             source=row["source"],
-            details=json.loads(row["details_json"] or "{}"),
+            details=details,
             event_id=row["id"],
             fingerprint=row["fingerprint"],
         )
@@ -274,20 +338,26 @@ class Database:
         initialized = self.get_meta(initialized_key) == "1"
 
         generated: list[Event] = []
+        matched_previous_keys: set[str] = set()
         if not initialized and baseline_if_empty:
             self._replace_state(source, current, now)
             self.set_meta(initialized_key, "1")
             return generated
 
         for key, item in current.items():
-            old_payload = previous.get(key)
+            previous_key = key if key in previous else self._legacy_app_key(key, previous, matched_previous_keys, source)
+            old_payload = previous.get(previous_key) if previous_key is not None else None
             safe_payload = redact_value(item.payload)
+            comparison_payload = _comparison_payload(source, item.payload)
             if old_payload is None:
                 action = item.action_on_add
-            elif _hash(old_payload) != _hash(safe_payload):
+            elif _hash(_comparison_payload(source, old_payload)) != _hash(comparison_payload):
                 action = item.action_on_update
             else:
+                matched_previous_keys.add(previous_key)
                 continue
+            if previous_key is not None:
+                matched_previous_keys.add(previous_key)
             title_action = {
                 "installed": "installed",
                 "updated": "updated",
@@ -309,12 +379,12 @@ class Database:
             )
 
         for key, old_payload in previous.items():
-            if key not in current:
+            if key not in matched_previous_keys:
                 generated.append(
                     Event(
                         occurred_at=now,
                         kind="change",
-                        subsystem=source,
+                        subsystem=REMOVED_SUBSYSTEMS.get(source, source),
                         action="removed",
                         title=f"{source.replace('-', ' ').title()} item removed",
                         entity=key,
@@ -328,6 +398,24 @@ class Database:
         self.set_meta(initialized_key, "1")
         self.save_events(generated)
         return generated
+
+    @staticmethod
+    def _legacy_app_key(
+        current_key: str,
+        previous: dict[str, dict[str, Any]],
+        matched_previous_keys: set[str],
+        source: str,
+    ) -> str | None:
+        """Match app state written before app keys were made registry-stable."""
+
+        if source != "apps":
+            return None
+        candidates = [
+            key
+            for key in previous
+            if key not in matched_previous_keys and key.split("|", 1)[0] == current_key
+        ]
+        return candidates[0] if len(candidates) == 1 else None
 
     def _replace_state(self, source: str, current: dict[str, SnapshotItem], now: datetime) -> None:
         timestamp = iso_datetime(now)

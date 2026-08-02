@@ -8,7 +8,7 @@ from difftrail.service import Scanner
 
 class FakeCollector:
     def __init__(self) -> None:
-        self.snapshots = {"services": [SnapshotItem("services", "demo", "startup", "Service Demo", {"state": "Stopped"})]}
+        self.snapshots = {"services": [SnapshotItem("services", "demo", "startup", "Service Demo", {"state": "Stopped", "start_mode": "Auto"})]}
 
     def collect_snapshots(self):
         return self.snapshots
@@ -24,7 +24,7 @@ class ServiceTests(unittest.TestCase):
             first = Scanner(database, collector).scan()
             self.assertEqual(first.state_events, 0)
             self.assertEqual(first.symptom_events, 1)
-            collector.snapshots["services"][0] = SnapshotItem("services", "demo", "startup", "Service Demo", {"state": "Running"})
+            collector.snapshots["services"][0] = SnapshotItem("services", "demo", "startup", "Service Demo", {"state": "Running", "start_mode": "Manual"})
             second = Scanner(database, collector).scan()
             self.assertEqual(second.state_events, 1)
             self.assertEqual(database.count_events("change"), 1)

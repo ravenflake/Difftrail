@@ -36,6 +36,8 @@ python -m difftrail --db .\difftrail.db timeline
 python -m difftrail --db .\difftrail.db investigate "My graphics started crashing after an update" --subsystem graphics
 ```
 
+When `--onset` is omitted, an investigation treats the problem as happening now and includes changes from the preceding lookback window. Supply an ISO timestamp when investigating a historical incident.
+
 The first Tkinter desktop interface has been removed for now. The local engine remains usable through the CLI while a replacement interface is designed. A partial scan prints provider warnings instead of treating missing coverage as a clean result.
 
 For a real Windows journal, run an initial read-only scan and then keep the watcher running:
@@ -45,7 +47,7 @@ python -m difftrail --db "$env:LOCALAPPDATA\Difftrail\difftrail.db" scan
 python -m difftrail --db "$env:LOCALAPPDATA\Difftrail\difftrail.db" watch --interval 300
 ```
 
-The watcher snapshots applications, Windows updates, drivers, services, scheduled tasks, startup entries, and present devices. The first successful snapshot of each source is a quiet baseline; later state transitions become journal events. Event Log collection covers common application crashes/hangs, display-driver resets, unexpected restarts, and unexpected shutdowns.
+The watcher snapshots applications, Windows updates, drivers, services, scheduled tasks, startup entries, and present devices. The first successful snapshot of each source is a quiet baseline; later durable state transitions become journal events. Normal service/task runtime state, healthy device status, and localized app/driver display text are retained as context but do not create changes by themselves. Event Log collection covers common application crashes/hangs, display-driver resets, unexpected restarts, and unexpected shutdowns.
 
 To start it at logon, review the script and run PowerShell as the user who should own the task:
 
@@ -75,7 +77,7 @@ python -m difftrail overhead --interval 15 --warmup 8 --duration 10 --json
 
 The report separates startup CPU/disk activity from steady-state CPU/RSS/disk activity. It measures the watcher process tree, not system-wide load.
 
-Latest local validation: 8 explicit ground-truth scenarios and 100 deterministic perturbations both reached 100% top-1 accuracy, 100% top-3 accuracy, and 100% no-false-High on the synthetic suite. A real Windows host completed two scans with 7 sources, 296 driver rows, 19 initial symptoms, and no provider errors. The latest 10-second steady-state watcher sample used 30.37 MB RSS, 0.000% process-tree CPU, and 0 MB disk I/O; startup peaked at 148.11 MB RSS with 1.736% CPU and 2.220 MB reads. These are host-specific measurements, not a cross-machine guarantee.
+Latest local validation: 8 explicit ground-truth scenarios and 100 deterministic perturbations both reached 100% top-1 accuracy, 100% top-3 accuracy, and 100% no-false-High on the synthetic suite. A real Windows test database completed repeat scans across 7 sources with no provider errors; the follow-up fixed locale/encoding churn, runtime-state churn, stable app identity, and an NVIDIA-audio subsystem classification error. The latest 10-second steady-state watcher sample used 30.37 MB RSS, 0.000% process-tree CPU, and 0 MB disk I/O; startup peaked at 148.11 MB RSS with 1.736% CPU and 2.220 MB reads. These are host-specific measurements, not a cross-machine guarantee.
 
 ## Architecture
 

@@ -6,6 +6,21 @@ from difftrail.collectors.windows import WindowsCollector
 
 
 class CollectorTests(unittest.TestCase):
+    def test_nvidia_high_definition_audio_is_audio_not_graphics(self) -> None:
+        collector = WindowsCollector()
+        items = collector._devices(
+            [
+                {
+                    "InstanceId": "HDAUDIO\\FUNC_01",
+                    "FriendlyName": "NVIDIA High Definition Audio",
+                    "Class": "MEDIA",
+                    "Status": "OK",
+                    "Manufacturer": "NVIDIA",
+                }
+            ]
+        )
+        self.assertEqual(items[0].subsystem, "audio")
+
     def test_driver_rows_with_missing_present_flag_are_still_normalized(self) -> None:
         collector = WindowsCollector()
         items = collector._drivers(

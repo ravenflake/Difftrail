@@ -11,15 +11,20 @@ from .powershell import PowerShellError, run_json
 
 def _text(row: dict[str, Any], key: str, default: str = "") -> str:
     value = row.get(key, default)
-    return "" if value is None else str(value)
+    if value is None:
+        return ""
+    # A few Windows providers expose noncharacters for invalid registry/path
+    # bytes. Treat them consistently so a provider representation glitch does
+    # not look like a service or application change on the next scan.
+    return str(value).replace("\x00", "").replace("\ufffd", "").replace("\ufffe", "").replace("\uffff", "")
 
 
 def _subsystem_for_device(row: dict[str, Any]) -> str:
     text = " ".join(_text(row, key) for key in ("DeviceName", "FriendlyName", "Class", "Manufacturer")).casefold()
-    if any(token in text for token in ("display", "graphics", "nvidia", "radeon", "geforce", "amd gpu")):
-        return "graphics"
     if any(token in text for token in ("audio", "sound", "speaker", "microphone", "realtek")):
         return "audio"
+    if any(token in text for token in ("display", "graphics", "nvidia", "radeon", "geforce", "amd gpu")):
+        return "graphics"
     if any(token in text for token in ("bluetooth", "wi-fi", "wifi", "wireless", "ethernet", "network")):
         return "network"
     if any(token in text for token in ("usb", "keyboard", "mouse", "printer")):
@@ -180,7 +185,7 @@ $rows | ConvertTo-Json -Depth 5 -Compress
     def _apps(self, rows: list[dict[str, Any]]) -> list[SnapshotItem]:
         items: list[SnapshotItem] = []
         for row in rows:
-            key = f"{_text(row, 'Key')}|{_text(row, 'DisplayName')}"
+            key = _text(row, "Key") or _text(row, "DisplayName")
             items.append(
                 SnapshotItem(
                     source="apps",

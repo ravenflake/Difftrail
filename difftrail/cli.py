@@ -5,7 +5,6 @@ import json
 import os
 import sys
 import time
-from datetime import datetime, timedelta
 from pathlib import Path
 
 from . import __version__
@@ -29,6 +28,15 @@ def _database(args: argparse.Namespace) -> Database:
 
 def _print_json(value: object) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2, default=str))
+
+
+def _configure_output() -> None:
+    """Keep human and JSON output usable in Windows consoles and pipes."""
+
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
 
 
 def _format_event(event) -> str:
@@ -80,8 +88,12 @@ def command_timeline(args: argparse.Namespace) -> int:
 
 
 def command_investigate(args: argparse.Namespace) -> int:
-    onset_start = parse_datetime(args.onset) if args.onset else utc_now() - timedelta(hours=24)
-    onset_end = utc_now()
+    now = utc_now()
+    # A problem reported without an explicit onset is assumed to be happening
+    # now. This keeps changes from the immediately preceding scan eligible;
+    # users can still provide --onset when they know when the problem began.
+    onset_start = parse_datetime(args.onset) if args.onset else now
+    onset_end = now
     subsystem = args.subsystem or infer_subsystem(args.description)
     request = IncidentRequest(args.description, onset_start, onset_end, subsystem, args.lookback_days)
     with _database(args) as database:
@@ -206,7 +218,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     investigate = subparsers.add_parser("investigate", help="Rank likely changes for a reported problem")
     investigate.add_argument("description")
-    investigate.add_argument("--onset", help="ISO timestamp, e.g. 2026-08-01T10:30:00Z")
+    investigate.add_argument(
+        "--onset",
+        help="ISO timestamp when the problem began (default: now), e.g. 2026-08-01T10:30:00Z",
+    )
     investigate.add_argument(
         "--subsystem",
         choices=[
@@ -249,6 +264,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
+    _configure_output()
     parser = build_parser()
     args = parser.parse_args(argv)
     try:

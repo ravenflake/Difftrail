@@ -12,13 +12,55 @@ class DatabaseTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             with Database(Path(folder) / "journal.db") as database:
                 now = utc_now()
-                first = SnapshotItem("services", "svc", "startup", "Service Example", {"state": "Stopped"})
+                first = SnapshotItem("services", "svc", "startup", "Service Example", {"state": "Stopped", "start_mode": "Auto"})
                 self.assertEqual(database.apply_snapshot("services", [first], occurred_at=now), [])
-                changed = SnapshotItem("services", "svc", "startup", "Service Example", {"state": "Running"})
+                changed = SnapshotItem("services", "svc", "startup", "Service Example", {"state": "Running", "start_mode": "Manual"})
                 events = database.apply_snapshot("services", [changed], occurred_at=now + timedelta(minutes=5))
                 self.assertEqual(len(events), 1)
                 self.assertEqual(events[0].action, "updated")
                 self.assertEqual(database.count_events("change"), 1)
+
+    def test_runtime_state_and_localized_display_fields_do_not_create_changes(self) -> None:
+        with Database(":memory:") as database:
+            now = utc_now()
+            service = SnapshotItem(
+                "services",
+                "svc",
+                "startup",
+                "Service Example",
+                {"display_name": "Service Example", "state": "Stopped", "start_mode": "Auto"},
+            )
+            database.apply_snapshot("services", [service], occurred_at=now)
+            stable = SnapshotItem(
+                "services",
+                "svc",
+                "startup",
+                "Service Example",
+                {"display_name": "Service Example", "state": "Running", "start_mode": "Auto"},
+            )
+            self.assertEqual(database.apply_snapshot("services", [stable], occurred_at=now + timedelta(minutes=1)), [])
+
+    def test_legacy_app_keys_are_migrated_without_false_events(self) -> None:
+        with Database(":memory:") as database:
+            now = utc_now()
+            old = SnapshotItem(
+                "apps",
+                "Steam App 1|Game?",
+                "application",
+                "Application Game?",
+                {"key": "Steam App 1", "name": "Game?", "publisher": "Publisher?", "version": "1"},
+            )
+            database.apply_snapshot("apps", [old], occurred_at=now)
+            current = SnapshotItem(
+                "apps",
+                "Steam App 1",
+                "application",
+                "Application Game™",
+                {"key": "Steam App 1", "name": "Game™", "publisher": "Publisher", "version": "1"},
+            )
+            self.assertEqual(database.apply_snapshot("apps", [current], occurred_at=now + timedelta(minutes=1)), [])
+            apps_status = next(item for item in database.source_status() if item["source"] == "apps")
+            self.assertEqual(apps_status["item_count"], 1)
 
     def test_incident_and_events_round_trip(self) -> None:
         with Database(":memory:") as database:
@@ -37,6 +79,22 @@ class DatabaseTests(unittest.TestCase):
             event = Event(now, "change", "graphics", "updated", "Display driver updated", source="test")
             self.assertEqual(database.save_events([event, event]), 1)
             self.assertEqual(database.count_events(), 1)
+
+    def test_legacy_device_event_area_is_normalized_when_read(self) -> None:
+        with Database(":memory:") as database:
+            now = utc_now()
+            event = Event(
+                now,
+                "change",
+                "graphics",
+                "added",
+                "Device LG monitor audio endpoint added",
+                entity="LG monitor (NVIDIA High Definition Audio)",
+                source="devices",
+                details={"after": {"name": "LG monitor (NVIDIA High Definition Audio)"}},
+            )
+            database.save_events([event])
+            self.assertEqual(database.list_events()[0].subsystem, "audio")
 
     def test_status_exposes_structured_last_scan_summary(self) -> None:
         with Database(":memory:") as database:

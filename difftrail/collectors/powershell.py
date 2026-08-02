@@ -18,7 +18,16 @@ def run_json(script: str, *, timeout: int = 45) -> list[dict[str, Any]]:
     executable = powershell_path()
     if not executable:
         raise PowerShellError("PowerShell is not available")
-    prelude = "$ErrorActionPreference = 'SilentlyContinue'; $ProgressPreference = 'SilentlyContinue'; "
+    # Windows PowerShell can otherwise emit through the active OEM/code-page
+    # encoding. Explicit UTF-8 keeps names such as driver vendors and app
+    # titles stable between scans and across interactive/non-interactive runs.
+    prelude = (
+        "$ErrorActionPreference = 'SilentlyContinue'; "
+        "$ProgressPreference = 'SilentlyContinue'; "
+        "$utf8 = New-Object System.Text.UTF8Encoding($false); "
+        "[Console]::OutputEncoding = $utf8; "
+        "$OutputEncoding = $utf8; "
+    )
     result = subprocess.run(
         [executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", prelude + script],
         capture_output=True,
