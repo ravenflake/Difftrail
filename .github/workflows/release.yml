@@ -152,6 +152,12 @@ jobs:
             prerelease=true
           fi
 
+          previous_tag="$(gh release list \
+            --repo "$REPOSITORY" \
+            --limit 100 \
+            --json tagName,publishedAt \
+            --jq 'sort_by(.publishedAt) | reverse | .[0].tagName')"
+
           release_args=(
             "$RELEASE_TAG"
             "${installers[@]}"
@@ -160,6 +166,10 @@ jobs:
             --generate-notes
             --verify-tag
           )
+
+          if [[ -n "$previous_tag" && "$previous_tag" != "$RELEASE_TAG" ]]; then
+            release_args+=(--notes-start-tag "$previous_tag")
+          fi
 
           if [[ "$prerelease" == true ]]; then
             release_args+=(--prerelease)
