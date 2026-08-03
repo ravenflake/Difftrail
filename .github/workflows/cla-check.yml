@@ -1,0 +1,40 @@
+name: CLA check
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  cla:
+    name: Contributor license acknowledgement
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify acknowledgement
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const association = pr.author_association;
+
+            // Contributions from the repository owner are already controlled by
+            // the project maintainer and do not require an inbound CLA grant.
+            if (association === 'OWNER') {
+              core.info('Repository owner contribution; CLA acknowledgement not required.');
+              return;
+            }
+
+            const body = pr.body || '';
+            const acknowledgement = /- \[[xX]\] I have read and agree to the Difftrail Contributor License Agreement/;
+
+            if (!acknowledgement.test(body)) {
+              core.setFailed(
+                'External contributors must check the Contributor License Agreement acknowledgement in the pull request template before this PR can be merged.'
+              );
+              return;
+            }
+
+            core.info('CLA acknowledgement found in pull request body.');
