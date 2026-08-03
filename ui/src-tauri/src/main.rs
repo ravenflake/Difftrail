@@ -331,6 +331,7 @@ fn main() {
                     if let Ok(mut child) = process.0.lock() {
                         if let Some(process) = child.as_mut() {
                             let _ = process.kill();
+                            let _ = process.wait();
                         }
                     }
                 }
