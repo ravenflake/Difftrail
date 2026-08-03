@@ -17,9 +17,9 @@ The core works without AI or cloud access. The local SQLite database is the app'
 
 Normalized change history is kept locally for diagnosis. Raw Event Log message text is retained for the configured retention period (30 days by default) and then removed while the compact symptom event remains.
 
-## Run it from a checkout
+## Quick start
 
-Python 3.11+ is enough for the application; there are no runtime dependencies.
+Python 3.11+ is enough for the local engine; it has no third-party Python runtime dependencies. The live collector, Windows Event Log reader, and scheduled watcher require Windows. The deterministic tests and fixture validation can run without a live Windows host.
 
 For an isolated checkout environment:
 
@@ -38,21 +38,25 @@ python -m difftrail --db .\difftrail.db investigate "My graphics started crashin
 
 When `--onset` is omitted, an investigation treats the problem as happening now and includes changes from the preceding lookback window. Supply an ISO timestamp when investigating a historical incident.
 
-The old Tkinter interface has been removed. The local engine remains usable through the CLI, and the replacement Windows desktop interface is now included under `ui/`.
+On Windows, the default database is `%LOCALAPPDATA%\Difftrail\difftrail.db`; pass `--db` to use another SQLite file. The database is local and is the source of truth for the journal, investigations, feedback, and automation state.
+
+The local engine is usable through the CLI, and the Windows desktop interface is included under `ui/`.
 
 ## Desktop interface
 
 The interface is a React/Vite front end in a lightweight Tauri shell. React owns presentation and interaction; the Python engine remains the source of truth behind a loopback-only JSON adapter. The UI never opens SQLite directly, and the adapter omits raw evidence details before data crosses into the browser.
 
+Desktop development additionally requires Node.js 20+, Rust stable, and the Windows build tools required by Tauri.
+
 From the repository root, install the Python package as above, then start the desktop app:
 
 ```powershell
 Set-Location .\ui
-npm install
+npm ci
 npm run desktop:dev
 ```
 
-This starts Vite, the Tauri window, and a local Difftrail API on `127.0.0.1:45917`. The desktop shell uses the database at `%LOCALAPPDATA%\Difftrail\difftrail.db`. Set `$env:DIFFTRAIL_PYTHON` to an explicit interpreter path when the `python` command should not be used.
+This starts Vite, the Tauri window, and a local Difftrail API on an available loopback port. The desktop shell uses the database at `%LOCALAPPDATA%\Difftrail\difftrail.db`. Set `$env:DIFFTRAIL_PYTHON` to an explicit interpreter path when the `python` command should not be used.
 
 For browser-only UI work, run the API and Vite separately:
 
@@ -62,13 +66,22 @@ Set-Location .\ui
 npm run dev
 ```
 
-Then open `http://127.0.0.1:5173`. If the API is unavailable, the UI uses a clearly labelled safe preview dataset so the layout can still be inspected; scans, investigations, and feedback require the local API.
+Then open `http://127.0.0.1:5173`. Port `45917` is the standalone API default; the Tauri shell chooses its API port dynamically. If the API is unavailable, the UI uses a clearly labelled safe preview dataset so the layout can still be inspected; scans, investigations, feedback, and automation controls require the local API.
 
-The current interface includes Overview, Timeline, Investigate, Incidents, and System health. The important user path is: review meaningful changes, describe a symptom, inspect ranked evidence and counter-evidence, then optionally label whether a candidate was useful. The UI does not claim causality beyond the deterministic evidence available in the local journal. Appearance follows the Windows system theme by default; the lower-left Appearance control can set a persistent light/dark preference or return to system behavior, with a reduced-motion-aware transition.
+The current interface includes Overview, Timeline, Investigate, Incidents, System health, and Automation. The important user path is: review meaningful changes, describe a symptom, inspect ranked evidence and counter-evidence, then optionally label whether a candidate was useful. The UI does not claim causality beyond the deterministic evidence available in the local journal. Appearance follows the Windows system theme by default; the Appearance control can set a persistent light/dark preference or return to system behavior.
 
-The desktop shell keeps the sidebar and top-level status chrome fixed to the window. Only the main content column scrolls, using a thin themed scrollbar so navigation and Appearance stay anchored while reviewing longer evidence or investigation forms.
+The desktop shell keeps navigation and top-level status chrome fixed while the main content column scrolls.
 
-A Windows NSIS installer can be built from `ui` with `npm run desktop:build`, and pull requests build it in the Windows CI job. Install the optional backend build tool first with `python -m pip install -e ".[build]"`. Installer builds package a self-contained PyInstaller backend under the Tauri resource directory; development mode intentionally launches the checked-out Python engine so the foundation remains easy to inspect and test.
+A Windows current-user NSIS installer can be built from `ui` with `npm run desktop:build`, and pull requests build it in the Windows CI job. From the repository root, install the optional backend build tool first:
+
+```powershell
+python -m pip install -e ".[build]"
+Set-Location .\ui
+npm ci
+npm run desktop:build
+```
+
+The installer packages self-contained PyInstaller backend and watcher executables under the Tauri resource directory. Development mode intentionally launches the checked-out Python engine so the source remains easy to inspect and test. The generated installer is written under `ui\src-tauri\target\release\bundle\nsis\`.
 
 A partial scan prints provider warnings instead of treating missing coverage as a clean result.
 
@@ -94,17 +107,23 @@ The watcher snapshots applications, Windows updates, drivers, services, schedule
 
 The desktop app's Automation screen manages a hidden, periodic Windows Task Scheduler job, runs a scan on demand, stores local notifications for high-value signals and provider warnings, and creates reviewable investigation drafts. Each scheduled run is a short headless worker rather than a visible terminal process; Task Scheduler handles logon startup, missed runs, and restart-on-failure. These automations observe and prepare evidence; they do not change Windows settings or apply remediation.
 
-To start it at logon, review the script and run PowerShell as the user who should own the task:
+To start it at logon from a checkout, review the script and run PowerShell as the user who should own the task:
 
 ```powershell
 .\scripts\install-watcher.ps1 -PythonPath .\.venv\Scripts\python.exe -IntervalSeconds 300
 ```
 
-If the package is installed into the active system Python, `-PythonPath` can be omitted. The script validates the selected interpreter before creating the scheduled task.
+If the package is installed into the active system Python, `-PythonPath` can be omitted. The selected interpreter must have a sibling `pythonw.exe`, because the scheduled task runs without opening a console. The script validates the selected interpreter before creating the scheduled task.
 
 Creating a logon task may require administrator approval on Windows. The desktop Automation screen retries through the UAC prompt when Task Scheduler returns `Access is denied`.
 
-Remove it with .\scripts\uninstall-watcher.ps1.
+Remove only the scheduled task with:
+
+```powershell
+.\scripts\uninstall-watcher.ps1
+```
+
+Uninstalling the watcher does not delete the local journal.
 
 After a few days of passive collection, build a redacted host-validation report:
 
@@ -155,7 +174,7 @@ python -m difftrail overhead --interval 15 --warmup 8 --duration 10 --json
 
 The report separates startup CPU/disk activity from steady-state CPU/RSS/disk activity. It measures the watcher process tree, not system-wide load.
 
-Latest local validation: 8 explicit ground-truth scenarios and 100 deterministic perturbations both reached 100% top-1 accuracy, 100% top-3 accuracy, and 100% no-false-High on the synthetic suite. A real Windows test database completed repeat scans across 7 sources with no provider errors; the follow-up fixed locale/encoding churn, runtime-state churn, stable app identity, and an NVIDIA-audio subsystem classification error. The latest 10-second steady-state watcher sample used 30.37 MB RSS, 0.000% process-tree CPU, and 0 MB disk I/O; startup peaked at 148.11 MB RSS with 1.736% CPU and 2.220 MB reads. These are host-specific measurements, not a cross-machine guarantee.
+The validation commands report top-1/top-3 ranking and no-false-High metrics for the synthetic suite. Those results measure deterministic behavior against known inputs; they are not a claim of real-world causal accuracy. Host-validation and overhead results are machine-specific, so collect them with the commands above when comparing real installations.
 
 ## Architecture
 
@@ -183,7 +202,7 @@ Important boundaries:
 - difftrail/host_validation.py builds aggregate local validation reports without exporting journal content.
 - difftrail/overhead.py measures watcher resource use without changing system state.
 
-## Test
+## Tests and checks
 
 ```powershell
 python -m unittest discover -s tests -v
@@ -191,28 +210,40 @@ python -m unittest discover -s tests -v
 
 Tests cover deterministic ranking, distractors, counter-evidence, missing evidence, false positives, scanner-backed fixture replays, host-validation aggregation, incident feedback, snapshot baselines, retention, redaction, search, source status, and collector failure handling.
 
+The UI has a focused unit test plus type-check and production-build checks:
+
+```powershell
+Set-Location .\ui
+npm ci
+npm test
+npm run typecheck
+npm run build
+```
+
+Use `npm run desktop:build` for the full Windows installer build; it also requires the Python build extra and Rust toolchain described above.
+
 ## Current limits and next validation
 
 App lifecycle history is inferred from current inventory snapshots, so events that happen entirely between scans cannot be recovered yet. Windows Update and driver history currently come from state snapshots rather than a complete historical provider. The validation suite is synthetic and proves ranking behavior under known inputs; it does not yet prove real-world causal accuracy.
 
-The safe scanner-backed scenarios now cover the first controlled MVP cases without changing Windows state. The `validate-host` report now makes passive real-host validation measurable, and the replacement interface has a working local desktop path with browser-level interaction and accessibility checks. Real-world causal accuracy, longer/cross-machine overhead, install/uninstall noise, and self-contained installer/runtime behavior still require evidence from actual use.
+The safe scanner-backed scenarios cover the first controlled MVP cases without changing Windows state. The `validate-host` report makes passive real-host validation measurable, and the replacement interface has a working local desktop path with focused UI/API checks. Broader end-to-end and accessibility coverage, real-world causal accuracy, longer/cross-machine overhead, install/uninstall noise, and installed-runtime behavior still require evidence from actual use.
 
 ## Release status
 
-This is an early Windows-first MVP foundation with a usable local desktop interface. The deterministic tests and synthetic validation suite are passing, while real-world causal accuracy, longer and cross-machine overhead, and self-contained installer/runtime behavior remain open validation work. The project does not make automatic system changes. Investigation output may name a Windows diagnostic surface to open manually; Difftrail never launches it or performs rollback, uninstall, disable, or repair actions.
+This is an early Windows-first MVP foundation with a usable local desktop interface. A current-user NSIS installer and bundled backend/watcher are buildable, while real-world causal accuracy, longer and cross-machine overhead, and installed-runtime behavior remain open validation work. The project does not make automatic system changes. Investigation output may name a Windows diagnostic surface to open manually; Difftrail never launches it or performs rollback, uninstall, disable, or repair actions.
 
 ## Versioning
 
-Difftrail follows [Semantic Versioning 2.0.0](https://semver.org/) for user-visible releases. The current `0.1.1` line is the first coherent MVP foundation and remains pre-1.0 while real-world validation and self-contained installer work are still open.
+Difftrail follows [Semantic Versioning 2.0.0](https://semver.org/) for user-visible releases. The current `0.1.2` line is the first coherent MVP foundation and remains pre-1.0 while real-world and installed-runtime validation are still open.
 
 - `MAJOR` is reserved for incompatible changes after the product reaches 1.0.
 - `MINOR` adds backward-compatible product functionality within the pre-1.0 MVP line.
 - `PATCH` contains backward-compatible fixes and maintenance.
 - Pre-releases use SemVer suffixes such as `-alpha.1`, `-beta.1`, and `-rc.1`.
 
-Release tags use the `vMAJOR.MINOR.PATCH` form, with optional SemVer prerelease suffixes such as `-alpha.1`, `-beta.1`, and `-rc.1`. The Python package, UI package, Tauri configuration, and desktop shell metadata must carry the same base release version. A `0.1.0` development build is not a claim of stable real-world diagnostic accuracy.
+Release tags use the `vMAJOR.MINOR.PATCH` form, with optional SemVer prerelease suffixes such as `-alpha.1`, `-beta.1`, and `-rc.1`. The Python package, UI package, Tauri configuration, and desktop shell metadata must carry the same base release version. A pre-1.0 build is not a claim of stable real-world diagnostic accuracy.
 
-GitHub Release titles use `Difftrail vX.Y.Z — <short milestone>`. The initial release is named `Difftrail v0.1.0 — MVP Foundation`; prerelease builds are marked as prereleases on GitHub. The tag-triggered release workflow validates the tag format and all release metadata before attaching the Windows installer to the named GitHub Release.
+The tag-triggered release workflow validates the tag format and release metadata before attaching the Windows installer to a GitHub Release. `v0.1.0` receives the title `Difftrail v0.1.0 — MVP Foundation`; other releases use the default `Difftrail vX.Y.Z` title, and prerelease tags are marked as prereleases.
 
 ## License
 
