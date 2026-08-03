@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "difftrail"
-version = "0.1.1"
+version = "0.1.2"
 description = "A local-first Windows change journal and evidence-backed incident investigator."
 readme = "README.md"
 license = {file = "LICENSE"}

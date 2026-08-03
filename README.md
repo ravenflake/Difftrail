@@ -203,7 +203,7 @@ This is an early Windows-first MVP foundation with a usable local desktop interf
 
 ## Versioning
 
-Difftrail follows [Semantic Versioning 2.0.0](https://semver.org/) for user-visible releases. The current `0.1.1` line is the first coherent MVP foundation and remains pre-1.0 while real-world validation and self-contained installer work are still open.
+Difftrail follows [Semantic Versioning 2.0.0](https://semver.org/) for user-visible releases. The current `0.1.2` line is the first coherent MVP foundation and remains pre-1.0 while real-world validation and self-contained installer work are still open.
 
 - `MAJOR` is reserved for incompatible changes after the product reaches 1.0.
 - `MINOR` adds backward-compatible product functionality within the pre-1.0 MVP line.
