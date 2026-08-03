@@ -1,12 +1,30 @@
+import subprocess
 import unittest
 from unittest.mock import patch
 
-from difftrail.collectors.powershell import PowerShellError
+from difftrail.collectors.powershell import PowerShellError, run_json
 from difftrail.collectors.windows import WindowsCollector
 from difftrail.privacy import extract_safe_application_name
 
 
 class CollectorTests(unittest.TestCase):
+    def test_powershell_collection_is_windowless_on_windows(self) -> None:
+        completed = subprocess.CompletedProcess(["powershell.exe"], 0, "[]", "")
+        windowless_flag = 0x08000000
+        with patch("difftrail.collectors.powershell.powershell_path", return_value="powershell.exe"), patch(
+            "difftrail.collectors.powershell.subprocess.run", return_value=completed
+        ) as run, patch("difftrail._process.os.name", "nt"), patch(
+            "difftrail._process.subprocess.CREATE_NO_WINDOW", windowless_flag, create=True
+        ):
+            self.assertEqual(run_json("@() | ConvertTo-Json"), [])
+        self.assertEqual(run.call_args.kwargs["creationflags"], windowless_flag)
+
+        with patch("difftrail.collectors.powershell.powershell_path", return_value="powershell.exe"), patch(
+            "difftrail.collectors.powershell.subprocess.run", return_value=completed
+        ) as run, patch("difftrail._process.os.name", "posix"):
+            self.assertEqual(run_json("@() | ConvertTo-Json"), [])
+        self.assertNotIn("creationflags", run.call_args.kwargs)
+
     def test_application_event_identity_is_safe_and_stable(self) -> None:
         self.assertEqual(
             extract_safe_application_name(r"Faulting application name: C:\Games\Example.exe, version 1.0"),

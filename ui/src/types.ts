@@ -188,6 +188,7 @@ export interface WatcherStatus {
   last_run_at: string | null;
   next_run_at: string | null;
   last_task_result: number | null;
+  needs_repair: boolean;
   message: string | null;
 }
 

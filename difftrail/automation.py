@@ -9,6 +9,7 @@ drafts. It never applies a Windows remediation on its own.
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -19,9 +20,11 @@ from typing import Any, Iterable
 from .correlation import investigation_summary, rank_candidates
 from .db import Database
 from .models import Event, IncidentRequest
+from ._process import _hidden_process_kwargs
 
 
 TASK_NAME = "Difftrail Watcher"
+WATCHER_EXECUTABLE_NAME = "difftrail-watcher.exe"
 TASK_RESULT_HAS_NOT_RUN = 0x41303
 MIN_INTERVAL_SECONDS = 15
 MAX_INTERVAL_SECONDS = 86_400
@@ -55,6 +58,7 @@ _CRASH_TOKENS = (
     "bugcheck",
     "error",
 )
+_TASK_ARGUMENT_PATTERN = re.compile(r'"([^"]*)"|(\S+)')
 
 
 def _validated_interval(value: Any) -> int:
@@ -118,6 +122,7 @@ def _empty_watcher_status(*, supported: bool, message: str) -> dict[str, Any]:
         "last_run_at": None,
         "next_run_at": None,
         "last_task_result": None,
+        "needs_repair": False,
         "message": message,
     }
 
@@ -149,10 +154,68 @@ def _run_powershell(script: str) -> subprocess.CompletedProcess[str]:
         text=True,
         timeout=10,
         check=False,
+        **_hidden_process_kwargs(),
     )
 
 
-def _task_status() -> dict[str, Any]:
+def _task_arguments(raw_arguments: str) -> list[str]:
+    """Tokenize the simple Windows Task Scheduler argument form we create."""
+
+    normalized = str(raw_arguments or "").casefold()
+    return [
+        match.group(1) if match.group(1) is not None else match.group(2)
+        for match in _TASK_ARGUMENT_PATTERN.finditer(normalized)
+    ]
+
+
+def _watcher_task_needs_repair(
+    command: str,
+    raw_arguments: str,
+    *,
+    has_repetition: bool,
+    expected_database: Path | None = None,
+    expected_executable: Path | None = None,
+) -> bool:
+    """Return whether a scheduled watcher action is missing required invariants."""
+
+    normalized_command = str(command or "").strip().casefold().strip('"')
+    arguments = _task_arguments(raw_arguments)
+    is_python_watcher = normalized_command.endswith(r"\pythonw.exe")
+    is_frozen_watcher = normalized_command.endswith("difftrail-watcher.exe")
+    executable_matches = (
+        expected_executable is None
+        or normalized_command == str(expected_executable).casefold()
+    )
+    has_watcher_module = any(
+        token == "-m" and index + 1 < len(arguments) and arguments[index + 1] == "difftrail.watcher"
+        for index, token in enumerate(arguments)
+    )
+    is_one_shot = is_frozen_watcher or (is_python_watcher and has_watcher_module)
+    database_values = [
+        arguments[index + 1]
+        for index, token in enumerate(arguments[:-1])
+        if token == "--db"
+    ]
+    database_matches = (
+        expected_database is None
+        or (
+            len(database_values) == 1
+            and database_values[0] == str(expected_database).casefold()
+        )
+    )
+    return not (
+        has_repetition
+        and (is_python_watcher or is_frozen_watcher)
+        and executable_matches
+        and is_one_shot
+        and database_matches
+    )
+
+
+def _task_status(
+    expected_database: Path | None = None,
+    expected_executable: Path | None = None,
+) -> dict[str, Any]:
     if os.name != "nt":
         return _empty_watcher_status(
             supported=False,
@@ -162,6 +225,10 @@ def _task_status() -> dict[str, Any]:
     script = r"""
 $task = Get-ScheduledTask -TaskName 'Difftrail Watcher' -ErrorAction Stop
 $info = Get-ScheduledTaskInfo -TaskName 'Difftrail Watcher' -ErrorAction Stop
+$action = $task.Actions | Select-Object -First 1
+$command = ([string]$action.Execute).ToLowerInvariant()
+$arguments = ([string]$action.Arguments).ToLowerInvariant()
+$hasRepetition = @($task.Triggers | Where-Object { $_.Repetition -and $_.Repetition.Interval }).Count -gt 0
 $sentinel = [datetime]'2000-01-01'
 $last = $null
 $next = $null
@@ -169,6 +236,9 @@ if ($info.LastRunTime -and $info.LastRunTime -gt $sentinel) { $last = $info.Last
 if ($info.NextRunTime -and $info.NextRunTime -gt $sentinel) { $next = $info.NextRunTime.ToUniversalTime().ToString('o') }
 [pscustomobject]@{
     state = [string]$task.State
+    command = $command
+    arguments = $arguments
+    has_repetition = $hasRepetition
     last_run_at = $last
     next_run_at = $next
     last_task_result = [int]$info.LastTaskResult
@@ -209,6 +279,13 @@ if ($info.NextRunTime -and $info.NextRunTime -gt $sentinel) { $next = $info.Next
         last_task_result = int(payload["last_task_result"]) if payload.get("last_task_result") is not None else None
     except (TypeError, ValueError):
         last_task_result = None
+    needs_repair = _watcher_task_needs_repair(
+        str(payload.get("command") or ""),
+        str(payload.get("arguments") or ""),
+        has_repetition=bool(payload.get("has_repetition", False)),
+        expected_database=expected_database,
+        expected_executable=expected_executable,
+    )
     return {
         "task_name": TASK_NAME,
         "supported": True,
@@ -218,14 +295,19 @@ if ($info.NextRunTime -and $info.NextRunTime -gt $sentinel) { $next = $info.Next
         "last_run_at": _normalize_task_time(payload.get("last_run_at")),
         "next_run_at": _normalize_task_time(payload.get("next_run_at")),
         "last_task_result": last_task_result,
-        "message": _watcher_status_message(state, last_task_result),
+        "needs_repair": needs_repair,
+        "message": _watcher_status_message(state, last_task_result, needs_repair=needs_repair),
     }
 
 
 def automation_snapshot(database: Database) -> dict[str, Any]:
+    expected_database = None
+    if os.name == "nt" and str(database.path) != ":memory:":
+        expected_database = _database_file(database)
+    expected_executable = _expected_watcher_executable() if os.name == "nt" else None
     return {
         "config": load_automation_config(database),
-        "watcher": _task_status(),
+        "watcher": _task_status(expected_database, expected_executable),
         "notifications": {
             "unread": database.unread_automation_notification_count(),
             "recent": database.list_automation_notifications(limit=25),
@@ -254,15 +336,27 @@ def _task_failure_message(result: subprocess.CompletedProcess[str]) -> str:
     return "Could not update the Difftrail scheduled task. Check the local Python installation and Task Scheduler service."
 
 
-def _watcher_status_message(state: str, last_task_result: int | None) -> str | None:
+def _watcher_status_message(
+    state: str,
+    last_task_result: int | None,
+    *,
+    needs_repair: bool = False,
+) -> str | None:
     normalized_state = state.casefold()
+    if needs_repair:
+        return "The background watcher needs to be updated."
     if normalized_state == "disabled":
         return "The watcher task is disabled."
     if normalized_state == "running":
         return None
     if last_task_result == TASK_RESULT_HAS_NOT_RUN:
-        return "The watcher is installed but has not started yet."
-    return "The watcher is installed but not running."
+        return "Background scans are scheduled but have not run yet."
+    if last_task_result not in (None, 0):
+        result_code = last_task_result & 0xFFFFFFFF
+        return f"The last background scan failed (Task Scheduler result 0x{result_code:08X})."
+    if normalized_state == "ready":
+        return "Background scans are scheduled."
+    return "The watcher task is installed but unavailable."
 
 
 def _run_elevated(executable: str, arguments: list[str]) -> subprocess.CompletedProcess[str]:
@@ -280,6 +374,7 @@ def _run_elevated(executable: str, arguments: list[str]) -> subprocess.Completed
         text=True,
         timeout=60,
         check=False,
+        **_hidden_process_kwargs(),
     )
 
 
@@ -302,6 +397,7 @@ def _run_task_script(script: Path, arguments: list[str]) -> None:
         text=True,
         timeout=20,
         check=False,
+        **_hidden_process_kwargs(),
     )
     if result.returncode != 0:
         if _is_access_denied(result):
@@ -322,6 +418,7 @@ def _run_schtasks(arguments: list[str]) -> None:
         text=True,
         timeout=20,
         check=False,
+        **_hidden_process_kwargs(),
     )
     if result.returncode != 0:
         if _is_access_denied(result):
@@ -332,21 +429,48 @@ def _run_schtasks(arguments: list[str]) -> None:
         raise RuntimeError(_task_failure_message(result))
 
 
-def _fallback_task_action(database: Database, interval_seconds: int) -> str:
-    executable = sys.executable
+def _task_install_script() -> Path | None:
     if getattr(sys, "frozen", False):
-        command = [executable, "--db", str(_database_file(database)), "watch", "--interval", str(interval_seconds)]
+        candidate = Path(sys.executable).resolve().with_name("install-watcher.ps1")
     else:
-        command = [
-            executable,
-            "-m",
-            "difftrail",
-            "--db",
-            str(_database_file(database)),
-            "watch",
-            "--interval",
-            str(interval_seconds),
-        ]
+        candidate = Path(__file__).resolve().parent.parent / "scripts" / "install-watcher.ps1"
+    return candidate if candidate.is_file() else None
+
+
+def _expected_watcher_executable() -> Path | None:
+    """Return the bundled watcher path when the desktop app is frozen."""
+
+    if not getattr(sys, "frozen", False):
+        return None
+    return Path(sys.executable).resolve().with_name(WATCHER_EXECUTABLE_NAME)
+
+
+def _watcher_executable() -> Path:
+    """Return the console-free executable used by the scheduled task."""
+
+    if getattr(sys, "frozen", False):
+        candidate = _expected_watcher_executable()
+        assert candidate is not None
+        if not candidate.is_file():
+            raise RuntimeError(f"The bundled background watcher is missing at {candidate}")
+        return candidate
+
+    python = Path(sys.executable).resolve()
+    windowless = python.with_name("pythonw.exe")
+    if not windowless.is_file():
+        raise RuntimeError(
+            f"The windowless Python interpreter is missing at {windowless}. "
+            "Install Python for Windows with pythonw.exe to run the background watcher without a console window."
+        )
+    return windowless
+
+
+def _fallback_task_action(database: Database) -> str:
+    executable = _watcher_executable()
+    if getattr(sys, "frozen", False):
+        command = [str(executable), "--db", str(_database_file(database))]
+    else:
+        command = [str(executable), "-m", "difftrail.watcher", "--db", str(_database_file(database))]
     return subprocess.list2cmdline(command)
 
 
@@ -357,19 +481,29 @@ def enable_watcher(database: Database, interval_seconds: int | None = None) -> d
         interval_seconds if interval_seconds is not None else load_automation_config(database)["interval_seconds"]
     )
     database_file = _database_file(database)
-    scripts_root = Path(__file__).resolve().parent.parent / "scripts"
-    install_script = scripts_root / "install-watcher.ps1"
-    if install_script.is_file() and not getattr(sys, "frozen", False):
+    install_script = _task_install_script()
+    if install_script is not None:
+        script_arguments = [
+            "-IntervalSeconds",
+            str(interval),
+            "-DatabasePath",
+            str(database_file),
+        ]
+        if getattr(sys, "frozen", False):
+            watcher = _watcher_executable()
+            script_arguments.extend(
+                [
+                    "-ExecutablePath",
+                    str(watcher),
+                    "-WorkingDirectory",
+                    str(watcher.parent),
+                ]
+            )
+        else:
+            script_arguments.extend(["-PythonPath", sys.executable])
         _run_task_script(
             install_script,
-            [
-                "-IntervalSeconds",
-                str(interval),
-                "-DatabasePath",
-                str(database_file),
-                "-PythonPath",
-                sys.executable,
-            ],
+            script_arguments,
         )
     else:
         _run_schtasks(
@@ -378,9 +512,11 @@ def enable_watcher(database: Database, interval_seconds: int | None = None) -> d
                 "/TN",
                 TASK_NAME,
                 "/TR",
-                _fallback_task_action(database, interval),
+                _fallback_task_action(database),
                 "/SC",
-                "ONLOGON",
+                "MINUTE",
+                "/MO",
+                str(max(1, (interval + 59) // 60)),
                 "/F",
             ]
         )
@@ -388,7 +524,7 @@ def enable_watcher(database: Database, interval_seconds: int | None = None) -> d
     config = load_automation_config(database)
     config["interval_seconds"] = interval
     database.set_meta(AUTOMATION_META_KEY, json.dumps(config, sort_keys=True, separators=(",", ":")))
-    return _task_status()
+    return _task_status(database_file, _expected_watcher_executable())
 
 
 def disable_watcher(database: Database) -> dict[str, Any]:
@@ -400,7 +536,8 @@ def disable_watcher(database: Database) -> dict[str, Any]:
         _run_task_script(uninstall_script, [])
     else:
         _run_schtasks(["/Delete", "/TN", TASK_NAME, "/F"])
-    return _task_status()
+    expected_database = None if str(database.path) == ":memory:" else _database_file(database)
+    return _task_status(expected_database, _expected_watcher_executable())
 
 
 def _is_crash_signal(event: Event) -> bool:

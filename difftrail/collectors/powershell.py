@@ -5,6 +5,8 @@ import shutil
 import subprocess
 from typing import Any
 
+from .._process import _hidden_process_kwargs
+
 
 class PowerShellError(RuntimeError):
     pass
@@ -36,6 +38,7 @@ def run_json(script: str, *, timeout: int = 45) -> list[dict[str, Any]]:
         errors="replace",
         timeout=timeout,
         check=False,
+        **_hidden_process_kwargs(),
     )
     stdout = result.stdout.strip()
     if result.returncode != 0 and not stdout:

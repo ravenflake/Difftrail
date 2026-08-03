@@ -43,6 +43,7 @@ export default function App() {
   const [selectedIncidentId, setSelectedIncidentId] = useState<string | null>(null);
   const [automationBusy, setAutomationBusy] = useState<"config" | "enable" | "disable" | "run" | "read" | null>(null);
   const [automationError, setAutomationError] = useState<string | null>(null);
+  const [automationNotice, setAutomationNotice] = useState<string | null>(null);
 
   const navigate = useCallback((next: View) => {
     window.location.hash = next;
@@ -144,6 +145,7 @@ export default function App() {
     }
     setAutomationBusy("config");
     setAutomationError(null);
+    setAutomationNotice(null);
     try {
       const response = await updateAutomationConfig(config);
       setData((current) => current ? { ...current, automation: response.automation } : current);
@@ -161,11 +163,17 @@ export default function App() {
     }
     setAutomationBusy(action);
     setAutomationError(null);
+    setAutomationNotice(null);
     try {
       const interval = action === "enable" ? intervalSeconds ?? data?.automation.config.interval_seconds : undefined;
       const response = await updateAutomationWatcher(action, interval);
-      if (action === "run") await refresh();
-      else setData((current) => current ? { ...current, automation: response.automation } : current);
+      if (action === "run") {
+        await refresh();
+        if (response.scan) {
+          const warning = response.scan.errors.length ? ` with ${response.scan.errors.length} warning${response.scan.errors.length === 1 ? "" : "s"}` : "";
+          setAutomationNotice(`Scan completed${warning}: ${response.scan.state_events} changes and ${response.scan.symptom_events} symptoms recorded.`);
+        }
+      } else setData((current) => current ? { ...current, automation: response.automation } : current);
       return true;
     } catch (reason) {
       setAutomationError(reason instanceof Error ? reason.message : "The automation action could not be completed.");
@@ -201,7 +209,7 @@ export default function App() {
       {view === "investigate" && <InvestigateView busy={false} onInvestigate={handleInvestigate} />}
       {view === "incidents" && <IncidentsView incidents={data.incidents} selected={selectedIncident} onSelect={(incident) => setSelectedIncidentId(incident.id)} onNavigate={() => navigate("investigate")} onFeedback={handleFeedback} />}
       {view === "health" && <HealthView data={data} onRecordOverhead={handleRecordOverhead} recording={recordingOverhead} error={overheadError} />}
-      {view === "automation" && <AutomationView automation={data.automation} connection={connection} busy={automationBusy} error={automationError} onConfigSave={handleAutomationConfig} onWatcherAction={handleAutomationWatcher} onMarkRead={handleMarkAutomationRead} onNavigate={navigate} />}
+      {view === "automation" && <AutomationView automation={data.automation} connection={connection} busy={automationBusy} error={automationError} notice={automationNotice} onConfigSave={handleAutomationConfig} onWatcherAction={handleAutomationWatcher} onMarkRead={handleMarkAutomationRead} onNavigate={navigate} />}
     </AppShell>
   );
 }

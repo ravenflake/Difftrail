@@ -83,6 +83,7 @@ const automation: AutomationSummary = {
     last_run_at: null,
     next_run_at: null,
     last_task_result: null,
+    needs_repair: false,
     message: "Connect the local journal to control background automation.",
   },
   notifications: { unread: 0, recent: [] },

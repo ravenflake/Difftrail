@@ -82,16 +82,17 @@ python -m difftrail --db $simulationDb investigate "graphics started failing" --
 
 The simulation requires an empty database so fixture evidence cannot be mixed with real host history. `seed-demo` remains useful for a quick event-only tour; this fixture is the stronger end-to-end test.
 
-For a real Windows journal, run an initial read-only scan and then keep the watcher running:
+For a real Windows journal, run an initial read-only scan, then enable Background watcher in the desktop Automation screen (or use the installation script below):
 
 ```powershell
 python -m difftrail --db "$env:LOCALAPPDATA\Difftrail\difftrail.db" scan
-python -m difftrail --db "$env:LOCALAPPDATA\Difftrail\difftrail.db" watch --interval 300
 ```
+
+The foreground `watch` command remains available for CLI diagnostics; the desktop app uses the hidden periodic Task Scheduler worker.
 
 The watcher snapshots applications, Windows updates, drivers, services, scheduled tasks, startup entries, and present devices. The first successful snapshot of each source is a quiet baseline; later durable state transitions become journal events. Normal service/task runtime state, healthy device status, and localized app/driver display text are retained as context but do not create changes by themselves. NVIDIA/AMD display-container service package-path changes are classified as graphics evidence, while the Studio/Game Ready branch is not inferred unless Windows exposes explicit branch metadata. Event Log collection covers common application crashes/hangs, display-driver resets, unexpected restarts, and unexpected shutdowns.
 
-The desktop app's Automation screen can manage this scheduled task, run a scan on demand, store local notifications for high-value signals and provider warnings, and create reviewable investigation drafts. These automations observe and prepare evidence; they do not change Windows settings or apply remediation.
+The desktop app's Automation screen manages a hidden, periodic Windows Task Scheduler job, runs a scan on demand, stores local notifications for high-value signals and provider warnings, and creates reviewable investigation drafts. Each scheduled run is a short headless worker rather than a visible terminal process; Task Scheduler handles logon startup, missed runs, and restart-on-failure. These automations observe and prepare evidence; they do not change Windows settings or apply remediation.
 
 To start it at logon, review the script and run PowerShell as the user who should own the task:
 
