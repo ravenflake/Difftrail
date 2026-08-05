@@ -18,7 +18,7 @@ You retain copyright in your contribution. The CLA grants the Difftrail Project 
 
 External pull requests containing copyrightable contributions must include the checked visible CLA acknowledgement from the pull request template. The automated check recognizes only that exact visible template acknowledgement.
 
-Repository-owner-authored pull requests do not need that acknowledgement for work owned by the Project Maintainer. If an owner-authored pull request includes third-party copyrightable material, the owner must identify it and record the necessary permission before merging.
+Repository-owner-authored pull requests containing only work owned by the Project Maintainer must include the checked ownership declaration from the pull request template. If an owner-authored pull request includes third-party copyrightable material, the owner must use the CLA acknowledgement or identify the material and record the necessary permission before merging.
 
 If you are contributing on behalf of a company or other legal entity, only agree to the CLA if you are authorized to bind that entity or otherwise have permission to grant the required rights.
 
