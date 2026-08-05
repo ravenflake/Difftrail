@@ -12,7 +12,11 @@ For copyrightable contributions from external contributors, read [`CLA.md`](../C
 
 - [ ] I have read and agree to the Difftrail Contributor License Agreement.
 
-Repository-owner-authored pull requests do not need this acknowledgement for work owned by the Project Maintainer. If an owner-authored pull request includes third-party copyrightable material, the owner must identify it and record the necessary permission before merging.
+For repository-owner-authored pull requests containing only work owned by the Project Maintainer, check this declaration instead:
+
+- [ ] This pull request contains only work owned by the Project Maintainer and no external copyrightable contribution.
+
+If an owner-authored pull request includes third-party copyrightable material, the owner must use the CLA acknowledgement or identify the material and record the necessary permission before merging.
 
 ## Checklist
 
