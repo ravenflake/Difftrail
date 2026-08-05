@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import threading
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -19,6 +20,7 @@ VALID_SCAN_STATUSES = frozenset({"running", "ok", "partial", "failed", "interrup
 VALID_INVESTIGATION_ASSESSMENTS = frozenset(
     {"candidate_found", "insufficient_evidence", "no_recent_changes", "limited_coverage"}
 )
+_DATABASE_INITIALIZATION_LOCK = threading.RLock()
 
 
 # These fields describe runtime state or localized display metadata rather
@@ -239,18 +241,29 @@ class Database:
         database_target = ":memory:" if str(path) == ":memory:" else str(self.path)
         if database_target != ":memory:":
             self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.connection = sqlite3.connect(database_target, timeout=30, check_same_thread=False)
-        self.connection.row_factory = sqlite3.Row
-        self.connection.execute("PRAGMA foreign_keys = ON")
-        self.connection.execute("PRAGMA busy_timeout = 30000")
-        if database_target != ":memory:":
-            self.connection.execute("PRAGMA journal_mode = WAL")
-        self.connection.execute("PRAGMA synchronous = NORMAL")
-        self._run_migrations()
-        # This compatibility backfill intentionally remains safe to rerun. It
-        # also repairs a journal where an older build's marker was lost without
-        # changing the schema version or deleting any evidence.
-        self._backfill_safe_application_entities()
+        # SQLite serializes schema writes, but concurrent first opens can still
+        # race in connection pragmas and leave one constructor with a locked
+        # database. Initialization is short and infrequent, so serialize it in
+        # process and clean up a connection if setup fails before __enter__.
+        with _DATABASE_INITIALIZATION_LOCK:
+            try:
+                self.connection = sqlite3.connect(database_target, timeout=30, check_same_thread=False)
+                self.connection.row_factory = sqlite3.Row
+                self.connection.execute("PRAGMA foreign_keys = ON")
+                self.connection.execute("PRAGMA busy_timeout = 30000")
+                if database_target != ":memory:":
+                    self.connection.execute("PRAGMA journal_mode = WAL")
+                self.connection.execute("PRAGMA synchronous = NORMAL")
+                self._run_migrations()
+                # This compatibility backfill intentionally remains safe to rerun. It
+                # also repairs a journal where an older build's marker was lost without
+                # changing the schema version or deleting any evidence.
+                self._backfill_safe_application_entities()
+            except Exception:
+                connection = getattr(self, "connection", None)
+                if connection is not None:
+                    connection.close()
+                raise
 
     def _run_migrations(self) -> None:
         """Apply numbered, transactional migrations to fresh and legacy journals."""
