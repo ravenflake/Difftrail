@@ -8,13 +8,11 @@
 
 ## Contributor licensing
 
-For copyrightable contributions from external contributors:
+For copyrightable contributions from external contributors, read [`CLA.md`](../CLA.md) before checking this box:
 
-- [ ] I have read and agree to the Difftrail Contributor License Agreement in [`CLA.md`](../CLA.md), and I confirm that I have the right to submit this contribution under those terms.
+- [ ] I have read and agree to the Difftrail Contributor License Agreement.
 
-If you are contributing on behalf of a company or other legal entity, checking this box also confirms that you are authorized to grant the rights described in the CLA.
-
-Repository maintainers making contributions they already own do not need to use this acknowledgement for their own work.
+Repository-owner-authored pull requests do not need this acknowledgement for work owned by the Project Maintainer. If an owner-authored pull request includes third-party copyrightable material, the owner must identify it and record the necessary permission before merging.
 
 ## Checklist
 
