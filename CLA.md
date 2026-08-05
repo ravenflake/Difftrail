@@ -45,7 +45,7 @@ The Project Maintainer is not required to accept, merge, distribute, or continue
 
 For an external pull request containing copyrightable material to be accepted, the contributor must affirm that they have read and agree to this Agreement by checking the visible acknowledgement included in the repository pull request template. The automated CLA check recognizes only that exact visible template acknowledgement.
 
-Repository-owner-authored pull requests are exempt from this inbound acknowledgement for work owned by the Project Maintainer. The Project Maintainer remains responsible for obtaining and recording any necessary permission for third-party material included in an owner-authored pull request.
+Repository-owner-authored pull requests containing only work owned by the Project Maintainer may use the separate checked ownership declaration in the pull request template instead of an inbound CLA acknowledgement. If third-party material is included, the owner must use the CLA acknowledgement or obtain and record the necessary permission before merging.
 
 If a Contribution is made on behalf of a company or other legal entity, the person agreeing must have authority to bind that entity.
 
