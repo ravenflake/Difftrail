@@ -4,6 +4,22 @@ import re
 from typing import Any
 
 
+KNOWN_ERROR_BUCKETS = frozenset(
+    {
+        "updates",
+        "apps",
+        "drivers",
+        "services",
+        "tasks",
+        "startup",
+        "devices",
+        "snapshots",
+        "symptoms",
+        "collector",
+    }
+)
+
+
 # Keep normalized evidence useful while preventing common personal paths from
 # leaking into logs, exports, or the UI. The local database still contains only
 # the normalized/redacted representation; no document contents are collected.
@@ -34,6 +50,13 @@ def redact_value(value: Any) -> Any:
     if isinstance(value, tuple):
         return [redact_value(item) for item in value]
     return value
+
+
+def error_bucket(error: object) -> str:
+    """Return a stable, non-sensitive provider-error category."""
+
+    prefix = str(error).split(":", 1)[0].strip()
+    return prefix if prefix in KNOWN_ERROR_BUCKETS else "other"
 
 
 def extract_safe_application_name(message: str) -> str | None:

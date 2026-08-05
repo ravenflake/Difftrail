@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, Iterable
 
+from .assessment import ASSESSMENT_STATES, NEUTRAL_ASSESSMENT
 from .models import Event, IncidentRequest, ensure_utc, iso_datetime
 
 
@@ -46,11 +47,6 @@ SOURCE_PRIORITY: dict[str, int] = {
     "startup": 3,
     "apps": 1,
 }
-
-ASSESSMENT_STATES = frozenset(
-    {"candidate_found", "insufficient_evidence", "no_recent_changes", "limited_coverage"}
-)
-
 
 @dataclass(frozen=True)
 class Evidence:
@@ -382,6 +378,13 @@ def investigation_summary(
         "onset_end": iso_datetime(request.onset_end),
         "lookback_days": request.lookback_days,
         "method": "deterministic evidence signals; no AI causal inference",
-        "assessment": assessment.as_dict() if assessment else InvestigationAssessment("candidate_found").as_dict(),
+        "assessment": (
+            assessment.as_dict()
+            if assessment
+            else InvestigationAssessment(
+                NEUTRAL_ASSESSMENT,
+                ("No assessment was supplied for this investigation.",),
+            ).as_dict()
+        ),
         "hypotheses": [item.as_dict() for item in ranked],
     }

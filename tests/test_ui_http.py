@@ -6,6 +6,7 @@ from http.client import HTTPConnection
 from pathlib import Path
 
 from difftrail.db import Database
+from difftrail.models import Event, utc_now
 from difftrail.ui_api import UiServer
 
 
@@ -64,9 +65,34 @@ class UiHttpTests(unittest.TestCase):
         self.assertEqual(status, 204)
 
     def test_bundle_routes_return_safe_contracts(self) -> None:
+        with Database(self.database_path) as database:
+            now = utc_now()
+            database.save_events(
+                [
+                    Event(
+                        now,
+                        "symptom",
+                        "graphics",
+                        "crash",
+                        "Game crash",
+                        source="eventlog",
+                        details={"message": r"Faulting application C:\Users\Raven\game.exe"},
+                    ),
+                    Event(
+                        now,
+                        "change",
+                        "apps",
+                        "updated",
+                        "Chat app updated",
+                        source="apps",
+                    ),
+                ]
+            )
         status, payload = self.request("POST", "/api/export-bundle", {"days": 30})
         self.assertEqual(status, 200)
-        self.assertTrue(payload["bundle"]["privacy"]["raw_messages"] == "excluded")
+        self.assertEqual(payload["bundle"]["privacy"]["raw_messages"], "excluded")
+        self.assertNotIn("Raven", json.dumps(payload))
+        self.assertNotIn("Faulting application", json.dumps(payload))
 
         status, validation = self.request("POST", "/api/validate-bundle", {"bundle": payload["bundle"]})
         self.assertEqual(status, 200)
@@ -89,6 +115,22 @@ class UiHttpTests(unittest.TestCase):
         )
         self.assertEqual(status, 400)
         self.assertIn("application/json", payload["error"])
+
+        for days in (0, -5, 3651):
+            status, payload = self.request("POST", "/api/export-bundle", {"days": days})
+            self.assertEqual(status, 400)
+            self.assertIn("days must be between", payload["error"])
+
+    def test_missing_host_header_is_rejected(self) -> None:
+        connection = HTTPConnection("127.0.0.1", self.port, timeout=5)
+        connection.putrequest("GET", "/api/health", skip_host=True)
+        connection.endheaders()
+        response = connection.getresponse()
+        payload = json.loads(response.read().decode("utf-8"))
+        connection.close()
+
+        self.assertEqual(response.status, 400)
+        self.assertEqual(payload["error"], "Host header is required")
 
     def test_investigation_detail_and_feedback_routes(self) -> None:
         status, payload = self.request(

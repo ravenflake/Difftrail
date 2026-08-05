@@ -66,6 +66,7 @@ class HostValidationTests(unittest.TestCase):
                     {"event": {"id": "distractor-event"}},
                     {"event": {"id": "cause-event"}},
                 ],
+                assessment="candidate_found",
             )
             database.record_incident_feedback(incident.id, "correct", event_id="cause-event", recorded_at=now)
             database.record_overhead_measurement(

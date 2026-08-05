@@ -9,11 +9,12 @@ from pathlib import Path
 
 from . import __version__
 from .automation import run_automated_scan
-from .bundles import export_bundle, validate_bundle, write_bundle
-from .correlation import assess_investigation, infer_subsystem, investigation_summary, rank_candidates
+from .bundles import export_bundle, read_bundle, write_bundle
+from .correlation import infer_subsystem
 from .db import Database
 from .demo import seed_demo
 from .host_validation import build_host_validation_report
+from .investigation import run_investigation
 from .models import IncidentRequest, iso_datetime, parse_datetime, utc_now
 from .simulation import run_controlled_fixture_suite, simulate_nvidia_driver_switch
 
@@ -122,19 +123,11 @@ def command_investigate(args: argparse.Namespace) -> int:
     subsystem = args.subsystem or infer_subsystem(args.description)
     request = IncidentRequest(args.description, onset_start, onset_end, subsystem, args.lookback_days)
     with _database(args) as database:
-        incident = database.create_incident(request)
-        events = database.list_events(limit=10_000, ascending=True)
-        hypotheses = rank_candidates(events, request)
-        coverage = database.investigation_coverage(subsystem)
-        assessment = assess_investigation(request, hypotheses, events, coverage=coverage)
-        summary = investigation_summary(request, hypotheses, assessment=assessment)
-        database.update_incident_results(
-            incident.id,
-            summary["hypotheses"],
-            assessment=assessment.state,
-            assessment_reasons=assessment.reasons,
-            coverage=coverage,
-        )
+        run = run_investigation(database, request)
+        incident = run.incident
+        hypotheses = run.hypotheses
+        assessment = run.assessment
+        summary = run.summary
         if args.json:
             summary["incident_id"] = incident.id
             _print_json(summary)
@@ -247,17 +240,7 @@ def command_export_bundle(args: argparse.Namespace) -> int:
 
 
 def command_validate_bundle(args: argparse.Namespace) -> int:
-    try:
-        with Path(args.bundle).open("r", encoding="utf-8") as handle:
-            bundle = json.load(handle)
-    except FileNotFoundError:
-        report = {"valid": False, "errors": [f"Bundle file was not found: {args.bundle}"], "warnings": []}
-    except (OSError, UnicodeDecodeError) as exc:
-        report = {"valid": False, "errors": [f"Bundle could not be read: {exc}"], "warnings": []}
-    except json.JSONDecodeError as exc:
-        report = {"valid": False, "errors": [f"Bundle is not valid JSON: {exc}"], "warnings": []}
-    else:
-        report = validate_bundle(bundle)
+    _, report = read_bundle(args.bundle)
     if args.json:
         _print_json(report)
     else:

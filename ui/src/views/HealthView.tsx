@@ -17,12 +17,13 @@ export function HealthView({ data, onRecordOverhead, recording, error, onExport,
   const { status, validation } = data;
   const ready = status.sources.filter((source) => source.initialized).length;
   const warnings = validation.scans.provider_error_count;
+  const integrityChecked = status.journal.integrity !== "not checked";
 
   return (
     <div className="page-stack">
       <section className="view-header">
         <div><h2>System health</h2><p>Scan coverage, provider warnings, and watcher footprint.</p></div>
-        <button type="button" className="button button-secondary button-small" onClick={() => void onExport()} disabled={exportBusy}>{exportBusy ? "Preparing report…" : "Export diagnostic report"}</button>
+        <button type="button" className="button button-secondary button-small" onClick={() => void onExport()} disabled={exportBusy} aria-busy={exportBusy}>{exportBusy ? "Preparing report…" : "Export diagnostic report"}</button>
       </section>
       {exportError && <div className="form-error" role="alert"><Icon name="alert" size={14} /> {exportError}</div>}
 
@@ -36,7 +37,7 @@ export function HealthView({ data, onRecordOverhead, recording, error, onExport,
       </section>
 
       <section className={`journal-health-card ${status.journal.ok ? "" : "is-warning"}`} aria-live="polite">
-        <div className="journal-health-copy"><span className="eyebrow">Journal integrity</span><strong>{status.journal.ok ? "Journal is healthy" : "Journal needs attention"}</strong><span>{status.journal.integrity} integrity · schema {status.journal.schema.current_version}/{status.journal.schema.supported_version}</span></div>
+        <div className="journal-health-copy"><span className="eyebrow">Journal status</span><strong>{status.journal.ok ? (integrityChecked ? "Journal is healthy" : "Journal structure looks healthy") : "Journal needs attention"}</strong><span>{integrityChecked ? `${status.journal.integrity} integrity` : "Full integrity check available in Doctor"} · schema {status.journal.schema.current_version}/{status.journal.schema.supported_version}</span></div>
         <div className="journal-health-stats"><span><strong>{status.journal.scans.running}</strong> active scan{status.journal.scans.running === 1 ? "" : "s"}</span><span><strong>{status.journal.scans.stale_running.length}</strong> stale scan{status.journal.scans.stale_running.length === 1 ? "" : "s"}</span></div>
       </section>
 

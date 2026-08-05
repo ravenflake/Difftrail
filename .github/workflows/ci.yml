@@ -36,6 +36,7 @@ jobs:
         run: python -m compileall -q difftrail tests
 
       - name: Check release metadata
+        if: matrix.python-version == '3.12'
         run: python scripts/check_release_metadata.py
 
       - name: Run tests
@@ -59,8 +60,11 @@ jobs:
           $database = Join-Path $env:RUNNER_TEMP "difftrail-bundle-smoke.db"
           $bundle = Join-Path $env:RUNNER_TEMP "difftrail-bundle-smoke.json"
           python -m difftrail --db $database simulate nvidia-driver-switch --json
+          if ($LASTEXITCODE -ne 0) { throw "simulate smoke test failed with exit code $LASTEXITCODE" }
           python -m difftrail --db $database export-bundle --output $bundle --json
+          if ($LASTEXITCODE -ne 0) { throw "export-bundle smoke test failed with exit code $LASTEXITCODE" }
           python -m difftrail validate-bundle $bundle --json
+          if ($LASTEXITCODE -ne 0) { throw "validate-bundle smoke test failed with exit code $LASTEXITCODE" }
 
       - name: Run host-report smoke test
         run: 'python -m difftrail --db ":memory:" validate-host --json'

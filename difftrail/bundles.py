@@ -18,9 +18,11 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
+from .assessment import NEUTRAL_ASSESSMENT
 from .db import Database
 from .models import ensure_utc, iso_datetime, parse_datetime, utc_now
-from .privacy import redact_text
+from .privacy import error_bucket, redact_text
+from .public_data import SAFE_CHANGE_FIELDS, public_detail_summary
 
 
 BUNDLE_FORMAT = "difftrail-diagnostic-bundle"
@@ -66,11 +68,7 @@ def _safe_summary_value(value: Any) -> Any:
 
 
 def _safe_detail_summary(event: dict[str, Any]) -> dict[str, Any] | None:
-    # Import lazily so the API can expose bundle routes without creating a
-    # module-level cycle between its public serializer and this exporter.
-    from .ui_api import _public_detail_summary
-
-    summary = _public_detail_summary(event)
+    summary = public_detail_summary(event)
     if not summary:
         return None
     safe: dict[str, Any] = {
@@ -78,14 +76,13 @@ def _safe_detail_summary(event: dict[str, Any]) -> dict[str, Any] | None:
         for key, value in summary.items()
         if key in {"application_name", "event_id", "log_name", "provider", "record_id", "changed_fields", "raw_message_retained"}
     }
-    allowed_change_fields = {"display_name", "state", "start_mode", "version", "driver_date", "manufacturer", "class", "status"}
     for section in ("before", "after"):
         values = summary.get(section)
         if isinstance(values, dict):
             selected = {
                 key: _safe_summary_value(value)
                 for key, value in values.items()
-                if key in allowed_change_fields
+                if key in SAFE_CHANGE_FIELDS
             }
             if selected:
                 safe[section] = selected
@@ -182,7 +179,7 @@ def _safe_incident(incident: dict[str, Any]) -> dict[str, Any]:
         "onset_end": incident.get("onset_end"),
         "lookback_days": incident.get("lookback_days"),
         "status": _safe_text(incident.get("status", "")),
-        "assessment": _safe_text(incident.get("assessment", "candidate_found")),
+        "assessment": _safe_text(incident.get("assessment", NEUTRAL_ASSESSMENT)),
         "assessment_reasons": [_safe_text(reason) for reason in raw_reasons],
         "coverage": {
             "known": bool(coverage.get("known", False)),
@@ -195,6 +192,8 @@ def _safe_incident(incident: dict[str, Any]) -> dict[str, Any]:
                 _safe_text(source)
                 for source in uninitialized_sources
             ],
+            "provider_warning_count": max(0, int(coverage.get("provider_warning_count", 0) or 0)),
+            "scan_count": max(0, int(coverage.get("scan_count", 0) or 0)),
         },
         "results": [_safe_hypothesis(item) for item in raw_results],
         "feedback": {
@@ -218,7 +217,7 @@ def _safe_scan(scan: dict[str, Any]) -> dict[str, Any]:
             "state_events": summary.get("state_events", 0),
             "symptom_events": summary.get("symptom_events", 0),
             "error_count": len(errors),
-            "error_buckets": sorted({_safe_text(error).split(":", 1)[0] for error in errors}),
+            "error_buckets": sorted({error_bucket(error) for error in errors}),
         },
     }
 
@@ -272,12 +271,9 @@ def export_bundle(
     events = database.list_events(
         limit=MAX_BUNDLE_ROWS,
         ascending=True,
+        since=start,
+        until=end,
     )
-    events = [
-        event
-        for event in events
-        if start <= ensure_utc(event.occurred_at) <= end
-    ]
     scans = database.list_scans(since=start, until=end, limit=MAX_BUNDLE_ROWS)
     payload: dict[str, Any] = {
         "format": BUNDLE_FORMAT,
@@ -386,18 +382,26 @@ def validate_bundle(bundle: Any) -> dict[str, Any]:
     }
 
 
-def load_bundle(path: str | Path) -> tuple[dict[str, Any], dict[str, Any]]:
+def read_bundle(path: str | Path) -> tuple[Any | None, dict[str, Any]]:
+    """Read and validate a bundle without raising for user-facing errors."""
+
     bundle_path = Path(path)
     try:
         with bundle_path.open("r", encoding="utf-8") as handle:
             bundle = json.load(handle)
     except FileNotFoundError as exc:
-        raise ValueError(f"Bundle file was not found: {bundle_path}") from exc
+        return None, {"valid": False, "errors": [f"Bundle file was not found: {bundle_path}"], "warnings": []}
     except (OSError, UnicodeDecodeError) as exc:
-        raise ValueError(f"Bundle could not be read: {exc}") from exc
+        return None, {"valid": False, "errors": [f"Bundle could not be read: {exc}"], "warnings": []}
     except json.JSONDecodeError as exc:
-        raise ValueError(f"Bundle is not valid JSON: {exc}") from exc
-    report = validate_bundle(bundle)
+        return None, {"valid": False, "errors": [f"Bundle is not valid JSON: {exc}"], "warnings": []}
+    return bundle, validate_bundle(bundle)
+
+
+def load_bundle(path: str | Path) -> tuple[dict[str, Any], dict[str, Any]]:
+    bundle, report = read_bundle(path)
+    if bundle is None:
+        raise ValueError(report["errors"][0])
     if not report["valid"]:
         raise ValueError("Bundle validation failed: " + "; ".join(report["errors"]))
     return bundle, report
@@ -408,11 +412,14 @@ def write_bundle(bundle: dict[str, Any], output: str | Path, *, database_path: P
     if output_path.name in {"", ".", ".."}:
         raise ValueError("Bundle output must be a file path")
     if database_path is not None:
-        try:
-            if output_path.resolve() == database_path.resolve():
-                raise ValueError("Bundle output must not overwrite the live SQLite journal")
-        except FileNotFoundError:
-            pass
+        resolved_output = output_path.resolve()
+        protected_paths = {
+            database_path.resolve(),
+            Path(f"{database_path}-wal").resolve(),
+            Path(f"{database_path}-shm").resolve(),
+        }
+        if resolved_output in protected_paths:
+            raise ValueError("Bundle output must not overwrite the live SQLite journal or its SQLite sidecars")
     report = validate_bundle(bundle)
     if not report["valid"]:
         raise ValueError("Bundle validation failed: " + "; ".join(report["errors"]))

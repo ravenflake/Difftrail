@@ -26,12 +26,15 @@ from .automation import (
     update_automation_config,
 )
 from .bundles import bundle_filename, export_bundle, validate_bundle
-from .correlation import assess_investigation, infer_subsystem, investigation_summary, rank_candidates
+from .correlation import infer_subsystem
 from .db import Database
+from .investigation import run_investigation
 from .models import IncidentRequest, parse_datetime, utc_now
 from .host_validation import build_host_validation_report
 from .overhead import measure_watcher_overhead
-from .privacy import extract_safe_application_name, redact_text
+from .assessment import NEUTRAL_ASSESSMENT
+from .privacy import error_bucket, redact_text
+from .public_data import public_detail_summary
 
 
 SOURCE_LABELS = {
@@ -54,63 +57,13 @@ ALLOWED_ORIGINS = frozenset(
 MAX_REQUEST_BODY_BYTES = 64 * 1024
 MAX_BUNDLE_REQUEST_BODY_BYTES = 32 * 1024 * 1024
 VALID_EVENT_KINDS = frozenset({"all", "change", "symptom"})
-SAFE_CHANGE_FIELDS = frozenset({"display_name", "state", "start_mode", "version", "driver_date", "manufacturer", "class", "status"})
-SAFE_EVENT_FIELDS = frozenset({"event_id", "log_name", "provider", "record_id", "application_name"})
-
-
-def _safe_detail_value(value: Any) -> str | int | float | bool | None:
-    if isinstance(value, (str, int, float, bool)) or value is None:
-        return value
-    return None
-
-
-def _public_detail_summary(event: dict[str, Any]) -> dict[str, Any] | None:
-    """Expose parsed, non-sensitive event context without raw messages/paths."""
-
-    details = event.get("details")
-    if not isinstance(details, dict):
-        return None
-    summary: dict[str, Any] = {}
-    before = details.get("before") if isinstance(details.get("before"), dict) else None
-    after = details.get("after") if isinstance(details.get("after"), dict) else None
-    if before is not None or after is not None:
-        old = before or {}
-        new = after or {}
-        changed_fields = sorted(
-            key for key in set(old) | set(new)
-            if key in SAFE_CHANGE_FIELDS and old.get(key) != new.get(key)
-        )
-        if changed_fields:
-            summary["changed_fields"] = changed_fields
-        for label, values in (("before", old), ("after", new)):
-            selected = {
-                key: safe_value
-                for key, value in values.items()
-                if key in SAFE_CHANGE_FIELDS
-                and (safe_value := _safe_detail_value(value)) is not None
-            }
-            if selected:
-                summary[label] = selected
-    for key in SAFE_EVENT_FIELDS:
-        value = _safe_detail_value(details.get(key))
-        if value is not None:
-            summary[key] = value
-    if "application_name" not in summary and details.get("message"):
-        application_name = extract_safe_application_name(str(details["message"]))
-        if application_name:
-            summary["application_name"] = application_name
-    if "message" in details:
-        summary["raw_message_retained"] = bool(details.get("message"))
-    elif details.get("raw_message_retained") is False:
-        summary["raw_message_retained"] = False
-    return summary or None
 
 
 def _public_event(event: dict[str, Any]) -> dict[str, Any]:
     """Return UI-safe event metadata without raw detail payloads."""
 
     result = dict(event)
-    detail_summary = _public_detail_summary(result)
+    detail_summary = public_detail_summary(result)
     result.pop("details", None)
     if detail_summary:
         result["detail_summary"] = detail_summary
@@ -134,7 +87,7 @@ def public_incident(incident: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(raw_results, list):
         raw_results = []
     result["results"] = [_public_hypothesis(item) for item in raw_results if isinstance(item, dict)]
-    result["assessment"] = str(result.get("assessment", "candidate_found"))
+    result["assessment"] = str(result.get("assessment", NEUTRAL_ASSESSMENT))
     raw_reasons = result.get("assessment_reasons", [])
     if not isinstance(raw_reasons, list):
         raw_reasons = []
@@ -164,9 +117,7 @@ def public_status(status: dict[str, Any]) -> dict[str, Any]:
         }
         safe_last_scan["summary"]["errors"] = []
         safe_last_scan["summary"]["error_count"] = len(errors)
-        safe_last_scan["summary"]["error_buckets"] = sorted(
-            {redact_text(str(error)).split(":", 1)[0] for error in errors}
-        )
+        safe_last_scan["summary"]["error_buckets"] = sorted({error_bucket(error) for error in errors})
         result["last_scan"] = safe_last_scan
     return result
 
@@ -210,19 +161,9 @@ def create_investigation(database: Database, body: dict[str, Any]) -> dict[str, 
     except (TypeError, ValueError) as exc:
         raise ValueError("lookback_days must be an integer") from exc
     request = IncidentRequest(description, onset_start, onset_end, subsystem, lookback_days)
-    incident = database.create_incident(request)
-    events = database.list_events(limit=10_000, ascending=True)
-    hypotheses = rank_candidates(events, request)
-    coverage = database.investigation_coverage(subsystem)
-    assessment = assess_investigation(request, hypotheses, events, coverage=coverage)
-    summary = investigation_summary(request, hypotheses, assessment=assessment)
-    database.update_incident_results(
-        incident.id,
-        summary["hypotheses"],
-        assessment=assessment.state,
-        assessment_reasons=assessment.reasons,
-        coverage=coverage,
-    )
+    run = run_investigation(database, request)
+    incident = run.incident
+    summary = run.summary
     stored = database.get_incident(incident.id)
     if stored is None:  # pragma: no cover - the insert was just performed
         raise ValueError("The investigation could not be loaded after creation")
@@ -239,6 +180,8 @@ def create_bundle(database: Database, body: dict[str, Any]) -> dict[str, Any]:
         days = int(raw_days)
     except (TypeError, ValueError) as exc:
         raise ValueError("days must be an integer") from exc
+    if days < 1 or days > 3650:
+        raise ValueError("days must be between 1 and 3650")
     incident_id = body.get("incident_id")
     if incident_id is not None and not isinstance(incident_id, str):
         raise ValueError("incident_id must be a string")
@@ -327,20 +270,22 @@ class UiRequestHandler(BaseHTTPRequestHandler):
             self._error(403, "Origin is not allowed")
             return False
         host = self.headers.get("Host")
-        if host:
-            try:
-                parsed = urlsplit(f"//{host}")
-                hostname = (parsed.hostname or "").casefold()
-                port = parsed.port
-            except ValueError:
-                self._error(400, "Host header is invalid")
-                return False
-            if hostname not in {"127.0.0.1", "localhost", "::1"}:
-                self._error(403, "The Difftrail API only accepts loopback hosts")
-                return False
-            if port is not None and port != self.server.server_address[1]:
-                self._error(403, "Host port does not match the local API")
-                return False
+        if not host:
+            self._error(400, "Host header is required")
+            return False
+        try:
+            parsed = urlsplit(f"//{host}")
+            hostname = (parsed.hostname or "").casefold()
+            port = parsed.port
+        except ValueError:
+            self._error(400, "Host header is invalid")
+            return False
+        if hostname not in {"127.0.0.1", "localhost", "::1"}:
+            self._error(403, "The Difftrail API only accepts loopback hosts")
+            return False
+        if port is not None and port != self.server.server_address[1]:
+            self._error(403, "Host port does not match the local API")
+            return False
         return True
 
     @staticmethod
@@ -364,7 +309,16 @@ class UiRequestHandler(BaseHTTPRequestHandler):
         if self.headers.get("Origin") not in ALLOWED_ORIGINS:
             self._error(403, "Origin is not allowed")
             return
-        self._send(204, {})
+        self.send_response(204)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        origin = self.headers.get("Origin")
+        if origin in ALLOWED_ORIGINS:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Vary", "Origin")
+        self.end_headers()
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         if not self._request_allowed():

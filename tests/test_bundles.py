@@ -75,6 +75,7 @@ class BundleTests(unittest.TestCase):
         report = validate_bundle(invalid)
         self.assertFalse(report["valid"])
         self.assertTrue(any("Forbidden sensitive field" in error for error in report["errors"]))
+        self.assertIn("Bundle integrity digest does not match its contents", report["errors"])
 
     def test_validator_reports_malformed_shapes_without_crashing(self) -> None:
         report = validate_bundle({"format": BUNDLE_FORMAT, "format_version": 1, "journal": None})
@@ -88,6 +89,23 @@ class BundleTests(unittest.TestCase):
                 bundle = export_bundle(database)
                 with self.assertRaises(ValueError):
                     write_bundle(bundle, path, database_path=path)
+                with self.assertRaises(ValueError):
+                    write_bundle(bundle, Path(f"{path}-wal"), database_path=path)
+                with self.assertRaises(ValueError):
+                    write_bundle(bundle, Path(f"{path}-shm"), database_path=path)
+
+    def test_bundle_buckets_colonless_scan_errors_without_leaking_text(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "journal.db"
+            with Database(path) as database:
+                now = utc_now()
+                scan_id = database.start_scan(now)
+                database.finish_scan(scan_id, now, "partial", {"errors": ["private provider secret"]})
+                bundle = export_bundle(database, as_of=now + timedelta(minutes=1))
+
+            encoded = json.dumps(bundle)
+            self.assertNotIn("private provider secret", encoded)
+            self.assertEqual(bundle["journal"]["scans"][0]["summary"]["error_buckets"], ["other"])
 
     def test_incident_bundle_keeps_export_time_separate_from_period_end(self) -> None:
         with Database(":memory:") as database:

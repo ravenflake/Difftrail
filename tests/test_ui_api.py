@@ -36,6 +36,17 @@ class UiApiTests(unittest.TestCase):
         self.assertEqual(summary["error_count"], 1)
         self.assertNotIn("Raven", json.dumps(payload))
 
+    def test_bootstrap_buckets_colonless_provider_errors(self) -> None:
+        with Database(":memory:") as database:
+            now = utc_now()
+            scan_id = database.start_scan(now)
+            database.finish_scan(scan_id, now, "partial", {"errors": ["private provider secret"]})
+            payload = build_bootstrap(database)
+
+        summary = payload["status"]["last_scan"]["summary"]
+        self.assertEqual(summary["error_buckets"], ["other"])
+        self.assertNotIn("private provider secret", json.dumps(payload))
+
     def test_investigation_response_is_ui_safe_and_persists_incident(self) -> None:
         with Database(":memory:") as database:
             simulate_nvidia_driver_switch(database)

@@ -1,11 +1,18 @@
 import unittest
 from datetime import timedelta
 
-from difftrail.correlation import assess_investigation, infer_subsystem, rank_candidates
+from difftrail.correlation import assess_investigation, infer_subsystem, investigation_summary, rank_candidates
 from difftrail.models import Event, IncidentRequest, utc_now
 
 
 class CorrelationTests(unittest.TestCase):
+    def test_investigation_summary_defaults_to_neutral_assessment(self) -> None:
+        now = utc_now()
+        request = IncidentRequest("graphics are broken", now, now, "graphics", 7)
+        summary = investigation_summary(request, [])
+        self.assertEqual(summary["assessment"]["state"], "insufficient_evidence")
+        self.assertTrue(summary["assessment"]["reasons"])
+
     def test_assessment_distinguishes_no_recent_changes(self) -> None:
         now = utc_now()
         request = IncidentRequest("graphics are broken", now, now, "graphics", 7)
@@ -26,6 +33,8 @@ class CorrelationTests(unittest.TestCase):
         coverage = {"known": True, "limited": True, "reasons": ["The latest scan reported provider warnings."]}
         assessment = assess_investigation(request, [], [], coverage=coverage)
         self.assertEqual(assessment.state, "limited_coverage")
+        self.assertIn("The latest scan reported provider warnings.", assessment.reasons)
+        self.assertEqual(assessment.coverage, coverage)
 
     def test_limited_coverage_is_visible_even_with_a_strong_candidate(self) -> None:
         now = utc_now()
@@ -40,6 +49,7 @@ class CorrelationTests(unittest.TestCase):
             coverage={"known": True, "limited": True, "reasons": ["Provider warning"]},
         )
         self.assertEqual(assessment.state, "limited_coverage")
+        self.assertIn("Provider warning", assessment.reasons)
     def test_infers_area_from_plain_language(self) -> None:
         self.assertEqual(infer_subsystem("Bluetooth headphones stopped working"), "bluetooth")
         self.assertEqual(infer_subsystem("my game crashes after launch"), "graphics")

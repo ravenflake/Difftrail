@@ -5,8 +5,9 @@ from datetime import datetime
 from typing import Any, Iterable
 
 from .collectors.windows import WindowsCollector
-from .correlation import Hypothesis, assess_investigation, investigation_summary, rank_candidates
+from .correlation import Hypothesis
 from .db import Database
+from .investigation import run_investigation
 from .models import Event, IncidentRequest, SnapshotItem, utc_now
 from .service import Scanner
 
@@ -467,19 +468,12 @@ def _run_controlled_scenario(scenario: ControlledScenario) -> dict[str, Any]:
 
         onset = utc_now()
         request = IncidentRequest(scenario.problem, onset, onset, scenario.subsystem, 7)
-        incident = database.create_incident(request)
-        events = database.list_events(limit=10_000, ascending=True)
-        hypotheses = rank_candidates(events, request)
-        coverage = database.investigation_coverage(request.subsystem)
-        assessment = assess_investigation(request, hypotheses, events, coverage=coverage)
-        summary = investigation_summary(request, hypotheses, assessment=assessment)
-        database.update_incident_results(
-            incident.id,
-            summary["hypotheses"],
-            assessment=assessment.state,
-            assessment_reasons=assessment.reasons,
-            coverage=coverage,
-        )
+        run = run_investigation(database, request)
+        incident = run.incident
+        events = run.events
+        hypotheses = run.hypotheses
+        assessment = run.assessment
+        summary = run.summary
 
         expected = [_expectation_report(item, hypotheses) for item in scenario.expectations]
         high_hypotheses = [item for item in hypotheses if item.confidence == "High"]

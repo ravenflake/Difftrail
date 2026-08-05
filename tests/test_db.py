@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import tempfile
 import threading
@@ -27,6 +28,26 @@ class DatabaseTests(unittest.TestCase):
             row = database.list_scans()[0]
             self.assertEqual(row["status"], "interrupted")
             self.assertEqual(row["summary"]["recovery"]["reason"], "stale_running_scan")
+
+    def test_slow_scan_can_finish_after_provisional_stale_recovery(self) -> None:
+        with Database(":memory:") as database:
+            now = utc_now()
+            slow_scan = database.start_scan(now - timedelta(hours=1))
+            replacement_scan = database.start_scan(now)
+
+            database.finish_scan(
+                slow_scan,
+                now + timedelta(minutes=1),
+                "ok",
+                {"sources": 7, "state_events": 2, "symptom_events": 0, "errors": []},
+            )
+
+            rows = {
+                row["id"]: row
+                for row in database.connection.execute("SELECT id, status FROM scans").fetchall()
+            }
+            self.assertEqual(rows[slow_scan]["status"], "ok")
+            self.assertEqual(rows[replacement_scan]["status"], "running")
 
     def test_active_scan_blocks_a_second_scan(self) -> None:
         with Database(":memory:") as database:
@@ -83,17 +104,29 @@ class DatabaseTests(unittest.TestCase):
                     for row in database.connection.execute("PRAGMA table_info(incidents)").fetchall()
                 }
                 self.assertTrue({"assessment", "assessment_reasons_json", "coverage_json"}.issubset(columns))
+                event_indexes = {
+                    row[1]
+                    for row in database.connection.execute("PRAGMA index_list(events)").fetchall()
+                }
+                scan_indexes = {
+                    row[1]
+                    for row in database.connection.execute("PRAGMA index_list(scans)").fetchall()
+                }
+                self.assertIn("idx_events_source_occurred_at", event_indexes)
+                self.assertIn("idx_scans_status_started_at", scan_indexes)
 
     def test_concurrent_first_opens_finish_with_one_complete_schema(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "concurrent.db"
-            errors: list[BaseException] = []
+            errors: list[Exception] = []
+            barrier = threading.Barrier(2)
 
             def open_and_close() -> None:
                 try:
+                    barrier.wait(timeout=10)
                     with Database(path) as database:
                         self.assertEqual(database.schema_status()["current_version"], 5)
-                except BaseException as exc:  # capture thread failures for the test thread
+                except Exception as exc:  # capture thread failures for the test thread
                     errors.append(exc)
 
             threads = [threading.Thread(target=open_and_close) for _ in range(2)]
@@ -105,6 +138,81 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(errors, [])
             with Database(path) as database:
                 self.assertTrue(database.schema_status()["up_to_date"])
+
+    def test_event_time_filters_are_applied_before_limit(self) -> None:
+        with Database(":memory:") as database:
+            now = utc_now()
+            database.save_events(
+                [
+                    Event(now - timedelta(days=2), "change", "graphics", "updated", "Old change", event_id="old"),
+                    Event(now - timedelta(hours=1), "change", "graphics", "updated", "Recent change", event_id="recent"),
+                ]
+            )
+
+            events = database.list_events(
+                limit=1,
+                ascending=True,
+                since=now - timedelta(days=1),
+                until=now,
+            )
+
+            self.assertEqual([event.event_id for event in events], ["recent"])
+
+    def test_status_skips_integrity_scan_until_explicitly_requested(self) -> None:
+        with Database(":memory:") as database:
+            status = database.status()
+            self.assertEqual(status["journal"]["integrity"], "not checked")
+            self.assertEqual(database.journal_diagnostics()["integrity"], "ok")
+
+    def test_incident_json_parser_handles_missing_legacy_columns(self) -> None:
+        with Database(":memory:") as database:
+            row = database.connection.execute(
+                """
+                SELECT
+                    'incident' AS id,
+                    '2026-08-01T00:00:00Z' AS created_at,
+                    'problem' AS description,
+                    'general' AS subsystem,
+                    '2026-08-01T00:00:00Z' AS onset_start,
+                    '2026-08-01T00:00:00Z' AS onset_end,
+                    7 AS lookback_days,
+                    'investigating' AS status,
+                    '[]' AS result_json,
+                    NULL AS feedback_outcome,
+                    NULL AS feedback_event_id,
+                    NULL AS feedback_at
+                """
+            ).fetchone()
+
+            incident = Database._incident_row(row)
+
+            self.assertEqual(incident["assessment"], "insufficient_evidence")
+            self.assertEqual(incident["assessment_reasons"], [])
+            self.assertEqual(incident["coverage"], {})
+
+    def test_investigation_coverage_aggregates_all_overlapping_scans(self) -> None:
+        with Database(":memory:") as database:
+            now = utc_now()
+            older = database.start_scan(now - timedelta(days=2))
+            database.finish_scan(
+                older,
+                now - timedelta(days=2),
+                "partial",
+                {"errors": ["drivers: provider unavailable"]},
+            )
+            latest = database.start_scan(now - timedelta(hours=1))
+            database.finish_scan(latest, now - timedelta(hours=1), "ok", {"errors": []})
+
+            coverage = database.investigation_coverage(
+                "graphics",
+                since=now - timedelta(days=3),
+                until=now,
+            )
+
+            self.assertTrue(coverage["limited"])
+            self.assertEqual(coverage["scan_count"], 2)
+            self.assertEqual(coverage["provider_warning_count"], 1)
+            self.assertEqual(coverage["scan_status_counts"], {"ok": 1, "partial": 1})
 
     def test_first_snapshot_is_quiet_and_second_snapshot_emits_transition(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
@@ -274,9 +382,14 @@ class DatabaseTests(unittest.TestCase):
             now = utc_now()
             scan_id = database.start_scan(now)
             database.finish_scan(scan_id, now, "partial", {"errors": ["provider unavailable"]})
+            database.connection.execute(
+                "UPDATE scans SET summary_json = ? WHERE id = ?",
+                (json.dumps({"errors": [r"drivers: C:\Users\Raven\private.log"]}), scan_id),
+            )
+            database.connection.commit()
             status = database.status()
             self.assertEqual(status["last_scan"]["status"], "partial")
-            self.assertEqual(status["last_scan"]["summary"]["errors"], ["provider unavailable"])
+            self.assertNotIn("Raven", json.dumps(status["last_scan"]["summary"]))
 
     def test_old_symptom_messages_are_pruned_but_event_remains(self) -> None:
         with Database(":memory:") as database:

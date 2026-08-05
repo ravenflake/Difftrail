@@ -16,7 +16,7 @@ export function InvestigationDetail({ incident, onFeedback, onExport, exportBusy
   const [feedbackBusy, setFeedbackBusy] = useState(false);
   const [feedbackError, setFeedbackError] = useState<string | null>(null);
   const lead = incident.results[0];
-  const assessment = incident.assessment || "candidate_found";
+  const assessment = incident.assessment || "insufficient_evidence";
 
   async function giveFeedback(outcome: "correct" | "incorrect" | "unknown", eventId?: string) {
     setFeedbackBusy(true); setFeedbackError(null);

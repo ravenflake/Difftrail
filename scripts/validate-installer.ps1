@@ -19,9 +19,10 @@ function Invoke-Installer {
         [string[]]$ArgumentList
     )
 
-    $process = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -Wait -PassThru -WindowStyle Hidden
-    if ($process.ExitCode -ne 0) {
-        throw "Installer process failed with exit code $($process.ExitCode): $FilePath"
+    & $FilePath @ArgumentList
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -ne 0) {
+        throw "Installer process failed with exit code ${exitCode}: $FilePath"
     }
 }
 
@@ -51,10 +52,28 @@ try {
     if (Test-Path -LiteralPath $installedExecutable.FullName) {
         throw "Silent uninstall left the application executable in place: $($installedExecutable.FullName)"
     }
-    Write-Host "Installer silent install/uninstall smoke test passed."
+}
+catch {
+    $failure = $_
 }
 finally {
     if (Test-Path -LiteralPath $smokeRoot) {
-        Remove-Item -LiteralPath $smokeRoot -Recurse -Force -ErrorAction SilentlyContinue
+        try {
+            Remove-Item -LiteralPath $smokeRoot -Recurse -Force -ErrorAction Stop
+        }
+        catch {
+            $cleanupMessage = "Installer smoke-test cleanup failed: $($_.Exception.Message)"
+            if ($null -eq $failure) {
+                $failure = $_
+            }
+            else {
+                Write-Warning "$cleanupMessage (preserving the original installer failure)"
+            }
+        }
     }
 }
+
+if ($null -ne $failure) {
+    throw $failure
+}
+Write-Host "Installer silent install/uninstall smoke test passed."

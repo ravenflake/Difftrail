@@ -254,9 +254,12 @@ def run_ground_truth_suite(base: datetime | None = None) -> dict[str, Any]:
                 determinism_failures.append(scenario.name)
                 break
         rank = _rank_of(hypotheses, scenario.expected_event_id)
+        assessment_pass = scenario.expected_assessment is None or assessment.state == scenario.expected_assessment
+        assessment_passes += int(assessment_pass)
         if scenario.expected_event_id is None:
             passed = not any(item.confidence == "High" for item in hypotheses)
             no_false_high += int(passed)
+            passed = passed and assessment_pass
         else:
             known_cause += 1
             top1 += int(rank == 1)
@@ -265,13 +268,7 @@ def run_ground_truth_suite(base: datetime | None = None) -> dict[str, Any]:
                 bool(hypotheses) and hypotheses[0].event.event_id == scenario.expected_event_id and hypotheses[0].confidence == scenario.expected_confidence
             )
             expected_confidence_passes += int(confidence_pass)
-            assessment_pass = scenario.expected_assessment is None or assessment.state == scenario.expected_assessment
-            assessment_passes += int(assessment_pass)
             passed = rank is not None and rank <= scenario.expected_max_rank and confidence_pass and assessment_pass
-        if scenario.expected_event_id is None:
-            assessment_pass = scenario.expected_assessment is None or assessment.state == scenario.expected_assessment
-            assessment_passes += int(assessment_pass)
-            passed = passed and assessment_pass
         if scenario.name in determinism_failures:
             passed = False
         reports.append(
