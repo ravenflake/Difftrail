@@ -20,9 +20,11 @@ class ReleaseMetadataTests(unittest.TestCase):
             'Invoke-Installer -FilePath $installer -ArgumentList @("/S", "/D=$installRoot")',
             script,
         )
-        self.assertIn("& $FilePath @ArgumentList", script)
+        self.assertIn("[Diagnostics.ProcessStartInfo]::new()", script)
+        self.assertIn("$startInfo.ArgumentList.Add($argument)", script)
+        self.assertIn("$process.WaitForExit()", script)
+        self.assertIn("$exitCode = $process.ExitCode", script)
         self.assertNotIn("Start-Process", script)
-        self.assertIn("$exitCode = $LASTEXITCODE", script)
         self.assertIn('throw "Installer process failed with exit code', script)
         self.assertIn("Remove-Item -LiteralPath $smokeRoot -Recurse -Force -ErrorAction Stop", script)
         self.assertIn("Installer smoke-test cleanup failed", script)

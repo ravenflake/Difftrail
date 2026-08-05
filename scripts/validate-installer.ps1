@@ -19,8 +19,21 @@ function Invoke-Installer {
         [string[]]$ArgumentList
     )
 
-    & $FilePath @ArgumentList
-    $exitCode = $LASTEXITCODE
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $FilePath
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    foreach ($argument in $ArgumentList) {
+        [void]$startInfo.ArgumentList.Add($argument)
+    }
+    $process = [Diagnostics.Process]::Start($startInfo)
+    try {
+        $process.WaitForExit()
+        $exitCode = $process.ExitCode
+    }
+    finally {
+        $process.Dispose()
+    }
     if ($exitCode -ne 0) {
         throw "Installer process failed with exit code ${exitCode}: $FilePath"
     }
