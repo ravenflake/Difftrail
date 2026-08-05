@@ -1,0 +1,54 @@
+name: CLA check
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions: {}
+
+concurrency:
+  group: cla-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cla:
+    name: Contributor license acknowledgement
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify acknowledgement
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const repositoryOwner = context.payload.repository?.owner?.login;
+            const isRepositoryOwner =
+              Boolean(repositoryOwner) && pr.user?.login === repositoryOwner;
+
+            // Ignore Markdown that does not represent visible pull request content.
+            const visibleBody = (pr.body || '')
+              .replace(/<!--[\s\S]*?(?:-->|$)/g, '')
+              .replace(/```[\s\S]*?(?:```|$)/g, '')
+              .split(/\r?\n/)
+              .filter((line) => !/^\s*>/.test(line) && !/^(?: {4}|\t)/.test(line))
+              .join('\n');
+
+            const acknowledgement =
+              /^-\s*\[[xX]\]\s+I have read and agree to the Difftrail Contributor License Agreement\.\s*$/m;
+            const ownershipDeclaration =
+              /^-\s*\[[xX]\]\s+This pull request contains only work owned by the Project Maintainer and no external copyrightable contribution\.\s*$/m;
+
+            if (acknowledgement.test(visibleBody)) {
+              core.info('CLA acknowledgement found in visible pull request content.');
+              return;
+            }
+
+            if (isRepositoryOwner && ownershipDeclaration.test(visibleBody)) {
+              core.info('Project-Maintainer ownership declaration found in visible pull request content.');
+              return;
+            }
+
+            core.setFailed(
+              isRepositoryOwner
+                ? 'Repository-owner pull requests must include either the visible CLA acknowledgement or the checked Project-Maintainer ownership declaration.'
+                : 'External contributors must check the visible CLA acknowledgement in the pull request template before this PR can be merged.'
+            );
