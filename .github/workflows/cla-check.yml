@@ -34,17 +34,21 @@ jobs:
 
             const acknowledgement =
               /^-\s*\[[xX]\]\s+I have read and agree to the Difftrail Contributor License Agreement\.\s*$/m;
+            const ownershipDeclaration =
+              /^-\s*\[[xX]\]\s+This pull request contains only work owned by the Project Maintainer and no external copyrightable contribution\.\s*$/m;
 
-            if (isRepositoryOwner) {
-              core.info('Repository-owner pull request; inbound CLA acknowledgement is not required.');
+            if (acknowledgement.test(visibleBody)) {
+              core.info('CLA acknowledgement found in visible pull request content.');
               return;
             }
 
-            if (!acknowledgement.test(visibleBody)) {
-              core.setFailed(
-                'External contributors must check the visible CLA acknowledgement in the pull request template before this PR can be merged.'
-              );
+            if (isRepositoryOwner && ownershipDeclaration.test(visibleBody)) {
+              core.info('Project-Maintainer ownership declaration found in visible pull request content.');
               return;
             }
 
-            core.info('CLA acknowledgement found in visible pull request content.');
+            core.setFailed(
+              isRepositoryOwner
+                ? 'Repository-owner pull requests must include either the visible CLA acknowledgement or the checked Project-Maintainer ownership declaration.'
+                : 'External contributors must check the visible CLA acknowledgement in the pull request template before this PR can be merged.'
+            );
