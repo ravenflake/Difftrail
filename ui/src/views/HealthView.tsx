@@ -8,9 +8,12 @@ interface Props {
   onRecordOverhead: () => Promise<void>;
   recording: boolean;
   error: string | null;
+  onExport: () => Promise<void>;
+  exportBusy: boolean;
+  exportError: string | null;
 }
 
-export function HealthView({ data, onRecordOverhead, recording, error }: Props) {
+export function HealthView({ data, onRecordOverhead, recording, error, onExport, exportBusy, exportError }: Props) {
   const { status, validation } = data;
   const ready = status.sources.filter((source) => source.initialized).length;
   const warnings = validation.scans.provider_error_count;
@@ -18,9 +21,10 @@ export function HealthView({ data, onRecordOverhead, recording, error }: Props) 
   return (
     <div className="page-stack">
       <section className="view-header">
-        <h2>System health</h2>
-        <p>Scan coverage, provider warnings, and watcher footprint.</p>
+        <div><h2>System health</h2><p>Scan coverage, provider warnings, and watcher footprint.</p></div>
+        <button type="button" className="button button-secondary button-small" onClick={() => void onExport()} disabled={exportBusy}>{exportBusy ? "Preparing report…" : "Export diagnostic report"}</button>
       </section>
+      {exportError && <div className="form-error" role="alert"><Icon name="alert" size={14} /> {exportError}</div>}
 
       <section className={`health-banner ${warnings ? "is-warning" : ""}`}>
         <div className="health-banner-icon"><Icon name={warnings ? "alert" : "shield"} size={21} /></div>
@@ -29,6 +33,11 @@ export function HealthView({ data, onRecordOverhead, recording, error }: Props) 
           <span>{validation.scans.total ? `${validation.scans.total} scans across the last ${validation.period.days} days · ${ready} of ${status.sources.length} sources initialized` : "Run a scan to start building a local baseline."}</span>
         </div>
         <span className="health-banner-date">{relativeTime(status.last_scan?.finished_at)}</span>
+      </section>
+
+      <section className={`journal-health-card ${status.journal.ok ? "" : "is-warning"}`} aria-live="polite">
+        <div className="journal-health-copy"><span className="eyebrow">Journal integrity</span><strong>{status.journal.ok ? "Journal is healthy" : "Journal needs attention"}</strong><span>{status.journal.integrity} integrity · schema {status.journal.schema.current_version}/{status.journal.schema.supported_version}</span></div>
+        <div className="journal-health-stats"><span><strong>{status.journal.scans.running}</strong> active scan{status.journal.scans.running === 1 ? "" : "s"}</span><span><strong>{status.journal.scans.stale_running.length}</strong> stale scan{status.journal.scans.stale_running.length === 1 ? "" : "s"}</span></div>
       </section>
 
       <section className="metric-grid health-metrics" aria-label="Health metrics">

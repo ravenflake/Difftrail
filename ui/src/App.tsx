@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { createInvestigation, loadBootstrap, loadTimeline, markAutomationNotificationsRead, recordFeedback, recordOverhead, runScan, updateAutomationConfig, updateAutomationWatcher, waitForApi } from "./api";
+import { createInvestigation, exportBundle, loadBootstrap, loadTimeline, markAutomationNotificationsRead, recordFeedback, recordOverhead, runScan, updateAutomationConfig, updateAutomationWatcher, waitForApi } from "./api";
 import { makePreviewBootstrap } from "./mock";
 import type { AutomationConfig, Bootstrap, Incident, TimelineFilters, View } from "./types";
 import { AppShell } from "./components/AppShell";
@@ -39,6 +39,8 @@ export default function App() {
   const [scanning, setScanning] = useState(false);
   const [recordingOverhead, setRecordingOverhead] = useState(false);
   const [overheadError, setOverheadError] = useState<string | null>(null);
+  const [exportBusy, setExportBusy] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedIncidentId, setSelectedIncidentId] = useState<string | null>(null);
   const [automationBusy, setAutomationBusy] = useState<"config" | "enable" | "disable" | "run" | "read" | null>(null);
@@ -114,6 +116,31 @@ export default function App() {
       setRecordingOverhead(false);
     }
   }, [connection, refresh]);
+
+  const handleExportBundle = useCallback(async (incidentId?: string) => {
+    if (connection === "preview") {
+      setExportError("Connect the local journal to export a diagnostic report.");
+      return;
+    }
+    setExportBusy(true);
+    setExportError(null);
+    try {
+      const response = await exportBundle(incidentId ? { incident_id: incidentId } : { days: 30 });
+      const blob = new Blob([JSON.stringify(response.bundle, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = response.filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    } catch (reason) {
+      setExportError(reason instanceof Error ? reason.message : "The diagnostic bundle could not be exported.");
+    } finally {
+      setExportBusy(false);
+    }
+  }, [connection]);
 
   const handleLoadTimeline = useCallback(async (filters: TimelineFilters) => {
     if (connection === "preview" && data) {
@@ -207,8 +234,8 @@ export default function App() {
       {view === "home" && <HomeView data={data} onNavigate={navigate} onOpenIncident={(incident) => { setSelectedIncidentId(incident.id); navigate("incidents"); }} />}
       {view === "timeline" && <TimelineView events={data.events} onLoad={handleLoadTimeline} />}
       {view === "investigate" && <InvestigateView busy={false} onInvestigate={handleInvestigate} />}
-      {view === "incidents" && <IncidentsView incidents={data.incidents} selected={selectedIncident} onSelect={(incident) => setSelectedIncidentId(incident.id)} onNavigate={() => navigate("investigate")} onFeedback={handleFeedback} />}
-      {view === "health" && <HealthView data={data} onRecordOverhead={handleRecordOverhead} recording={recordingOverhead} error={overheadError} />}
+      {view === "incidents" && <IncidentsView incidents={data.incidents} selected={selectedIncident} onSelect={(incident) => setSelectedIncidentId(incident.id)} onNavigate={() => navigate("investigate")} onFeedback={handleFeedback} onExport={handleExportBundle} exportBusy={exportBusy} exportError={exportError} />}
+      {view === "health" && <HealthView data={data} onRecordOverhead={handleRecordOverhead} recording={recordingOverhead} error={overheadError} onExport={() => handleExportBundle()} exportBusy={exportBusy} exportError={exportError} />}
       {view === "automation" && <AutomationView automation={data.automation} connection={connection} busy={automationBusy} error={automationError} notice={automationNotice} onConfigSave={handleAutomationConfig} onWatcherAction={handleAutomationWatcher} onMarkRead={handleMarkAutomationRead} onNavigate={navigate} />}
     </AppShell>
   );

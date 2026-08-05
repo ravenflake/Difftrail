@@ -89,7 +89,9 @@ class CollectorTests(unittest.TestCase):
                 raise PowerShellError("driver provider unavailable")
             return []
 
-        with patch("difftrail.collectors.windows.run_json", side_effect=fake_run):
+        with patch("difftrail.collectors.windows.platform.system", return_value="Windows"), patch(
+            "difftrail.collectors.windows.run_json", side_effect=fake_run
+        ):
             snapshots = collector.collect_snapshots()
         self.assertNotIn("drivers", snapshots)
         self.assertIn("apps", snapshots)

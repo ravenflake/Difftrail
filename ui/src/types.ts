@@ -2,6 +2,7 @@ export type View = "home" | "timeline" | "investigate" | "incidents" | "health" 
 
 export type EventKind = "change" | "symptom";
 export type Confidence = "High" | "Medium" | "Low";
+export type AssessmentState = "candidate_found" | "insufficient_evidence" | "no_recent_changes" | "limited_coverage";
 
 export interface EventDetailSummary {
   application_name?: string;
@@ -65,6 +66,14 @@ export interface Incident {
   onset_end: string;
   lookback_days: number;
   status: string;
+  assessment: AssessmentState;
+  assessment_reasons: string[];
+  coverage: {
+    known?: boolean;
+    limited?: boolean;
+    reasons?: string[];
+    uninitialized_sources?: string[];
+  };
   results: Hypothesis[];
   feedback: Feedback;
 }
@@ -76,6 +85,8 @@ export interface ScanSummary {
   state_events: number;
   symptom_events: number;
   errors: string[];
+  error_count?: number;
+  error_buckets?: string[];
 }
 
 export interface OverheadResponse {
@@ -100,7 +111,7 @@ export interface OverheadResponse {
 }
 
 export interface LastScan {
-  finished_at: string;
+  finished_at: string | null;
   status: string;
   summary: ScanSummary;
 }
@@ -122,19 +133,38 @@ export interface Status {
   retention_days: number;
   sources: SourceStatus[];
   last_scan: LastScan | null;
+  schema: {
+    current_version: number;
+    supported_version: number;
+    up_to_date: boolean;
+  };
+  journal: {
+    ok: boolean;
+    integrity: string;
+    schema: {
+      current_version: number;
+      supported_version: number;
+      up_to_date: boolean;
+    };
+    scans: { running: number; stale_running: Array<{ id: string; started_at: string }>; stale_after_seconds: number };
+    journal: { events: number; state_items: number; incidents: number };
+  };
 }
 
 export interface ValidationReport {
   period: { start: string; end: string; days: number };
   scans: {
     total: number;
+    by_status: Record<string, number>;
     quiet: number;
     quiet_rate: number | null;
-    changes: number;
-    symptoms: number;
+    with_changes: number;
+    with_symptoms: number;
+    reported_changes: number;
+    reported_symptoms: number;
     provider_error_count: number;
-    provider_error_buckets: Record<string, number>;
-    sources_per_scan_mean: number;
+    error_buckets: Record<string, number>;
+    sources_per_scan_mean: number | null;
     change_bearing_scan_rate: number | null;
   };
   journal: {
@@ -164,7 +194,8 @@ export interface ValidationReport {
     outcomes: { correct: number; incorrect: number; unknown: number };
     correct_cause_top3_hits: number;
     correct_cause_top3_rate: number | null;
-    rank_distribution: Record<string, number>;
+    correct_cause_rank_distribution: Record<string, number>;
+    assessment_distribution: Record<string, number>;
   };
   privacy: string;
   limits: string[];
@@ -231,9 +262,19 @@ export interface InvestigationResponse {
     lookback_days: number;
     method: string;
     incident_id: string;
+    assessment: {
+      state: AssessmentState;
+      reasons: string[];
+      coverage: Record<string, unknown>;
+    };
     hypotheses: Hypothesis[];
   };
   incident: Incident;
+}
+
+export interface BundleResponse {
+  filename: string;
+  bundle: Record<string, unknown>;
 }
 
 export interface TimelineFilters {

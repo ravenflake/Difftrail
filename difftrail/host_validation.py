@@ -71,6 +71,9 @@ def _aggregate_overhead(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _investigation_metrics(incidents: list[dict[str, Any]]) -> dict[str, Any]:
+    assessment_distribution = Counter(
+        str(incident.get("assessment", "candidate_found")) for incident in incidents
+    )
     outcomes = Counter(
         incident["feedback"]["outcome"]
         for incident in incidents
@@ -112,6 +115,7 @@ def _investigation_metrics(incidents: list[dict[str, Any]]) -> dict[str, Any]:
             "rank_3": rank_counts["rank_3"],
             "outside_top3": rank_counts["outside_top3"],
         },
+        "assessment_distribution": dict(sorted(assessment_distribution.items())),
     }
 
 

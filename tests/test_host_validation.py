@@ -97,6 +97,7 @@ class HostValidationTests(unittest.TestCase):
         self.assertEqual(report["overhead"]["measurements"], 1)
         self.assertEqual(report["investigations"]["correct_cause_top3_hits"], 1)
         self.assertEqual(report["investigations"]["correct_cause_top3_rate"], 1.0)
+        self.assertEqual(report["investigations"]["assessment_distribution"], {"candidate_found": 1})
         self.assertNotIn("Display driver updated", json.dumps(report))
         self.assertNotIn("provider unavailable", json.dumps(report))
 
@@ -108,4 +109,3 @@ class HostValidationTests(unittest.TestCase):
                 database.record_incident_feedback(incident.id, "correct")
             with self.assertRaises(ValueError):
                 database.record_incident_feedback(incident.id, "correct", event_id="missing")
-

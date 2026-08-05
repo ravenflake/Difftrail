@@ -47,6 +47,10 @@ SOURCE_PRIORITY: dict[str, int] = {
     "apps": 1,
 }
 
+ASSESSMENT_STATES = frozenset(
+    {"candidate_found", "insufficient_evidence", "no_recent_changes", "limited_coverage"}
+)
+
 
 @dataclass(frozen=True)
 class Evidence:
@@ -83,6 +87,24 @@ class Hypothesis:
             "counter_evidence": [item.as_dict() for item in self.counter_evidence],
             "next_action": self.next_action,
             "safe_diagnostic": self.safe_diagnostic,
+        }
+
+
+@dataclass(frozen=True)
+class InvestigationAssessment:
+    state: str
+    reasons: tuple[str, ...] = ()
+    coverage: dict[str, Any] | None = None
+
+    def __post_init__(self) -> None:
+        if self.state not in ASSESSMENT_STATES:
+            raise ValueError(f"Unsupported investigation assessment: {self.state}")
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "state": self.state,
+            "reasons": list(self.reasons),
+            "coverage": self.coverage or {},
         }
 
 
@@ -292,7 +314,66 @@ def rank_candidates(
     return results[: max(1, min(limit, 50))]
 
 
-def investigation_summary(request: IncidentRequest, hypotheses: Iterable[Hypothesis]) -> dict[str, Any]:
+def assess_investigation(
+    request: IncidentRequest,
+    hypotheses: Iterable[Hypothesis],
+    events: Iterable[Event],
+    *,
+    coverage: dict[str, Any] | None = None,
+) -> InvestigationAssessment:
+    """Give the investigation an honest conclusion state.
+
+    A ranked change is not automatically a cause. Low-confidence candidates,
+    counter-evidence, and incomplete collection are surfaced as limitations so
+    callers do not present a weak guess as an answer.
+    """
+
+    onset_start = ensure_utc(request.onset_start)
+    lookback_start = onset_start - timedelta(days=request.lookback_days)
+    changes = [
+        event
+        for event in events
+        if event.kind == "change"
+        and lookback_start <= ensure_utc(event.occurred_at) <= onset_start
+    ]
+    ranked = list(hypotheses)
+    normalized_coverage = coverage if isinstance(coverage, dict) else {}
+    coverage_limited = bool(normalized_coverage.get("limited"))
+    coverage_reasons = normalized_coverage.get("reasons", [])
+    if not isinstance(coverage_reasons, list):
+        coverage_reasons = []
+    reasons: list[str] = [
+        str(reason)
+        for reason in coverage_reasons
+        if str(reason).strip()
+    ]
+
+    if not changes:
+        reasons.append("No journaled changes occurred during the selected lookback window before onset.")
+        state = "limited_coverage" if coverage_limited else "no_recent_changes"
+    elif not ranked:
+        reasons.append("Changes were recorded, but none matched the reported subsystem closely enough to rank.")
+        state = "limited_coverage" if coverage_limited else "insufficient_evidence"
+    else:
+        lead = ranked[0]
+        if lead.confidence == "Low":
+            reasons.append("The strongest candidate has only weak supporting evidence.")
+        if lead.counter_evidence:
+            reasons.append("Related symptoms or signals existed before the strongest candidate change.")
+        weak = lead.confidence == "Low" or bool(lead.counter_evidence)
+        state = "limited_coverage" if coverage_limited else "insufficient_evidence" if weak else "candidate_found"
+
+    # Preserve deterministic order while avoiding duplicate explanations.
+    unique_reasons = tuple(dict.fromkeys(reason.strip() for reason in reasons if reason.strip()))
+    return InvestigationAssessment(state, unique_reasons, normalized_coverage)
+
+
+def investigation_summary(
+    request: IncidentRequest,
+    hypotheses: Iterable[Hypothesis],
+    *,
+    assessment: InvestigationAssessment | None = None,
+) -> dict[str, Any]:
     ranked = list(hypotheses)
     return {
         "description": request.description,
@@ -301,5 +382,6 @@ def investigation_summary(request: IncidentRequest, hypotheses: Iterable[Hypothe
         "onset_end": iso_datetime(request.onset_end),
         "lookback_days": request.lookback_days,
         "method": "deterministic evidence signals; no AI causal inference",
+        "assessment": assessment.as_dict() if assessment else InvestigationAssessment("candidate_found").as_dict(),
         "hypotheses": [item.as_dict() for item in ranked],
     }

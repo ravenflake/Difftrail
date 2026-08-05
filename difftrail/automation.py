@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
-from .correlation import investigation_summary, rank_candidates
+from .correlation import assess_investigation, investigation_summary, rank_candidates
 from .db import Database
 from .models import Event, IncidentRequest
 from ._process import _hidden_process_kwargs
@@ -589,8 +589,17 @@ def _create_investigation_draft(database: Database, event: Event) -> str | None:
     incident = database.create_incident(request, status="draft")
     events = database.list_events(limit=10_000, ascending=True)
     hypotheses = rank_candidates(events, request)
-    summary = investigation_summary(request, hypotheses)
-    database.update_incident_results(incident.id, summary["hypotheses"], status="draft")
+    coverage = database.investigation_coverage(request.subsystem)
+    assessment = assess_investigation(request, hypotheses, events, coverage=coverage)
+    summary = investigation_summary(request, hypotheses, assessment=assessment)
+    database.update_incident_results(
+        incident.id,
+        summary["hypotheses"],
+        status="draft",
+        assessment=assessment.state,
+        assessment_reasons=assessment.reasons,
+        coverage=coverage,
+    )
     return incident.id
 
 

@@ -6,6 +6,20 @@ from typing import Any
 
 
 UTC = timezone.utc
+KNOWN_SUBSYSTEMS = frozenset(
+    {
+        "general",
+        "graphics",
+        "audio",
+        "network",
+        "bluetooth",
+        "driver",
+        "startup",
+        "windows-update",
+        "application",
+        "device",
+    }
+)
 
 
 def utc_now() -> datetime:
@@ -96,6 +110,8 @@ class IncidentRequest:
             raise ValueError("Incident end must be after incident start")
         if self.lookback_days < 1 or self.lookback_days > 365:
             raise ValueError("lookback_days must be between 1 and 365")
+        if self.subsystem not in KNOWN_SUBSYSTEMS:
+            raise ValueError(f"Unsupported incident subsystem: {self.subsystem}")
 
 
 @dataclass(frozen=True)

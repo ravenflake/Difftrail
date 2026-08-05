@@ -1,14 +1,39 @@
 import sqlite3
 import tempfile
+import threading
 import unittest
 from datetime import timedelta
 from pathlib import Path
 
-from difftrail.db import Database
+from difftrail.db import BASE_SCHEMA, Database
 from difftrail.models import Event, IncidentRequest, SnapshotItem, utc_now
 
 
 class DatabaseTests(unittest.TestCase):
+    def test_fresh_journal_records_numbered_migrations(self) -> None:
+        with Database(":memory:") as database:
+            schema = database.schema_status()
+            self.assertEqual(schema["current_version"], schema["supported_version"])
+            self.assertEqual([item["version"] for item in schema["migrations"]], [1, 2, 3, 4, 5])
+
+    def test_stale_scan_is_detected_and_recovered_without_deleting_it(self) -> None:
+        with Database(":memory:") as database:
+            now = utc_now()
+            scan_id = database.start_scan(now - timedelta(hours=1))
+            diagnostics = database.journal_diagnostics(now=now)
+            self.assertEqual(diagnostics["scans"]["stale_running"][0]["id"], scan_id)
+            self.assertFalse(diagnostics["ok"])
+            self.assertEqual(database.recover_stale_scans(now=now), 1)
+            row = database.list_scans()[0]
+            self.assertEqual(row["status"], "interrupted")
+            self.assertEqual(row["summary"]["recovery"]["reason"], "stale_running_scan")
+
+    def test_active_scan_blocks_a_second_scan(self) -> None:
+        with Database(":memory:") as database:
+            now = utc_now()
+            database.start_scan(now)
+            with self.assertRaisesRegex(RuntimeError, "already running"):
+                database.start_scan(now + timedelta(seconds=1))
     def test_old_journal_gets_additive_feedback_columns(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "legacy.db"
@@ -37,6 +62,49 @@ class DatabaseTests(unittest.TestCase):
                     for row in database.connection.execute("PRAGMA table_info(incidents)").fetchall()
                 }
                 self.assertTrue({"feedback_outcome", "feedback_event_id", "feedback_at"}.issubset(columns))
+
+    def test_current_legacy_journal_gets_assessment_migration(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "legacy-current.db"
+            connection = sqlite3.connect(path)
+            connection.executescript(BASE_SCHEMA)
+            connection.execute(
+                "INSERT INTO meta(key, value) VALUES (?, ?)",
+                ("migration:safe-application-entities", "1"),
+            )
+            connection.commit()
+            connection.close()
+
+            with Database(path) as database:
+                schema = database.schema_status()
+                self.assertEqual(schema["current_version"], 5)
+                columns = {
+                    row[1]
+                    for row in database.connection.execute("PRAGMA table_info(incidents)").fetchall()
+                }
+                self.assertTrue({"assessment", "assessment_reasons_json", "coverage_json"}.issubset(columns))
+
+    def test_concurrent_first_opens_finish_with_one_complete_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "concurrent.db"
+            errors: list[BaseException] = []
+
+            def open_and_close() -> None:
+                try:
+                    with Database(path) as database:
+                        self.assertEqual(database.schema_status()["current_version"], 5)
+                except BaseException as exc:  # capture thread failures for the test thread
+                    errors.append(exc)
+
+            threads = [threading.Thread(target=open_and_close) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=10)
+            self.assertFalse(any(thread.is_alive() for thread in threads))
+            self.assertEqual(errors, [])
+            with Database(path) as database:
+                self.assertTrue(database.schema_status()["up_to_date"])
 
     def test_first_snapshot_is_quiet_and_second_snapshot_emits_transition(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

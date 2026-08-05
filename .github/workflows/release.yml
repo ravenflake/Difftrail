@@ -48,8 +48,17 @@ jobs:
 
           with Path("pyproject.toml").open("rb") as handle:
               python_version = tomllib.load(handle)["project"]["version"]
+          init_text = Path("difftrail/__init__.py").read_text(encoding="utf-8")
+          init_match = re.search(r'(?m)^__version__\s*=\s*["\']([^"\']+)["\']\s*$', init_text)
+          if init_match is None:
+              raise SystemExit("difftrail/__init__.py does not define __version__")
+          init_version = init_match.group(1)
           with Path("ui/package.json").open(encoding="utf-8") as handle:
               ui_version = json.load(handle)["version"]
+          with Path("ui/package-lock.json").open(encoding="utf-8") as handle:
+              package_lock = json.load(handle)
+          package_lock_version = package_lock["version"]
+          package_lock_root_version = package_lock["packages"][""]["version"]
           with Path("ui/src-tauri/tauri.conf.json").open(encoding="utf-8") as handle:
               tauri_version = json.load(handle)["version"]
           with Path("ui/src-tauri/Cargo.toml").open("rb") as handle:
@@ -59,8 +68,11 @@ jobs:
           lock_version = next(item["version"] for item in lock_packages if item["name"] == "difftrail-desktop")
 
           versions = {
+              "difftrail/__init__.py": init_version,
               "pyproject.toml": python_version,
               "ui/package.json": ui_version,
+              "ui/package-lock.json": package_lock_version,
+              "ui/package-lock.json#root": package_lock_root_version,
               "ui/src-tauri/tauri.conf.json": tauri_version,
               "ui/src-tauri/Cargo.toml": cargo_version,
               "ui/src-tauri/Cargo.lock": lock_version,
@@ -107,6 +119,13 @@ jobs:
 
       - name: Build Windows installer
         run: npm run desktop:build
+
+      - name: Validate installer artifact with silent install/uninstall
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem -LiteralPath "src-tauri/target/release/bundle/nsis" -Filter "*-setup.exe" -File | Select-Object -First 1
+          if ($null -eq $installer) { throw "No NSIS installer was produced" }
+          & "$env:GITHUB_WORKSPACE/scripts/validate-installer.ps1" -InstallerPath $installer.FullName
 
       - name: Publish Windows installer artifact
         uses: actions/upload-artifact@v4

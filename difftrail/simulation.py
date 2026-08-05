@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Any, Iterable
 
 from .collectors.windows import WindowsCollector
-from .correlation import Hypothesis, investigation_summary, rank_candidates
+from .correlation import Hypothesis, assess_investigation, investigation_summary, rank_candidates
 from .db import Database
 from .models import Event, IncidentRequest, SnapshotItem, utc_now
 from .service import Scanner
@@ -470,8 +470,16 @@ def _run_controlled_scenario(scenario: ControlledScenario) -> dict[str, Any]:
         incident = database.create_incident(request)
         events = database.list_events(limit=10_000, ascending=True)
         hypotheses = rank_candidates(events, request)
-        summary = investigation_summary(request, hypotheses)
-        database.update_incident_results(incident.id, summary["hypotheses"])
+        coverage = database.investigation_coverage(request.subsystem)
+        assessment = assess_investigation(request, hypotheses, events, coverage=coverage)
+        summary = investigation_summary(request, hypotheses, assessment=assessment)
+        database.update_incident_results(
+            incident.id,
+            summary["hypotheses"],
+            assessment=assessment.state,
+            assessment_reasons=assessment.reasons,
+            coverage=coverage,
+        )
 
         expected = [_expectation_report(item, hypotheses) for item in scenario.expectations]
         high_hypotheses = [item for item in hypotheses if item.confidence == "High"]

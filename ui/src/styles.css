@@ -406,6 +406,33 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .overhead-heading { align-items: flex-start; }
 .overhead-actions { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; justify-content: flex-end; }
 
+.assessment-banner { display: flex; align-items: flex-start; gap: 12px; padding: 15px 17px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--surface); color: var(--ink-soft); }
+.assessment-icon { display: grid; flex: 0 0 auto; place-items: center; width: 29px; height: 29px; border-radius: 8px; color: var(--teal-dark); background: var(--teal-wash); }
+.assessment-banner strong { display: block; color: var(--ink); font-size: 14px; }
+.assessment-banner p { margin: 3px 0 0; font-size: 13px; line-height: 1.45; }
+.assessment-banner ul { margin: 7px 0 0; padding-left: 18px; font-size: 12px; line-height: 1.45; }
+.assessment-insufficient_evidence, .assessment-limited_coverage { border-color: #c6a56a; background: var(--amber-wash); }
+.assessment-insufficient_evidence .assessment-icon, .assessment-limited_coverage .assessment-icon { color: var(--amber); background: rgba(190, 145, 60, 0.14); }
+.assessment-no_recent_changes { border-color: var(--line-strong); }
+.incident-heading { align-items: flex-start; }
+.incident-heading > .button { flex: 0 0 auto; }
+.journal-health-card { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 15px 17px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--surface); }
+.journal-health-card.is-warning { border-color: #c6a56a; background: var(--amber-wash); }
+.journal-health-copy { display: grid; gap: 2px; }
+.journal-health-copy strong { color: var(--ink); font-size: 14px; }
+.journal-health-copy > span:last-child { color: var(--ink-soft); font-size: 12px; }
+.journal-health-stats { display: flex; gap: 18px; color: var(--ink-soft); font-size: 12px; text-align: right; }
+.journal-health-stats strong { display: block; color: var(--ink); font-size: 18px; }
+
+:root[data-theme="dark"] .assessment-insufficient_evidence,
+:root[data-theme="dark"] .assessment-limited_coverage { border-color: #70582f; }
+:root[data-theme="dark"] .journal-health-card.is-warning { border-color: #70582f; }
+
+@media (max-width: 720px) {
+  .journal-health-card { align-items: flex-start; flex-direction: column; }
+  .journal-health-stats { width: 100%; justify-content: space-between; text-align: left; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
 }

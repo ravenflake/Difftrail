@@ -9,7 +9,8 @@ from pathlib import Path
 
 from . import __version__
 from .automation import run_automated_scan
-from .correlation import infer_subsystem, investigation_summary, rank_candidates
+from .bundles import export_bundle, validate_bundle, write_bundle
+from .correlation import assess_investigation, infer_subsystem, investigation_summary, rank_candidates
 from .db import Database
 from .demo import seed_demo
 from .host_validation import build_host_validation_report
@@ -124,14 +125,25 @@ def command_investigate(args: argparse.Namespace) -> int:
         incident = database.create_incident(request)
         events = database.list_events(limit=10_000, ascending=True)
         hypotheses = rank_candidates(events, request)
-        summary = investigation_summary(request, hypotheses)
-        database.update_incident_results(incident.id, summary["hypotheses"])
+        coverage = database.investigation_coverage(subsystem)
+        assessment = assess_investigation(request, hypotheses, events, coverage=coverage)
+        summary = investigation_summary(request, hypotheses, assessment=assessment)
+        database.update_incident_results(
+            incident.id,
+            summary["hypotheses"],
+            assessment=assessment.state,
+            assessment_reasons=assessment.reasons,
+            coverage=coverage,
+        )
         if args.json:
             summary["incident_id"] = incident.id
             _print_json(summary)
         else:
             print(f"Investigation {incident.id}")
             print(f"Area: {subsystem} | Onset: {iso_datetime(onset_start)}")
+            print(f"Assessment: {assessment.state}")
+            for reason in assessment.reasons:
+                print(f"- {reason}")
             print("Method: deterministic evidence signals; no AI causal inference")
             if not hypotheses:
                 print("No candidate changes were found in the selected lookback window.")
@@ -187,6 +199,76 @@ def command_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_doctor(args: argparse.Namespace) -> int:
+    with _database(args) as database:
+        recovered = database.recover_stale_scans() if args.recover_stale_scans else 0
+        report = database.journal_diagnostics()
+        report["recovered_stale_scans"] = recovered
+    if args.json:
+        _print_json(report)
+    else:
+        schema = report["schema"]
+        scans = report["scans"]
+        print(
+            f"Doctor: {'PASS' if report['ok'] else 'ATTENTION'} | "
+            f"schema {schema['current_version']}/{schema['supported_version']} | "
+            f"integrity {report['integrity']}"
+        )
+        print(f"Scans: {scans['running']} running, {len(scans['stale_running'])} stale")
+        if recovered:
+            print(f"Recovered {recovered} stale scan{'' if recovered == 1 else 's'} as interrupted.")
+        print(
+            f"Journal: {report['journal']['events']} events, "
+            f"{report['journal']['state_items']} state items, "
+            f"{report['journal']['incidents']} investigations."
+        )
+    return 0 if report["ok"] else 1
+
+
+def command_export_bundle(args: argparse.Namespace) -> int:
+    with _database(args) as database:
+        bundle = export_bundle(database, days=args.days, incident_id=args.incident)
+        output = write_bundle(bundle, args.output, database_path=database.path)
+        result = {
+            "output": str(output),
+            "format": bundle["format"],
+            "format_version": bundle["format_version"],
+            "events": len(bundle["journal"]["events"]),
+            "investigations": len(bundle["investigations"]),
+        }
+    if args.json:
+        _print_json(result)
+    else:
+        print(
+            f"Exported redacted bundle to {result['output']} "
+            f"({result['events']} events, {result['investigations']} investigations)."
+        )
+    return 0
+
+
+def command_validate_bundle(args: argparse.Namespace) -> int:
+    try:
+        with Path(args.bundle).open("r", encoding="utf-8") as handle:
+            bundle = json.load(handle)
+    except FileNotFoundError:
+        report = {"valid": False, "errors": [f"Bundle file was not found: {args.bundle}"], "warnings": []}
+    except (OSError, UnicodeDecodeError) as exc:
+        report = {"valid": False, "errors": [f"Bundle could not be read: {exc}"], "warnings": []}
+    except json.JSONDecodeError as exc:
+        report = {"valid": False, "errors": [f"Bundle is not valid JSON: {exc}"], "warnings": []}
+    else:
+        report = validate_bundle(bundle)
+    if args.json:
+        _print_json(report)
+    else:
+        print(f"Bundle validation: {'PASS' if report['valid'] else 'FAIL'}")
+        for error in report.get("errors", []):
+            print(f"- {error}")
+        if report.get("valid"):
+            print(f"Events: {report.get('event_count', 0)} | investigations: {report.get('investigation_count', 0)}")
+    return 0 if report["valid"] else 1
+
+
 def command_watch(args: argparse.Namespace) -> int:
     if args.interval < 15 or args.interval > 86_400:
         raise ValueError("The watcher interval must be between 15 and 86400 seconds")
@@ -218,6 +300,8 @@ def command_validate(args: argparse.Namespace) -> int:
             f"Ground-truth suite: {'PASS' if report['passed'] else 'FAIL'} | "
             f"top-1 {report['top1_accuracy']:.0%} | top-3 {report['top3_accuracy']:.0%} | "
             f"no false High {report['no_false_high_rate']:.0%} | "
+            f"assessment {report['assessment_pass_rate']:.0%} | "
+            f"determinism {'PASS' if report['determinism']['passed'] else 'FAIL'} | "
             f"stress top-1 {report['perturbation']['top1_accuracy']:.0%}"
         )
         for scenario in report["scenarios"]:
@@ -387,6 +471,23 @@ def build_parser() -> argparse.ArgumentParser:
     status = subparsers.add_parser("status", help="Show local journal status")
     status.add_argument("--json", action="store_true")
     status.set_defaults(func=command_status)
+
+    doctor = subparsers.add_parser("doctor", help="Check journal integrity, migrations, and scan recovery state")
+    doctor.add_argument("--recover-stale-scans", action="store_true", help="Mark abandoned scans as interrupted")
+    doctor.add_argument("--json", action="store_true")
+    doctor.set_defaults(func=command_doctor)
+
+    export = subparsers.add_parser("export-bundle", help="Export a portable redacted diagnostic bundle")
+    export.add_argument("--output", required=True, help="Output JSON file")
+    export.add_argument("--days", type=int, default=30, help="Journal period to include (1-3650 days)")
+    export.add_argument("--incident", help="Export one saved investigation and its evidence window")
+    export.add_argument("--json", action="store_true")
+    export.set_defaults(func=command_export_bundle)
+
+    validate_bundle_parser = subparsers.add_parser("validate-bundle", help="Validate a diagnostic bundle without importing it")
+    validate_bundle_parser.add_argument("bundle", help="Bundle JSON file")
+    validate_bundle_parser.add_argument("--json", action="store_true")
+    validate_bundle_parser.set_defaults(func=command_validate_bundle)
 
     watch = subparsers.add_parser("watch", help="Continuously collect snapshots for a quiet background journal")
     watch.add_argument("--interval", type=int, default=300)
