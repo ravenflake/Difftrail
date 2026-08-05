@@ -16,7 +16,9 @@ Difftrail is open source under `GPL-3.0-only`, and external contributions are we
 
 You retain copyright in your contribution. The CLA grants the Difftrail Project Maintainer a broad, non-exclusive license that includes sublicensing and relicensing rights. This is intended to let the public project remain GPL-licensed while preserving the option to offer commercial or other alternative licenses later.
 
-External pull requests must include the CLA acknowledgement from the pull request template. A maintainer should not merge copyrightable contributions without a recorded acknowledgement.
+External pull requests containing copyrightable contributions must include the checked visible CLA acknowledgement from the pull request template. The automated check recognizes only that exact visible template acknowledgement.
+
+Repository-owner-authored pull requests do not need that acknowledgement for work owned by the Project Maintainer. If an owner-authored pull request includes third-party copyrightable material, the owner must identify it and record the necessary permission before merging.
 
 If you are contributing on behalf of a company or other legal entity, only agree to the CLA if you are authorized to bind that entity or otherwise have permission to grant the required rights.
 
