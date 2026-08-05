@@ -4,9 +4,11 @@ on:
   pull_request:
     types: [opened, edited, synchronize, reopened]
 
-permissions:
-  contents: read
-  pull-requests: read
+permissions: {}
+
+concurrency:
+  group: cla-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   cla:
@@ -14,27 +16,35 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Verify acknowledgement
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           script: |
             const pr = context.payload.pull_request;
-            const association = pr.author_association;
+            const repositoryOwner = context.payload.repository?.owner?.login;
+            const isRepositoryOwner =
+              Boolean(repositoryOwner) && pr.user?.login === repositoryOwner;
 
-            // Contributions from the repository owner are already controlled by
-            // the project maintainer and do not require an inbound CLA grant.
-            if (association === 'OWNER') {
-              core.info('Repository owner contribution; CLA acknowledgement not required.');
+            // Ignore Markdown that does not represent visible pull request content.
+            const visibleBody = (pr.body || '')
+              .replace(/<!--[\s\S]*?(?:-->|$)/g, '')
+              .replace(/```[\s\S]*?(?:```|$)/g, '')
+              .split(/\r?\n/)
+              .filter((line) => !/^\s*>/.test(line) && !/^(?: {4}|\t)/.test(line))
+              .join('\n');
+
+            const acknowledgement =
+              /^-\s*\[[xX]\]\s+I have read and agree to the Difftrail Contributor License Agreement\.\s*$/m;
+
+            if (isRepositoryOwner) {
+              core.info('Repository-owner pull request; inbound CLA acknowledgement is not required.');
               return;
             }
 
-            const body = pr.body || '';
-            const acknowledgement = /- \[[xX]\] I have read and agree to the Difftrail Contributor License Agreement/;
-
-            if (!acknowledgement.test(body)) {
+            if (!acknowledgement.test(visibleBody)) {
               core.setFailed(
-                'External contributors must check the Contributor License Agreement acknowledgement in the pull request template before this PR can be merged.'
+                'External contributors must check the visible CLA acknowledgement in the pull request template before this PR can be merged.'
               );
               return;
             }
 
-            core.info('CLA acknowledgement found in pull request body.');
+            core.info('CLA acknowledgement found in visible pull request content.');
