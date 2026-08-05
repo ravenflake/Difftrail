@@ -27,7 +27,8 @@ function Invoke-Installer {
 
 try {
     Write-Host "Installing into isolated smoke-test directory: $installRoot"
-    Invoke-Installer -FilePath $installer -ArgumentList @("/S", "/D=`"$installRoot`"")
+    # NSIS requires /D= to be the final argument and rejects a quoted value.
+    Invoke-Installer -FilePath $installer -ArgumentList @("/S", "/D=$installRoot")
 
     $installedExecutable = Get-ChildItem -LiteralPath $installRoot -Filter "*.exe" -File -Recurse |
         Where-Object { $_.Name -ine "uninstall.exe" } |
