@@ -27,7 +27,7 @@ By agreeing to this Agreement, you represent that:
 - you are legally entitled to grant the rights described above;
 - the Contribution is your original work, except for material you clearly identify as third-party material;
 - if your employer or another party has rights in the Contribution, you have obtained any permission required to make the Contribution and grant these rights; and
-- you will identify any third-party license or other restriction that applies to material included in your Contribution.
+- you will identify any third-party license or other restriction that applies to material included in the Contribution.
 
 You are not required to provide support for your Contribution and provide it without warranties or conditions unless separately agreed in writing.
 
@@ -43,7 +43,9 @@ The Project Maintainer is not required to accept, merge, distribute, or continue
 
 ## 6. How to agree
 
-For an external pull request to be accepted, the contributor must affirm that they have read and agree to this Agreement using the acknowledgement included in the repository pull request template or another recorded method approved by the Project Maintainer.
+For an external pull request containing copyrightable material to be accepted, the contributor must affirm that they have read and agree to this Agreement by checking the visible acknowledgement included in the repository pull request template. The automated CLA check recognizes only that exact visible template acknowledgement.
+
+Repository-owner-authored pull requests are exempt from this inbound acknowledgement for work owned by the Project Maintainer. The Project Maintainer remains responsible for obtaining and recording any necessary permission for third-party material included in an owner-authored pull request.
 
 If a Contribution is made on behalf of a company or other legal entity, the person agreeing must have authority to bind that entity.
 
