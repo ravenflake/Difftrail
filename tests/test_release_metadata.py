@@ -28,15 +28,15 @@ class ReleaseMetadataTests(unittest.TestCase):
 
         root = Path(__file__).resolve().parents[1]
         script = (root / "scripts" / "validate-installer.ps1").read_text(encoding="utf-8")
-        self.assertIn(
-            'Invoke-Installer -FilePath $installer -ArgumentList @("/S", "/D=$installRoot")',
-            script,
-        )
+        self.assertIn('Invoke-Installer -FilePath $installer -RawArguments "/S /D=$installRoot"', script)
         self.assertIn("[Diagnostics.ProcessStartInfo]::new()", script)
         self.assertIn("$startInfo.ArgumentList.Add($argument)", script)
         self.assertIn("[Diagnostics.Process]::Start($startInfo)", script)
         self.assertIn("$process.WaitForExit($installerTimeoutMilliseconds)", script)
         self.assertIn("$installerTimeoutMilliseconds = 120000", script)
+        self.assertIn("$processTreeWaitMilliseconds = 5000", script)
+        self.assertIn("Get-CimInstance -ClassName Win32_Process", script)
+        self.assertIn("Wait-ForProcessIdsToExit -ProcessIds $descendantIds", script)
         self.assertIn("$Process.HasExited", script)
         self.assertIn("$Process.Kill($true)", script)
         self.assertIn("$Process.Kill()", script)
@@ -46,6 +46,10 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("$exitCode = $process.ExitCode", script)
         self.assertIn("if ($exitCode -ne 0)", script)
         self.assertIn('Filter "difftrail-desktop.exe"', script)
+        self.assertIn('$startInfo.Arguments = $RawArguments', script)
+        self.assertIn('Invoke-Installer -FilePath $installer -RawArguments "/S /D=$installRoot"', script)
+        self.assertIn('Invoke-Installer -FilePath $uninstaller.FullName -ArgumentList @("/S", "_?=$installRoot")', script)
+        self.assertIn("Difftrail Installer Smoke ", script)
         self.assertNotIn("Start-Process", script)
         self.assertIn('throw "Installer process failed with exit code', script)
         self.assertIn("Remove-Item -LiteralPath $smokeRoot -Recurse -Force -ErrorAction Stop", script)
