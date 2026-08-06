@@ -35,11 +35,17 @@ def run_investigation(
     """Create, assess, and persist one deterministic investigation."""
 
     incident = database.create_incident(request, status=status)
-    events = database.list_events(limit=10_000, ascending=True)
+    window_start = request.onset_start - timedelta(days=request.lookback_days)
+    events = database.list_events(
+        limit=10_000,
+        ascending=True,
+        since=window_start,
+        until=request.onset_end,
+    )
     hypotheses = tuple(rank_candidates(events, request))
     coverage = database.investigation_coverage(
         request.subsystem,
-        since=request.onset_start - timedelta(days=request.lookback_days),
+        since=window_start,
         until=request.onset_end,
     )
     assessment = assess_investigation(request, hypotheses, events, coverage=coverage)
