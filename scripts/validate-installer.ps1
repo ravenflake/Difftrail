@@ -13,6 +13,7 @@ $smokeRoot = $null
 $installRoot = $null
 $installerTimeoutMilliseconds = 120000
 $processTreeWaitMilliseconds = 5000
+$uninstallCleanupTimeoutMilliseconds = 30000
 
 function Get-DescendantProcessIds {
     param(
@@ -156,8 +157,11 @@ try {
     }
 
     Write-Host "Uninstalling isolated installation: $($uninstaller.FullName)"
-    Invoke-Installer -FilePath $uninstaller.FullName -ArgumentList @("/S", "_?=$installRoot")
-    for ($attempt = 0; $attempt -lt 20 -and (Test-Path -LiteralPath $installedExecutable.FullName); $attempt++) {
+    # NSIS requires _?= to be the final, unquoted raw argument so the
+    # uninstaller does not copy itself before running.
+    Invoke-Installer -FilePath $uninstaller.FullName -RawArguments "/S _?=$installRoot"
+    $uninstallDeadline = [DateTime]::UtcNow.AddMilliseconds($uninstallCleanupTimeoutMilliseconds)
+    while ((Test-Path -LiteralPath $installedExecutable.FullName) -and [DateTime]::UtcNow -lt $uninstallDeadline) {
         Start-Sleep -Milliseconds 250
     }
     if (Test-Path -LiteralPath $installedExecutable.FullName) {
