@@ -13,6 +13,38 @@ $smokeRoot = $null
 $installRoot = $null
 $installerTimeoutMilliseconds = 120000
 
+function Stop-InstallerProcess {
+    param(
+        [Diagnostics.Process]$Process
+    )
+
+    if ($Process.HasExited) {
+        return
+    }
+
+    try {
+        $killTree = [Diagnostics.Process].GetMethod("Kill", [type[]]@([bool]))
+        if ($null -ne $killTree) {
+            $Process.Kill($true)
+        }
+        else {
+            $Process.Kill()
+        }
+    }
+    catch {
+        # The process may have exited between HasExited and Kill. Preserve any
+        # real termination failure, but do not replace the timeout diagnosis
+        # with a race-dependent exception.
+        if (-not $Process.HasExited) {
+            throw
+        }
+    }
+
+    if (-not $Process.HasExited) {
+        $Process.WaitForExit()
+    }
+}
+
 function Invoke-Installer {
     param(
         [string]$FilePath,
@@ -30,8 +62,7 @@ function Invoke-Installer {
     try {
         $process = [Diagnostics.Process]::Start($startInfo)
         if (-not $process.WaitForExit($installerTimeoutMilliseconds)) {
-            $process.Kill()
-            $process.WaitForExit()
+            Stop-InstallerProcess -Process $process
             throw "Installer process timed out after ${installerTimeoutMilliseconds} ms: $FilePath"
         }
         $exitCode = $process.ExitCode

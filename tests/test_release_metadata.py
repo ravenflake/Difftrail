@@ -1,3 +1,4 @@
+import re
 import unittest
 
 from scripts.check_release_metadata import read_versions
@@ -9,6 +10,17 @@ class ReleaseMetadataTests(unittest.TestCase):
 
         root = Path(__file__).resolve().parents[1]
         versions = read_versions(root)
+        expected_sources = {
+            "difftrail/__init__.py",
+            "pyproject.toml",
+            "ui/package.json",
+            "ui/package-lock.json",
+            "ui/package-lock.json#root",
+            "ui/src-tauri/tauri.conf.json",
+            "ui/src-tauri/Cargo.toml",
+            "ui/src-tauri/Cargo.lock",
+        }
+        self.assertEqual(set(versions), expected_sources)
         self.assertEqual(set(versions.values()), {"0.1.3"})
 
     def test_installer_smoke_script_preserves_argument_and_exit_code_contract(self) -> None:
@@ -24,7 +36,12 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("$startInfo.ArgumentList.Add($argument)", script)
         self.assertIn("[Diagnostics.Process]::Start($startInfo)", script)
         self.assertIn("$process.WaitForExit($installerTimeoutMilliseconds)", script)
-        self.assertIn("$process.Kill()", script)
+        self.assertIn("$installerTimeoutMilliseconds = 120000", script)
+        self.assertIn("$Process.HasExited", script)
+        self.assertIn("$Process.Kill($true)", script)
+        self.assertIn("$Process.Kill()", script)
+        self.assertLess(script.index("$Process.Kill()"), script.index("$Process.WaitForExit()"))
+        self.assertIn("$process.Dispose()", script)
         self.assertIn("Installer process timed out after", script)
         self.assertIn("$exitCode = $process.ExitCode", script)
         self.assertIn("if ($exitCode -ne 0)", script)
@@ -41,6 +58,12 @@ class ReleaseMetadataTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         workflow = (root / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
         self.assertIn("id: release_tag", workflow)
-        self.assertIn("steps.release_tag.outputs.expected", workflow)
-        self.assertIn("python scripts/check_release_metadata.py --expected", workflow)
-        self.assertNotIn("versions = {", workflow)
+        self.assertIn(
+            "EXPECTED_VERSION: ${{ steps.release_tag.outputs.expected }}",
+            workflow,
+        )
+        self.assertIn(
+            'python scripts/check_release_metadata.py --expected "${EXPECTED_VERSION}"',
+            workflow,
+        )
+        self.assertNotRegex(workflow, re.compile(r"\bversions\s*=\s*\{"))
