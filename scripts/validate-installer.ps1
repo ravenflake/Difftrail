@@ -9,9 +9,9 @@ if ([IO.Path]::GetExtension($installer) -ine ".exe") {
     throw "InstallerPath must point to a Windows executable: $installer"
 }
 
-$smokeRoot = Join-Path ([IO.Path]::GetTempPath()) ("Difftrail-installer-smoke-" + [Guid]::NewGuid().ToString("N"))
-$installRoot = Join-Path $smokeRoot "install"
-New-Item -ItemType Directory -Path $installRoot -Force | Out-Null
+$smokeRoot = $null
+$installRoot = $null
+$installerTimeoutMilliseconds = 120000
 
 function Invoke-Installer {
     param(
@@ -26,13 +26,20 @@ function Invoke-Installer {
     foreach ($argument in $ArgumentList) {
         [void]$startInfo.ArgumentList.Add($argument)
     }
-    $process = [Diagnostics.Process]::Start($startInfo)
+    $process = $null
     try {
-        $process.WaitForExit()
+        $process = [Diagnostics.Process]::Start($startInfo)
+        if (-not $process.WaitForExit($installerTimeoutMilliseconds)) {
+            $process.Kill()
+            $process.WaitForExit()
+            throw "Installer process timed out after ${installerTimeoutMilliseconds} ms: $FilePath"
+        }
         $exitCode = $process.ExitCode
     }
     finally {
-        $process.Dispose()
+        if ($null -ne $process) {
+            $process.Dispose()
+        }
     }
     if ($exitCode -ne 0) {
         throw "Installer process failed with exit code ${exitCode}: $FilePath"
@@ -40,15 +47,18 @@ function Invoke-Installer {
 }
 
 try {
+    $smokeRoot = Join-Path ([IO.Path]::GetTempPath()) ("Difftrail-installer-smoke-" + [Guid]::NewGuid().ToString("N"))
+    $installRoot = Join-Path $smokeRoot "install"
+    New-Item -ItemType Directory -Path $installRoot -Force | Out-Null
+
     Write-Host "Installing into isolated smoke-test directory: $installRoot"
     # NSIS requires /D= to be the final argument and rejects a quoted value.
     Invoke-Installer -FilePath $installer -ArgumentList @("/S", "/D=$installRoot")
 
-    $installedExecutable = Get-ChildItem -LiteralPath $installRoot -Filter "*.exe" -File -Recurse |
-        Where-Object { $_.Name -ine "uninstall.exe" } |
+    $installedExecutable = Get-ChildItem -LiteralPath $installRoot -Filter "difftrail-desktop.exe" -File -Recurse |
         Select-Object -First 1
     if ($null -eq $installedExecutable) {
-        throw "Silent installation completed but no application executable was found under $installRoot"
+        throw "Silent installation completed but difftrail-desktop.exe was not found under $installRoot"
     }
 
     $uninstaller = Get-ChildItem -LiteralPath $installRoot -Filter "uninstall.exe" -File -Recurse |
@@ -70,7 +80,7 @@ catch {
     $failure = $_
 }
 finally {
-    if (Test-Path -LiteralPath $smokeRoot) {
+    if ($null -ne $smokeRoot -and (Test-Path -LiteralPath $smokeRoot)) {
         try {
             Remove-Item -LiteralPath $smokeRoot -Recurse -Force -ErrorAction Stop
         }
