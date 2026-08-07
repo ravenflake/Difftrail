@@ -165,4 +165,5 @@ class CollectorTests(unittest.TestCase):
         )
         self.assertEqual(events[3].entity, "Example.exe")
         self.assertEqual(events[4].details["application_name"], "Example.exe")
-        self.assertNotIn(r"C:\Users\testuser", events[4].details["application_name"])
+        for event in events[3:]:
+            self.assertNotIn(r"C:\Users\testuser", str(event.details))

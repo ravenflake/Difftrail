@@ -12,6 +12,13 @@ class SimulationTests(unittest.TestCase):
 
         self.assertTrue(report["passed"])
         self.assertEqual(report["scenario_count"], 5)
+        update_scenario = next(
+            item for item in report["scenarios"] if item["name"] == "windows-update-before-unexpected-restart"
+        )
+        update_event = update_scenario["top"]["event"]
+        self.assertEqual(update_event["source"], "updates")
+        self.assertEqual(update_event["title"], "Windows update KB5061234 installed")
+        self.assertEqual(update_event["action"], "installed")
         self.assertEqual(report["checks"], {
             "capture": True,
             "ranking": True,

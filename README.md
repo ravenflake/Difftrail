@@ -163,7 +163,15 @@ python -m difftrail validate-scenarios
 python -m difftrail validate-scenarios --json
 ```
 
-The scenarios cover an audio endpoint replacement, service/task/startup additions, an application update, and a graphics driver change mixed with unrelated application and persistence changes. Each run checks that the baseline is quiet, the expected transitions are captured, the expected evidence appears in the top three, no unrelated change receives High confidence, and the evidence includes a safe diagnostic target. The audio scenario validates endpoint presence changes; the current Windows collector does not claim to observe the user's default-output setting itself.
+The scenarios cover:
+
+- an audio endpoint replacement;
+- service, task, and startup additions;
+- an application update;
+- a Windows Update transition followed by an unexpected restart; and
+- a graphics driver change mixed with unrelated application and persistence changes.
+
+Each run checks that the baseline is quiet, the expected transitions are captured, the expected evidence appears in the top three, no unrelated change receives High confidence, and the evidence includes a safe diagnostic target. The audio scenario validates endpoint presence changes; the current Windows collector does not claim to observe the user's default-output setting itself.
 
 The resource validator measures the real watcher process and collector children during startup and steady state. It requires the optional psutil package only for this validation command; the application itself still has no third-party runtime dependency.
 
