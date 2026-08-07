@@ -1,5 +1,6 @@
 import subprocess
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 from difftrail.collectors.powershell import PowerShellError, run_json
@@ -97,3 +98,71 @@ class CollectorTests(unittest.TestCase):
         self.assertIn("apps", snapshots)
         self.assertIn("services", snapshots)
         self.assertTrue(any(error.startswith("drivers:") for error in collector.last_errors))
+
+    def test_eventlog_symptoms_are_normalized_across_supported_windows_events(self) -> None:
+        rows = [
+            {
+                "TimeCreated": "2026-08-07T10:00:00Z",
+                "Id": 4101,
+                "LogName": "System",
+                "ProviderName": "Display",
+                "Level": "Error",
+                "RecordId": "1",
+                "Message": "Display driver stopped responding and has recovered.",
+            },
+            {
+                "TimeCreated": "2026-08-07T10:01:00Z",
+                "Id": 41,
+                "LogName": "System",
+                "ProviderName": "Microsoft-Windows-Kernel-Power",
+                "Level": "Critical",
+                "RecordId": "2",
+                "Message": "The system rebooted without cleanly shutting down first.",
+            },
+            {
+                "TimeCreated": "2026-08-07T10:02:00Z",
+                "Id": 6008,
+                "LogName": "System",
+                "ProviderName": "EventLog",
+                "Level": "Error",
+                "RecordId": "3",
+                "Message": "The previous system shutdown was unexpected.",
+            },
+            {
+                "TimeCreated": "2026-08-07T10:03:00Z",
+                "Id": 1002,
+                "LogName": "Application",
+                "ProviderName": "Application Hang",
+                "Level": "Error",
+                "RecordId": "4",
+                "Message": r"The program C:\Users\testuser\Games\Example.exe version 1.0 stopped interacting with Windows.",
+            },
+            {
+                "TimeCreated": "2026-08-07T10:04:00Z",
+                "Id": 1000,
+                "LogName": "Application",
+                "ProviderName": "Application Error",
+                "Level": "Error",
+                "RecordId": "5",
+                "Message": r"Faulting application name: C:\Users\testuser\Games\Example.exe, version 1.2.3",
+            },
+        ]
+        collector = WindowsCollector()
+        with patch("difftrail.collectors.windows.platform.system", return_value="Windows"), patch(
+            "difftrail.collectors.windows.run_json", return_value=rows
+        ):
+            events = collector.collect_symptoms(datetime(2026, 8, 7, 9, 59, tzinfo=timezone.utc))
+
+        self.assertEqual(
+            [(event.action, event.subsystem, event.severity) for event in events],
+            [
+                ("driver_reset", "graphics", "high"),
+                ("unexpected_restart", "general", "critical"),
+                ("unexpected_shutdown", "general", "high"),
+                ("hang", "application", "high"),
+                ("crash", "application", "high"),
+            ],
+        )
+        self.assertEqual(events[3].entity, "Example.exe")
+        self.assertEqual(events[4].details["application_name"], "Example.exe")
+        self.assertNotIn(r"C:\Users\testuser", events[4].details["application_name"])

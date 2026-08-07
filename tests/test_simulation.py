@@ -11,7 +11,7 @@ class SimulationTests(unittest.TestCase):
         report = run_controlled_fixture_suite()
 
         self.assertTrue(report["passed"])
-        self.assertEqual(report["scenario_count"], 4)
+        self.assertEqual(report["scenario_count"], 5)
         self.assertEqual(report["checks"], {
             "capture": True,
             "ranking": True,
