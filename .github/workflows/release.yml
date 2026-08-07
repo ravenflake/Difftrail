@@ -22,16 +22,14 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Validate release tag and metadata
+      - name: Parse release tag
+        id: release_tag
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           python - <<'PY'
-          import json
           import os
           import re
-          import tomllib
-          from pathlib import Path
 
           tag = os.environ["RELEASE_TAG"]
           match = re.fullmatch(
@@ -45,32 +43,14 @@ jobs:
                   f"SemVer prerelease suffix, got {tag!r}"
               )
           expected = ".".join(match.group(index) for index in range(1, 4))
-
-          with Path("pyproject.toml").open("rb") as handle:
-              python_version = tomllib.load(handle)["project"]["version"]
-          with Path("ui/package.json").open(encoding="utf-8") as handle:
-              ui_version = json.load(handle)["version"]
-          with Path("ui/src-tauri/tauri.conf.json").open(encoding="utf-8") as handle:
-              tauri_version = json.load(handle)["version"]
-          with Path("ui/src-tauri/Cargo.toml").open("rb") as handle:
-              cargo_version = tomllib.load(handle)["package"]["version"]
-          with Path("ui/src-tauri/Cargo.lock").open("rb") as handle:
-              lock_packages = tomllib.load(handle)["package"]
-          lock_version = next(item["version"] for item in lock_packages if item["name"] == "difftrail-desktop")
-
-          versions = {
-              "pyproject.toml": python_version,
-              "ui/package.json": ui_version,
-              "ui/src-tauri/tauri.conf.json": tauri_version,
-              "ui/src-tauri/Cargo.toml": cargo_version,
-              "ui/src-tauri/Cargo.lock": lock_version,
-          }
-          mismatches = {path: version for path, version in versions.items() if version != expected}
-          if mismatches:
-              details = ", ".join(f"{path}={version!r}" for path, version in mismatches.items())
-              raise SystemExit(f"Release {tag} expects {expected}; metadata mismatch: {details}")
-          print(f"Validated {tag}: {expected} matches all release metadata")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"expected={expected}\n")
           PY
+
+      - name: Check release metadata consistency
+        env:
+          EXPECTED_VERSION: ${{ steps.release_tag.outputs.expected }}
+        run: python scripts/check_release_metadata.py --expected "${EXPECTED_VERSION}"
 
   publish-artifact:
     needs: validate-version
@@ -107,6 +87,13 @@ jobs:
 
       - name: Build Windows installer
         run: npm run desktop:build
+
+      - name: Validate installer artifact with silent install/uninstall
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem -LiteralPath "src-tauri/target/release/bundle/nsis" -Filter "*-setup.exe" -File | Select-Object -First 1
+          if ($null -eq $installer) { throw "No NSIS installer was produced" }
+          & "$env:GITHUB_WORKSPACE/scripts/validate-installer.ps1" -InstallerPath $installer.FullName
 
       - name: Publish Windows installer artifact
         uses: actions/upload-artifact@v4

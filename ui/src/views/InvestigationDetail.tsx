@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { Incident, Hypothesis } from "../types";
+import type { AssessmentState, Incident, Hypothesis } from "../types";
 import { formatDateTime, relativeTime, subsystemLabel } from "../format";
 import { Icon } from "../components/Icon";
 import { EvidenceList } from "../components/EvidenceList";
@@ -7,12 +7,16 @@ import { EvidenceList } from "../components/EvidenceList";
 interface Props {
   incident: Incident;
   onFeedback: (incidentId: string, outcome: "correct" | "incorrect" | "unknown", eventId?: string) => Promise<void>;
+  onExport: (incidentId: string) => Promise<void>;
+  exportBusy: boolean;
+  exportError: string | null;
 }
 
-export function InvestigationDetail({ incident, onFeedback }: Props) {
+export function InvestigationDetail({ incident, onFeedback, onExport, exportBusy, exportError }: Props) {
   const [feedbackBusy, setFeedbackBusy] = useState(false);
   const [feedbackError, setFeedbackError] = useState<string | null>(null);
   const lead = incident.results[0];
+  const assessment = incident.assessment || "insufficient_evidence";
 
   async function giveFeedback(outcome: "correct" | "incorrect" | "unknown", eventId?: string) {
     setFeedbackBusy(true); setFeedbackError(null);
@@ -23,12 +27,15 @@ export function InvestigationDetail({ incident, onFeedback }: Props) {
     <div className="incident-detail-page">
       <section className="incident-heading">
         <div><span className="eyebrow">Investigation</span><h2>{incident.description}</h2><div className="heading-meta"><span>{subsystemLabel(incident.subsystem)}</span><span>·</span><span>Started {formatDateTime(incident.onset_start)}</span><span>·</span><span>{incident.lookback_days}-day lookback</span></div></div>
+        <button type="button" className="button button-secondary button-small" onClick={() => void onExport(incident.id)} disabled={exportBusy}>{exportBusy ? "Preparing…" : "Export investigation"}</button>
       </section>
+      <AssessmentBanner state={assessment} reasons={incident.assessment_reasons || []} />
+      {exportError && <div className="form-error" role="alert"><Icon name="alert" size={14} /> {exportError}</div>}
 
-      {!lead ? <div className="large-empty"><h3>No candidate changes yet.</h3><p>The journal did not contain a change in the selected window.</p></div> : <>
+      {!lead ? <div className="large-empty"><h3>{emptyTitle(assessment)}</h3><p>{emptyBody(assessment)}</p></div> : <>
         <section className={`lead-card confidence-border-${lead.confidence.toLowerCase()}`}>
           <div className="lead-card-top"><span className={`confidence-badge confidence-${lead.confidence.toLowerCase()}`}><span className="confidence-dot" />{lead.confidence} confidence</span><span className="rank-label">Top candidate</span></div>
-          <div className="lead-card-body"><div className="lead-icon"><Icon name="spark" size={24} /></div><div><span className="eyebrow">Most plausible recent change</span><h3>{lead.event.title}</h3><p className="lead-subtitle">{lead.event.entity || subsystemLabel(lead.event.subsystem)} · {formatDateTime(lead.event.occurred_at)}</p></div></div>
+          <div className="lead-card-body"><div className="lead-icon"><Icon name="spark" size={24} /></div><div><span className="eyebrow">{leadLabel(assessment)}</span><h3>{lead.event.title}</h3><p className="lead-subtitle">{lead.event.entity || subsystemLabel(lead.event.subsystem)} · {formatDateTime(lead.event.occurred_at)}</p></div></div>
           <div className="lead-divider" />
           <div className="why-grid"><div><span className="eyebrow">Why it is here</span><EvidenceList items={lead.evidence} /></div><div className="next-step"><span className="eyebrow">Next step</span><p>{lead.next_action}</p><button type="button" className="button button-tertiary button-small" onClick={() => copyText(lead.safe_diagnostic.target)}><Icon name="copy" size={14} /> Copy {lead.safe_diagnostic.label} target</button><small>{lead.safe_diagnostic.note}</small></div></div>
           {lead.counter_evidence.length > 0 && <div className="counter-block"><span className="eyebrow">Counter-evidence</span><EvidenceList items={lead.counter_evidence} counter /></div>}
@@ -40,6 +47,35 @@ export function InvestigationDetail({ incident, onFeedback }: Props) {
       </>}
     </div>
   );
+}
+
+function AssessmentBanner({ state, reasons }: { state: AssessmentState; reasons: string[] }) {
+  const labels: Record<AssessmentState, { title: string; body: string }> = {
+    candidate_found: { title: "A plausible candidate was found", body: "The evidence supports reviewing this change first, but it is not proof of causality." },
+    insufficient_evidence: { title: "There is not enough evidence for a conclusion", body: "Difftrail found nearby changes, but the supporting signals are too weak or conflicted to call one the cause." },
+    no_recent_changes: { title: "No recent changes were recorded", body: "The selected window contains no journaled change before the reported onset." },
+    limited_coverage: { title: "The conclusion is limited by coverage", body: "Provider warnings or missing baselines mean the journal may not contain the relevant evidence." },
+  };
+  const copy = labels[state];
+  return <section className={`assessment-banner assessment-${state}`} role="status"><div className="assessment-icon"><Icon name={state === "candidate_found" ? "spark" : "alert"} size={17} /></div><div><strong>{copy.title}</strong><p>{copy.body}</p>{reasons.length > 0 && <ul>{reasons.map((reason, index) => <li key={`${reason}-${index}`}>{reason}</li>)}</ul>}</div></section>;
+}
+
+function leadLabel(state: AssessmentState): string {
+  if (state === "candidate_found") return "Most plausible recent change";
+  if (state === "limited_coverage") return "Candidate, with limited coverage";
+  return "Candidate, not a conclusion";
+}
+
+function emptyTitle(state: AssessmentState): string {
+  if (state === "limited_coverage") return "The journal has limited coverage.";
+  if (state === "no_recent_changes") return "No candidate changes yet.";
+  return "No reliable candidate change yet.";
+}
+
+function emptyBody(state: AssessmentState): string {
+  if (state === "limited_coverage") return "Run a clean scan and establish the missing baselines before relying on this investigation.";
+  if (state === "no_recent_changes") return "The journal did not contain a change in the selected window.";
+  return "The journal did not contain enough matching evidence to rank a likely cause.";
 }
 
 function Candidate({ hypothesis, onFeedback, incidentId }: { hypothesis: Hypothesis; onFeedback: Props["onFeedback"]; incidentId: string }) {

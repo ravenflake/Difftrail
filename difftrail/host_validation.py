@@ -4,25 +4,13 @@ from collections import Counter
 from datetime import datetime, timedelta
 from typing import Any
 
+from .assessment import NEUTRAL_ASSESSMENT
 from .db import Database
-from .models import ensure_utc, iso_datetime, parse_datetime, utc_now
+from .models import ensure_utc, iso_datetime, utc_now
+from .privacy import error_bucket
 
 
 MAX_VALIDATION_DAYS = 3650
-KNOWN_ERROR_BUCKETS = {
-    "updates",
-    "apps",
-    "drivers",
-    "services",
-    "tasks",
-    "startup",
-    "devices",
-    "snapshots",
-    "symptoms",
-    "collector",
-}
-
-
 def _rate(numerator: int, denominator: int) -> float | None:
     if denominator == 0:
         return None
@@ -30,8 +18,7 @@ def _rate(numerator: int, denominator: int) -> float | None:
 
 
 def _error_bucket(error: object) -> str:
-    prefix = str(error).split(":", 1)[0].strip()
-    return prefix if prefix in KNOWN_ERROR_BUCKETS else "other"
+    return error_bucket(error)
 
 
 def _safe_count(value: object) -> int:
@@ -71,6 +58,9 @@ def _aggregate_overhead(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _investigation_metrics(incidents: list[dict[str, Any]]) -> dict[str, Any]:
+    assessment_distribution = Counter(
+        str(incident.get("assessment", NEUTRAL_ASSESSMENT)) for incident in incidents
+    )
     outcomes = Counter(
         incident["feedback"]["outcome"]
         for incident in incidents
@@ -112,6 +102,7 @@ def _investigation_metrics(incidents: list[dict[str, Any]]) -> dict[str, Any]:
             "rank_3": rank_counts["rank_3"],
             "outside_top3": rank_counts["outside_top3"],
         },
+        "assessment_distribution": dict(sorted(assessment_distribution.items())),
     }
 
 

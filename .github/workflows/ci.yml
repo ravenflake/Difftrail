@@ -35,6 +35,10 @@ jobs:
       - name: Compile source
         run: python -m compileall -q difftrail tests
 
+      - name: Check release metadata
+        if: matrix.python-version == '3.12'
+        run: python scripts/check_release_metadata.py
+
       - name: Run tests
         run: python -m unittest discover -s tests -v
 
@@ -43,6 +47,24 @@ jobs:
 
       - name: Run scanner-backed fixture validation
         run: python -m difftrail validate-scenarios
+
+      - name: Run journal doctor smoke test
+        shell: pwsh
+        run: |
+          $database = Join-Path $env:RUNNER_TEMP "difftrail-doctor-smoke.db"
+          python -m difftrail --db $database doctor --json
+
+      - name: Run redacted bundle export and validation smoke test
+        shell: pwsh
+        run: |
+          $database = Join-Path $env:RUNNER_TEMP "difftrail-bundle-smoke.db"
+          $bundle = Join-Path $env:RUNNER_TEMP "difftrail-bundle-smoke.json"
+          python -m difftrail --db $database simulate nvidia-driver-switch --json
+          if ($LASTEXITCODE -ne 0) { throw "simulate smoke test failed with exit code $LASTEXITCODE" }
+          python -m difftrail --db $database export-bundle --output $bundle --json
+          if ($LASTEXITCODE -ne 0) { throw "export-bundle smoke test failed with exit code $LASTEXITCODE" }
+          python -m difftrail validate-bundle $bundle --json
+          if ($LASTEXITCODE -ne 0) { throw "validate-bundle smoke test failed with exit code $LASTEXITCODE" }
 
       - name: Run host-report smoke test
         run: 'python -m difftrail --db ":memory:" validate-host --json'
@@ -85,6 +107,13 @@ jobs:
 
       - name: Build UI
         run: npm run desktop:build
+
+      - name: Validate installer artifact with silent install/uninstall
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem -LiteralPath "src-tauri/target/release/bundle/nsis" -Filter "*-setup.exe" -File | Select-Object -First 1
+          if ($null -eq $installer) { throw "No NSIS installer was produced" }
+          & "$env:GITHUB_WORKSPACE/scripts/validate-installer.ps1" -InstallerPath $installer.FullName
 
       - name: Upload Windows installer
         uses: actions/upload-artifact@v4

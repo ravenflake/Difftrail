@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Iterable
 
-from .correlation import Hypothesis, rank_candidates
+from .correlation import Hypothesis, assess_investigation, rank_candidates
 from .models import Event, IncidentRequest, utc_now
 
 
@@ -18,6 +18,8 @@ class GroundTruthScenario:
     expected_event_id: str | None
     expected_max_rank: int = 1
     expected_confidence: str | None = None
+    expected_assessment: str | None = None
+    coverage: dict[str, Any] | None = None
 
 
 def _change(
@@ -73,6 +75,7 @@ def build_ground_truth_scenarios(base: datetime | None = None) -> tuple[GroundTr
                 _symptom(now, "gt-graphics-crash", 0.5, "graphics", "Game crash", "crash"),
             ),
             "gt-graphics-driver",
+            expected_assessment="candidate_found",
         )
     )
     scenarios.append(
@@ -86,6 +89,7 @@ def build_ground_truth_scenarios(base: datetime | None = None) -> tuple[GroundTr
                 _symptom(now, "gt-audio-failure", 2, "audio", "Audio failure", "device_failure"),
             ),
             "gt-audio-device",
+            expected_assessment="candidate_found",
         )
     )
     scenarios.append(
@@ -99,6 +103,7 @@ def build_ground_truth_scenarios(base: datetime | None = None) -> tuple[GroundTr
                 _symptom(now, "gt-network-failure", 0.5, "network", "Connectivity failure", "connectivity_failure"),
             ),
             "gt-network-driver",
+            expected_assessment="candidate_found",
         )
     )
     scenarios.append(
@@ -112,6 +117,7 @@ def build_ground_truth_scenarios(base: datetime | None = None) -> tuple[GroundTr
                 _symptom(now, "gt-older-crash", 0.25, "graphics", "Game crash", "crash"),
             ),
             "gt-older-driver",
+            expected_assessment="candidate_found",
         )
     )
     scenarios.append(
@@ -127,6 +133,7 @@ def build_ground_truth_scenarios(base: datetime | None = None) -> tuple[GroundTr
             ),
             "gt-audio-driver-counter",
             expected_confidence="Medium",
+            expected_assessment="insufficient_evidence",
         )
     )
     scenarios.append(
@@ -140,6 +147,7 @@ def build_ground_truth_scenarios(base: datetime | None = None) -> tuple[GroundTr
             ),
             "gt-missing-driver",
             expected_confidence="Low",
+            expected_assessment="insufficient_evidence",
         )
     )
     scenarios.append(
@@ -153,6 +161,7 @@ def build_ground_truth_scenarios(base: datetime | None = None) -> tuple[GroundTr
                 _symptom(now, "gt-no-cause-symptom", 0.5, "network", "Connectivity failure", "connectivity_failure"),
             ),
             None,
+            expected_assessment="insufficient_evidence",
         )
     )
     scenarios.append(
@@ -162,10 +171,47 @@ def build_ground_truth_scenarios(base: datetime | None = None) -> tuple[GroundTr
             IncidentRequest("the display failed", now - timedelta(hours=2), now, "graphics", 7),
             (
                 _change(now, "gt-post-onset-driver", 1, "graphics", "Graphics driver updated", "drivers"),
-                _change(now, "gt-post-onset-app", 5, "application", "Chat app updated", "apps"),
+                _change(now, "gt-post-onset-app", 1, "application", "Chat app updated", "apps"),
                 _symptom(now, "gt-post-onset-symptom", 1.5, "graphics", "Display failure", "device_failure"),
             ),
             None,
+            expected_assessment="no_recent_changes",
+        )
+    )
+    scenarios.append(
+        GroundTruthScenario(
+            "unrelated-symptoms-only",
+            "Only an unrelated application symptom exists for a graphics report.",
+            IncidentRequest("the graphics failed", now - timedelta(hours=1), now, "graphics", 7),
+            (_symptom(now, "gt-unrelated-symptom", 0.5, "application", "Application crash", "crash"),),
+            None,
+            expected_assessment="no_recent_changes",
+        )
+    )
+    scenarios.append(
+        GroundTruthScenario(
+            "simultaneous-changes-have-stable-tie-break",
+            "Two same-source changes happen together; the stable event ID tie-break must repeat.",
+            IncidentRequest("games are crashing", now - timedelta(hours=1), now, "graphics", 7),
+            (
+                _change(now, "gt-simultaneous-a", 8, "graphics", "Graphics setting A changed", "drivers"),
+                _change(now, "gt-simultaneous-b", 8, "graphics", "Graphics setting B changed", "drivers"),
+                _symptom(now, "gt-simultaneous-symptom", 0.25, "graphics", "Game crash", "crash"),
+            ),
+            "gt-simultaneous-a",
+            expected_assessment="candidate_found",
+        )
+    )
+    scenarios.append(
+        GroundTruthScenario(
+            "partial-provider-coverage",
+            "A plausible change exists but the latest scan had provider warnings and no symptom evidence.",
+            IncidentRequest("the display feels wrong", now - timedelta(hours=1), now, "graphics", 7),
+            (_change(now, "gt-partial-driver", 6, "graphics", "Graphics driver updated", "drivers"),),
+            "gt-partial-driver",
+            expected_confidence="Low",
+            expected_assessment="limited_coverage",
+            coverage={"known": True, "limited": True, "reasons": ["The latest scan reported provider warnings."]},
         )
     )
     return tuple(scenarios)
@@ -188,12 +234,32 @@ def run_ground_truth_suite(base: datetime | None = None) -> dict[str, Any]:
     top3 = 0
     no_false_high = 0
     expected_confidence_passes = 0
+    assessment_passes = 0
+    determinism_failures: list[str] = []
     for scenario in scenarios:
         hypotheses = rank_candidates(scenario.events, scenario.request)
+        assessment = assess_investigation(
+            scenario.request,
+            hypotheses,
+            scenario.events,
+            coverage=scenario.coverage,
+        )
+        baseline_order = [item.event.event_id for item in hypotheses]
+        for _ in range(3):
+            repeated_order = [
+                item.event.event_id
+                for item in rank_candidates(scenario.events, scenario.request)
+            ]
+            if repeated_order != baseline_order:
+                determinism_failures.append(scenario.name)
+                break
         rank = _rank_of(hypotheses, scenario.expected_event_id)
+        assessment_pass = scenario.expected_assessment is None or assessment.state == scenario.expected_assessment
+        assessment_passes += int(assessment_pass)
         if scenario.expected_event_id is None:
             passed = not any(item.confidence == "High" for item in hypotheses)
             no_false_high += int(passed)
+            passed = passed and assessment_pass
         else:
             known_cause += 1
             top1 += int(rank == 1)
@@ -202,7 +268,9 @@ def run_ground_truth_suite(base: datetime | None = None) -> dict[str, Any]:
                 bool(hypotheses) and hypotheses[0].event.event_id == scenario.expected_event_id and hypotheses[0].confidence == scenario.expected_confidence
             )
             expected_confidence_passes += int(confidence_pass)
-            passed = rank is not None and rank <= scenario.expected_max_rank and confidence_pass
+            passed = rank is not None and rank <= scenario.expected_max_rank and confidence_pass and assessment_pass
+        if scenario.name in determinism_failures:
+            passed = False
         reports.append(
             {
                 "name": scenario.name,
@@ -210,6 +278,7 @@ def run_ground_truth_suite(base: datetime | None = None) -> dict[str, Any]:
                 "expected_event_id": scenario.expected_event_id,
                 "rank": rank,
                 "top": hypotheses[0].as_dict() if hypotheses else None,
+                "assessment": assessment.as_dict(),
                 "passed": passed,
                 "candidate_count": len(hypotheses),
             }
@@ -222,7 +291,9 @@ def run_ground_truth_suite(base: datetime | None = None) -> dict[str, Any]:
         "top3_accuracy": round(top3 / known_cause, 3) if known_cause else 0.0,
         "no_false_high_rate": round(no_false_high / (len(scenarios) - known_cause), 3) if len(scenarios) != known_cause else 1.0,
         "expected_confidence_pass_rate": round(expected_confidence_passes / known_cause, 3) if known_cause else 0.0,
-        "passed": all(report["passed"] for report in reports) and stress["passed"],
+        "assessment_pass_rate": round(assessment_passes / len(scenarios), 3) if scenarios else 0.0,
+        "determinism": {"passed": not determinism_failures, "failures": determinism_failures},
+        "passed": all(report["passed"] for report in reports) and stress["passed"] and not determinism_failures,
         "perturbation": stress,
         "scenarios": reports,
     }

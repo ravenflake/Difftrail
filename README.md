@@ -222,6 +222,37 @@ npm run build
 
 Use `npm run desktop:build` for the full Windows installer build; it also requires the Python build extra and Rust toolchain described above.
 
+## v0.1.3 trust and portability
+
+The v0.1.3 release adds reliability and offline-sharing features without
+introducing new unverified Windows collectors:
+
+- Numbered, transactional SQLite migrations upgrade existing 0.1.0–0.1.2
+  journals and preserve the journal when a scan is interrupted.
+- `doctor --json` reports schema, SQLite integrity, stale scans, and journal
+  counts. Use `--recover-stale-scans` only when you want abandoned scans
+  explicitly marked as interrupted.
+- Redacted diagnostic bundles are portable JSON reports. They exclude raw
+  Event Log messages, usernames, absolute paths, process IDs, and the SQLite
+  database. Import is intentionally not supported; validating a bundle is
+  read-only.
+- Investigations now distinguish `candidate_found`, `insufficient_evidence`,
+  `no_recent_changes`, and `limited_coverage`.
+
+Useful commands:
+
+```powershell
+python -m difftrail --db .\difftrail.db doctor --json
+python -m difftrail --db .\difftrail.db export-bundle --output .\diagnostic.difftrail.json --days 30
+python -m difftrail validate-bundle .\diagnostic.difftrail.json --json
+```
+
+The desktop Health view can export a journal report, and an investigation
+detail view can export a scoped report. Bundle export is atomic and refuses to
+overwrite the live journal. Bundles are one-way support artifacts: validation
+and loading are read-only, and no bundle command merges data into the live
+journal.
+
 ## Current limits and next validation
 
 App lifecycle history is inferred from current inventory snapshots, so events that happen entirely between scans cannot be recovered yet. Windows Update and driver history currently come from state snapshots rather than a complete historical provider. The validation suite is synthetic and proves ranking behavior under known inputs; it does not yet prove real-world causal accuracy.
@@ -232,9 +263,11 @@ The safe scanner-backed scenarios cover the first controlled MVP cases without c
 
 This is an early Windows-first MVP foundation with a usable local desktop interface. A current-user NSIS installer and bundled backend/watcher are buildable, while real-world causal accuracy, longer and cross-machine overhead, and installed-runtime behavior remain open validation work. The project does not make automatic system changes. Investigation output may name a Windows diagnostic surface to open manually; Difftrail never launches it or performs rollback, uninstall, disable, or repair actions.
 
+Release notes are tracked in [`CHANGELOG.md`](CHANGELOG.md).
+
 ## Versioning
 
-Difftrail follows [Semantic Versioning 2.0.0](https://semver.org/) for user-visible releases. The current `0.1.2` line is the first coherent MVP foundation and remains pre-1.0 while real-world and installed-runtime validation are still open.
+Difftrail follows [Semantic Versioning 2.0.0](https://semver.org/) for user-visible releases. The current `0.1.3` line is the trust-and-portability hardening release and remains pre-1.0 while real-world and installed-runtime validation are still open.
 
 - `MAJOR` is reserved for incompatible changes after the product reaches 1.0.
 - `MINOR` adds backward-compatible product functionality within the pre-1.0 MVP line.

@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   Bootstrap,
+  BundleResponse,
   AutomationConfig,
   AutomationSummary,
   Incident,
@@ -157,6 +158,13 @@ export function recordFeedback(
   return request<{ incident: Incident }>(`/incidents/${encodeURIComponent(incidentId)}/feedback`, {
     method: "POST",
     body: JSON.stringify({ outcome, event_id: eventId }),
+  });
+}
+
+export function exportBundle(options: { days?: number; incident_id?: string }): Promise<BundleResponse> {
+  return request<BundleResponse>("/export-bundle", {
+    method: "POST",
+    body: JSON.stringify(options),
   });
 }
 

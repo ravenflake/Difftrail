@@ -17,9 +17,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
-from .correlation import investigation_summary, rank_candidates
 from .db import Database
-from .models import Event, IncidentRequest
+from .investigation import run_investigation
+from .models import KNOWN_SUBSYSTEMS, Event, IncidentRequest
 from ._process import _hidden_process_kwargs
 
 
@@ -579,19 +579,16 @@ def _create_investigation_draft(database: Database, event: Event) -> str | None:
     if not event.event_id or not database.record_automation_action(event.event_id, "draft_investigation"):
         return None
     description = f"Automatic draft: {event.title}"
+    subsystem = event.subsystem if event.subsystem in KNOWN_SUBSYSTEMS else "general"
     request = IncidentRequest(
         description=description,
         onset_start=event.occurred_at,
         onset_end=event.occurred_at,
-        subsystem=event.subsystem,
+        subsystem=subsystem,
         lookback_days=7,
     )
-    incident = database.create_incident(request, status="draft")
-    events = database.list_events(limit=10_000, ascending=True)
-    hypotheses = rank_candidates(events, request)
-    summary = investigation_summary(request, hypotheses)
-    database.update_incident_results(incident.id, summary["hypotheses"], status="draft")
-    return incident.id
+    run = run_investigation(database, request, status="draft")
+    return run.incident.id
 
 
 def process_scan_events(

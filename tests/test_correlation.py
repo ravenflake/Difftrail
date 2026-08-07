@@ -1,11 +1,55 @@
 import unittest
 from datetime import timedelta
 
-from difftrail.correlation import infer_subsystem, rank_candidates
+from difftrail.correlation import assess_investigation, infer_subsystem, investigation_summary, rank_candidates
 from difftrail.models import Event, IncidentRequest, utc_now
 
 
 class CorrelationTests(unittest.TestCase):
+    def test_investigation_summary_defaults_to_neutral_assessment(self) -> None:
+        now = utc_now()
+        request = IncidentRequest("graphics are broken", now, now, "graphics", 7)
+        summary = investigation_summary(request, [])
+        self.assertEqual(summary["assessment"]["state"], "insufficient_evidence")
+        self.assertTrue(summary["assessment"]["reasons"])
+
+    def test_assessment_distinguishes_no_recent_changes(self) -> None:
+        now = utc_now()
+        request = IncidentRequest("graphics are broken", now, now, "graphics", 7)
+        assessment = assess_investigation(request, [], [Event(now, "symptom", "graphics", "failure", "Display failure")])
+        self.assertEqual(assessment.state, "no_recent_changes")
+
+    def test_assessment_does_not_present_a_low_confidence_candidate_as_answer(self) -> None:
+        now = utc_now()
+        request = IncidentRequest("graphics are broken", now, now, "graphics", 7)
+        event = Event(now - timedelta(hours=2), "change", "graphics", "updated", "Graphics driver updated", source="drivers")
+        hypothesis = rank_candidates([event], request)
+        assessment = assess_investigation(request, hypothesis, [event])
+        self.assertEqual(assessment.state, "insufficient_evidence")
+
+    def test_assessment_surfaces_limited_coverage(self) -> None:
+        now = utc_now()
+        request = IncidentRequest("graphics are broken", now, now, "graphics", 7)
+        coverage = {"known": True, "limited": True, "reasons": ["The latest scan reported provider warnings."]}
+        assessment = assess_investigation(request, [], [], coverage=coverage)
+        self.assertEqual(assessment.state, "limited_coverage")
+        self.assertIn("The latest scan reported provider warnings.", assessment.reasons)
+        self.assertEqual(assessment.coverage, coverage)
+
+    def test_limited_coverage_is_visible_even_with_a_strong_candidate(self) -> None:
+        now = utc_now()
+        request = IncidentRequest("graphics are broken", now, now, "graphics", 7)
+        event = Event(now - timedelta(hours=2), "change", "graphics", "updated", "Graphics driver updated", source="drivers")
+        symptom = Event(now - timedelta(minutes=30), "symptom", "graphics", "failure", "Display failure")
+        hypotheses = rank_candidates([event, symptom], request)
+        assessment = assess_investigation(
+            request,
+            hypotheses,
+            [event, symptom],
+            coverage={"known": True, "limited": True, "reasons": ["Provider warning"]},
+        )
+        self.assertEqual(assessment.state, "limited_coverage")
+        self.assertIn("Provider warning", assessment.reasons)
     def test_infers_area_from_plain_language(self) -> None:
         self.assertEqual(infer_subsystem("Bluetooth headphones stopped working"), "bluetooth")
         self.assertEqual(infer_subsystem("my game crashes after launch"), "graphics")

@@ -3,16 +3,23 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import threading
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
 
+from .assessment import ASSESSMENT_STATES, NEUTRAL_ASSESSMENT
 from .models import Event, Incident, IncidentRequest, SnapshotItem, ensure_utc, iso_datetime, parse_datetime, utc_now
 from .privacy import extract_safe_application_name, redact_text, redact_value
 
 
 DEFAULT_RETENTION_DAYS = 30
+DATABASE_SCHEMA_VERSION = 5
+STALE_SCAN_AFTER = timedelta(minutes=15)
+VALID_SCAN_STATUSES = frozenset({"running", "ok", "partial", "failed", "interrupted"})
+VALID_INVESTIGATION_ASSESSMENTS = ASSESSMENT_STATES
+_DATABASE_INITIALIZATION_LOCK = threading.RLock()
 
 
 # These fields describe runtime state or localized display metadata rather
@@ -44,7 +51,7 @@ REMOVED_SUBSYSTEMS = {
 }
 
 
-SCHEMA = """
+BASE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -146,6 +153,28 @@ CREATE INDEX IF NOT EXISTS idx_automation_notifications_unread ON automation_not
 """
 
 
+def _execute_script_statements(connection: sqlite3.Connection, script: str) -> None:
+    """Execute a simple SQL script statement-by-statement inside a caller transaction."""
+
+    statement = ""
+    for line in script.splitlines(keepends=True):
+        statement += line
+        if sqlite3.complete_statement(statement):
+            sql = statement.strip()
+            if sql:
+                connection.execute(sql)
+            statement = ""
+    if statement.strip():
+        connection.execute(statement)
+
+
+def _table_columns(connection: sqlite3.Connection, table: str) -> set[str]:
+    return {
+        str(row[0])
+        for row in connection.execute("SELECT name FROM pragma_table_info(?)", (table,)).fetchall()
+    }
+
+
 def _canonical_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
 
@@ -214,40 +243,179 @@ class Database:
         database_target = ":memory:" if str(path) == ":memory:" else str(self.path)
         if database_target != ":memory:":
             self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.connection = sqlite3.connect(database_target, timeout=30, check_same_thread=False)
-        self.connection.row_factory = sqlite3.Row
-        self.connection.execute("PRAGMA foreign_keys = ON")
-        if database_target != ":memory:":
-            self.connection.execute("PRAGMA journal_mode = WAL")
-        self.connection.execute("PRAGMA synchronous = NORMAL")
-        self.connection.executescript(SCHEMA)
+        # SQLite serializes schema writes, but concurrent first opens can still
+        # race in connection pragmas and leave one constructor with a locked
+        # database. Initialization is short and infrequent, so serialize it in
+        # process and clean up a connection if setup fails before __enter__.
+        with _DATABASE_INITIALIZATION_LOCK:
+            try:
+                self.connection = sqlite3.connect(database_target, timeout=30, check_same_thread=False)
+                self.connection.row_factory = sqlite3.Row
+                self.connection.execute("PRAGMA foreign_keys = ON")
+                self.connection.execute("PRAGMA busy_timeout = 30000")
+                if database_target != ":memory:":
+                    self.connection.execute("PRAGMA journal_mode = WAL")
+                self.connection.execute("PRAGMA synchronous = NORMAL")
+                self._run_migrations()
+                # This compatibility backfill intentionally remains safe to rerun. It
+                # also repairs a journal where an older build's marker was lost without
+                # changing the schema version or deleting any evidence.
+                self._backfill_safe_application_entities()
+            except Exception:
+                connection = getattr(self, "connection", None)
+                if connection is not None:
+                    connection.close()
+                raise
+
+    def _run_migrations(self) -> None:
+        """Apply numbered, transactional migrations to fresh and legacy journals."""
+
+        self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                applied_at TEXT NOT NULL
+            )
+            """
+        )
+        self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+            """
+        )
         self.connection.commit()
-        self._ensure_schema_compatibility()
 
-    def _ensure_schema_compatibility(self) -> None:
-        """Add additive columns needed by journals created by older MVP builds."""
+        stored_version = self.get_meta("schema_version")
+        if stored_version is None:
+            inferred = self._infer_legacy_schema_version()
+            self._record_legacy_baseline(inferred)
+            current_version = inferred
+        else:
+            try:
+                current_version = int(stored_version)
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError("The Difftrail journal has an invalid schema version") from exc
+            if current_version < 0 or current_version > DATABASE_SCHEMA_VERSION:
+                raise RuntimeError(
+                    f"The Difftrail journal schema version {current_version} is not supported"
+                )
 
-        columns = {
-            row[1]
-            for row in self.connection.execute("PRAGMA table_info(incidents)").fetchall()
+        migrations: dict[int, tuple[str, Any]] = {
+            1: ("base journal tables", lambda: _execute_script_statements(self.connection, BASE_SCHEMA)),
+            2: ("incident feedback fields", self._migration_incident_feedback),
+            3: ("safe application entity backfill", self._migration_safe_application_entities),
+            4: ("journal lookup indexes", self._migration_lookup_indexes),
+            5: ("investigation assessment fields", self._migration_investigation_assessment),
         }
-        migrations = {
-            "feedback_outcome": "TEXT",
-            "feedback_event_id": "TEXT",
-            "feedback_at": "TEXT",
-        }
-        missing = [
-            (name, definition)
-            for name, definition in migrations.items()
-            if name not in columns
-        ]
-        if missing:
-            with self.connection:
-                for name, definition in missing:
-                    self.connection.execute(f"ALTER TABLE incidents ADD COLUMN {name} {definition}")
-        self._backfill_safe_application_entities()
+        for version in range(current_version + 1, DATABASE_SCHEMA_VERSION + 1):
+            name, callback = migrations[version]
+            self._apply_migration(version, name, callback)
 
-    def _backfill_safe_application_entities(self) -> None:
+        if self.get_meta("schema_version") != str(DATABASE_SCHEMA_VERSION):
+            self.set_meta("schema_version", str(DATABASE_SCHEMA_VERSION))
+
+    def _infer_legacy_schema_version(self) -> int:
+        tables = {
+            str(row[0])
+            for row in self.connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        required_tables = {"meta", "events", "state_items", "scans", "incidents"}
+        if not required_tables.issubset(tables):
+            return 0
+        incident_columns = _table_columns(self.connection, "incidents")
+        if not {"feedback_outcome", "feedback_event_id", "feedback_at"}.issubset(incident_columns):
+            return 1
+        if self.get_meta("migration:safe-application-entities") != "1":
+            return 2
+        # The safe-application marker only proves migration 3. Migration 4
+        # owns the lookup indexes and must still run for these journals.
+        return 3
+
+    def _record_legacy_baseline(self, version: int) -> None:
+        if version <= 0:
+            return
+        timestamp = iso_datetime(utc_now())
+        for applied_version in range(1, version + 1):
+            self.connection.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+                (applied_version, f"legacy baseline v{applied_version}", timestamp),
+            )
+        self.connection.execute(
+            "INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            ("schema_version", str(version)),
+        )
+        self.connection.commit()
+
+    def _apply_migration(self, version: int, name: str, callback: Any) -> None:
+        """Run one migration atomically so an interrupted migration can retry."""
+
+        try:
+            self.connection.execute("BEGIN IMMEDIATE")
+            already_applied = self.connection.execute(
+                "SELECT 1 FROM schema_migrations WHERE version = ?",
+                (version,),
+            ).fetchone()
+            if already_applied:
+                self.connection.commit()
+                return
+            callback()
+            self.connection.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+                (version, name, iso_datetime(utc_now())),
+            )
+            self.connection.execute(
+                "INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                ("schema_version", str(version)),
+            )
+            self.connection.commit()
+        except Exception:
+            self.connection.rollback()
+            raise
+
+    def _migration_incident_feedback(self) -> None:
+        columns = _table_columns(self.connection, "incidents")
+        statements = {
+            "feedback_outcome": "ALTER TABLE incidents ADD COLUMN feedback_outcome TEXT",
+            "feedback_event_id": "ALTER TABLE incidents ADD COLUMN feedback_event_id TEXT",
+            "feedback_at": "ALTER TABLE incidents ADD COLUMN feedback_at TEXT",
+        }
+        for name, statement in statements.items():
+            if name not in columns:
+                self.connection.execute(statement)
+
+    def _migration_safe_application_entities(self) -> None:
+        self._backfill_safe_application_entities(commit=False)
+
+    def _migration_lookup_indexes(self) -> None:
+        self.connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_scans_status_started_at ON scans(status, started_at DESC)"
+        )
+        self.connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_events_source_occurred_at ON events(source, occurred_at DESC)"
+        )
+
+    def _migration_investigation_assessment(self) -> None:
+        columns = _table_columns(self.connection, "incidents")
+        if "assessment" not in columns:
+            self.connection.execute(
+                "ALTER TABLE incidents ADD COLUMN assessment TEXT NOT NULL DEFAULT 'insufficient_evidence'"
+            )
+        if "assessment_reasons_json" not in columns:
+            self.connection.execute(
+                "ALTER TABLE incidents ADD COLUMN assessment_reasons_json TEXT NOT NULL DEFAULT '[]'"
+            )
+        if "coverage_json" not in columns:
+            self.connection.execute(
+                "ALTER TABLE incidents ADD COLUMN coverage_json TEXT NOT NULL DEFAULT '{}'"
+            )
+
+    def _backfill_safe_application_entities(self, *, commit: bool = True) -> None:
         """Add parsed executable labels to older local symptom records."""
 
         if self.get_meta("migration:safe-application-entities") == "1":
@@ -260,19 +428,27 @@ class Database:
         for row in rows:
             if row["entity"] not in generic_entities:
                 continue
-            details = json.loads(row["details_json"] or "{}")
+            try:
+                details = json.loads(row["details_json"] or "{}")
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(details, dict):
+                continue
             application_name = details.get("application_name") or extract_safe_application_name(str(details.get("message", "")))
             if not application_name:
                 continue
             details["application_name"] = application_name
             updates.append((application_name, _canonical_json(details), row["id"]))
-        with self.connection:
-            if updates:
-                self.connection.executemany("UPDATE events SET entity = ?, details_json = ? WHERE id = ?", updates)
-            self.connection.execute(
-                "INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                ("migration:safe-application-entities", "1"),
-            )
+        if updates:
+            self.connection.executemany("UPDATE events SET entity = ?, details_json = ? WHERE id = ?", updates)
+        self.connection.execute(
+            "INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            ("migration:safe-application-entities", "1"),
+        )
+        # When called outside a migration, persist the marker immediately. A
+        # migration caller already owns the transaction and opts out.
+        if commit:
+            self.connection.commit()
 
     def close(self) -> None:
         self.connection.close()
@@ -490,7 +666,12 @@ class Database:
 
     @staticmethod
     def _row_to_event(row: sqlite3.Row) -> Event:
-        details = json.loads(row["details_json"] or "{}")
+        try:
+            details = json.loads(row["details_json"] or "{}")
+        except json.JSONDecodeError:
+            details = {}
+        if not isinstance(details, dict):
+            details = {}
         return Event(
             occurred_at=parse_datetime(row["occurred_at"]),
             kind=row["kind"],
@@ -512,6 +693,8 @@ class Database:
         kind: str | None = None,
         subsystem: str | None = None,
         search: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
         ascending: bool = False,
     ) -> list[Event]:
         clauses: list[str] = []
@@ -522,6 +705,12 @@ class Database:
         if subsystem and subsystem != "all":
             clauses.append("subsystem = ?")
             params.append(subsystem)
+        if since is not None:
+            clauses.append("occurred_at >= ?")
+            params.append(iso_datetime(since))
+        if until is not None:
+            clauses.append("occurred_at <= ?")
+            params.append(iso_datetime(until))
         if search and search.strip():
             needle = f"%{search.strip()}%"
             clauses.append("(title LIKE ? OR entity LIKE ? OR details_json LIKE ?)")
@@ -737,19 +926,186 @@ class Database:
 
     def start_scan(self, started_at: datetime) -> str:
         scan_id = str(uuid.uuid4())
-        self.connection.execute(
-            "INSERT INTO scans(id, started_at, status) VALUES (?, ?, ?)",
-            (scan_id, iso_datetime(started_at), "running"),
-        )
-        self.connection.commit()
-        return scan_id
+        started = ensure_utc(started_at)
+        try:
+            self.connection.execute("BEGIN IMMEDIATE")
+            self._recover_stale_scans_locked(started, STALE_SCAN_AFTER)
+            running = self.connection.execute(
+                "SELECT id, started_at FROM scans WHERE status = 'running' ORDER BY started_at ASC"
+            ).fetchall()
+            if running:
+                oldest = parse_datetime(running[0]["started_at"])
+                raise RuntimeError(
+                    f"A scan is already running (started {iso_datetime(oldest)}); wait for it to finish"
+                )
+            self.connection.execute(
+                "INSERT INTO scans(id, started_at, status) VALUES (?, ?, ?)",
+                (scan_id, iso_datetime(started), "running"),
+            )
+            self.connection.commit()
+            return scan_id
+        except Exception:
+            self.connection.rollback()
+            raise
 
     def finish_scan(self, scan_id: str, finished_at: datetime, status: str, summary: dict[str, Any]) -> None:
-        self.connection.execute(
-            "UPDATE scans SET finished_at = ?, status = ?, summary_json = ? WHERE id = ?",
-            (iso_datetime(finished_at), status, _canonical_json(summary), scan_id),
+        if status not in VALID_SCAN_STATUSES - {"running"}:
+            raise ValueError(f"Unsupported scan status: {status}")
+        encoded_summary = _canonical_json(redact_value(summary))
+        cursor = self.connection.execute(
+            "UPDATE scans SET finished_at = ?, status = ?, summary_json = ? WHERE id = ? AND status = 'running'",
+            (iso_datetime(finished_at), status, encoded_summary, scan_id),
         )
+        if cursor.rowcount != 1:
+            recovered = self.connection.execute(
+                "SELECT status, summary_json FROM scans WHERE id = ?",
+                (scan_id,),
+            ).fetchone()
+            recovery_summary = self._scan_summary(recovered["summary_json"]) if recovered else {}
+            recovery = recovery_summary.get("recovery")
+            if (
+                not recovered
+                or recovered["status"] != "interrupted"
+                or not isinstance(recovery, dict)
+                or recovery.get("reason") != "stale_running_scan"
+            ):
+                raise ValueError(f"Unknown or already finished scan: {scan_id}")
+            # Stale recovery is provisional: a scan owner that was merely slow
+            # may still finish. Preserve its completed result instead of
+            # discarding work that was already collected.
+            cursor = self.connection.execute(
+                """
+                UPDATE scans
+                SET finished_at = ?, status = ?, summary_json = ?
+                WHERE id = ? AND status = 'interrupted'
+                """,
+                (iso_datetime(finished_at), status, encoded_summary, scan_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError(f"Unknown or already finished scan: {scan_id}")
         self.connection.commit()
+
+    @staticmethod
+    def _scan_summary(value: str | None) -> dict[str, Any]:
+        try:
+            parsed = json.loads(value or "{}")
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    def _recover_stale_scans_locked(self, now: datetime, stale_after: timedelta) -> int:
+        cutoff = ensure_utc(now) - stale_after
+        rows = self.connection.execute(
+            "SELECT id, started_at, summary_json FROM scans WHERE status = 'running' AND started_at < ?",
+            (iso_datetime(cutoff),),
+        ).fetchall()
+        for row in rows:
+            summary = self._scan_summary(row["summary_json"])
+            summary.update(
+                {
+                    "status": "interrupted",
+                    "recovery": {
+                        "reason": "stale_running_scan",
+                        "detected_at": iso_datetime(now),
+                    },
+                }
+            )
+            self.connection.execute(
+                """
+                UPDATE scans
+                SET finished_at = ?, status = 'interrupted', summary_json = ?
+                WHERE id = ? AND status = 'running'
+                """,
+                (iso_datetime(now), _canonical_json(summary), row["id"]),
+            )
+        return len(rows)
+
+    def recover_stale_scans(
+        self,
+        *,
+        now: datetime | None = None,
+        stale_after: timedelta = STALE_SCAN_AFTER,
+    ) -> int:
+        """Mark abandoned running scans as interrupted without deleting their rows."""
+
+        if stale_after <= timedelta(0):
+            raise ValueError("stale_after must be positive")
+        current = ensure_utc(now or utc_now())
+        try:
+            self.connection.execute("BEGIN IMMEDIATE")
+            recovered = self._recover_stale_scans_locked(current, stale_after)
+            self.connection.commit()
+            return recovered
+        except Exception:
+            self.connection.rollback()
+            raise
+
+    def schema_status(self) -> dict[str, Any]:
+        raw_version = self.get_meta("schema_version", "0") or "0"
+        try:
+            current_version = int(raw_version)
+        except ValueError:
+            current_version = 0
+        migrations = [
+            dict(row)
+            for row in self.connection.execute(
+                "SELECT version, name, applied_at FROM schema_migrations ORDER BY version ASC"
+            ).fetchall()
+        ]
+        return {
+            "current_version": current_version,
+            "supported_version": DATABASE_SCHEMA_VERSION,
+            "up_to_date": current_version == DATABASE_SCHEMA_VERSION,
+            "migrations": migrations,
+        }
+
+    def _journal_health_snapshot(
+        self,
+        *,
+        now: datetime | None = None,
+        stale_after: timedelta = STALE_SCAN_AFTER,
+        integrity: str = "not checked",
+    ) -> dict[str, Any]:
+        current = ensure_utc(now or utc_now())
+        schema = self.schema_status()
+        running_rows = self.connection.execute(
+            "SELECT id, started_at FROM scans WHERE status = 'running' ORDER BY started_at ASC"
+        ).fetchall()
+        cutoff = current - stale_after
+        stale = [
+            {"id": row["id"], "started_at": row["started_at"]}
+            for row in running_rows
+            if parse_datetime(row["started_at"]) < cutoff
+        ]
+        structurally_healthy = schema["up_to_date"] and not stale
+        healthy = structurally_healthy and (integrity in {"ok", "not checked"})
+        return {
+            "ok": healthy,
+            "integrity": integrity,
+            "schema": schema,
+            "scans": {
+                "running": len(running_rows),
+                "stale_running": stale,
+                "stale_after_seconds": int(stale_after.total_seconds()),
+            },
+            "journal": {
+                "events": self.count_events(),
+                "state_items": int(self.connection.execute("SELECT COUNT(*) FROM state_items").fetchone()[0]),
+                "incidents": int(self.connection.execute("SELECT COUNT(*) FROM incidents").fetchone()[0]),
+            },
+        }
+
+    def journal_diagnostics(
+        self,
+        *,
+        now: datetime | None = None,
+        stale_after: timedelta = STALE_SCAN_AFTER,
+    ) -> dict[str, Any]:
+        """Run explicit, non-destructive health checks for the local journal."""
+
+        integrity_row = self.connection.execute("PRAGMA integrity_check").fetchone()
+        integrity = str(integrity_row[0]) if integrity_row else "unknown"
+        return self._journal_health_snapshot(now=now, stale_after=stale_after, integrity=integrity)
 
     def create_incident(
         self,
@@ -764,8 +1120,9 @@ class Database:
         self.connection.execute(
             """
             INSERT INTO incidents
-            (id, created_at, description, subsystem, onset_start, onset_end, lookback_days, status, result_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, created_at, description, subsystem, onset_start, onset_end, lookback_days, status, result_json,
+             assessment, assessment_reasons_json, coverage_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 incident.id,
@@ -777,16 +1134,45 @@ class Database:
                 request.lookback_days,
                 incident.status,
                 "[]",
+                NEUTRAL_ASSESSMENT,
+                "[]",
+                "{}",
             ),
         )
         self.connection.commit()
         return incident
 
-    def update_incident_results(self, incident_id: str, results: list[dict[str, Any]], status: str = "investigating") -> None:
-        self.connection.execute(
-            "UPDATE incidents SET status = ?, result_json = ? WHERE id = ?",
-            (status, _canonical_json(redact_value(results)), incident_id),
+    def update_incident_results(
+        self,
+        incident_id: str,
+        results: list[dict[str, Any]],
+        status: str = "investigating",
+        *,
+        assessment: str = NEUTRAL_ASSESSMENT,
+        assessment_reasons: Iterable[str] = (),
+        coverage: dict[str, Any] | None = None,
+    ) -> None:
+        if assessment not in VALID_INVESTIGATION_ASSESSMENTS:
+            raise ValueError(f"Unsupported investigation assessment: {assessment}")
+        if coverage is None:
+            coverage = {}
+        cursor = self.connection.execute(
+            """
+            UPDATE incidents
+            SET status = ?, result_json = ?, assessment = ?, assessment_reasons_json = ?, coverage_json = ?
+            WHERE id = ?
+            """,
+            (
+                status,
+                _canonical_json(redact_value(results)),
+                assessment,
+                _canonical_json([redact_text(str(reason)) for reason in assessment_reasons]),
+                _canonical_json(redact_value(coverage)),
+                incident_id,
+            ),
         )
+        if cursor.rowcount != 1:
+            raise ValueError(f"Unknown incident: {incident_id}")
         self.connection.commit()
 
     def record_incident_feedback(
@@ -827,6 +1213,26 @@ class Database:
 
     @staticmethod
     def _incident_row(row: sqlite3.Row) -> dict[str, Any]:
+        def parse_json(name: str, default: Any) -> Any:
+            try:
+                value = json.loads(row[name] or "")
+            except (KeyError, IndexError, TypeError, json.JSONDecodeError):
+                return default
+            return value
+
+        assessment = row["assessment"] if "assessment" in row.keys() else NEUTRAL_ASSESSMENT
+        if assessment not in VALID_INVESTIGATION_ASSESSMENTS:
+            assessment = NEUTRAL_ASSESSMENT
+        reasons = parse_json("assessment_reasons_json", [])
+        if not isinstance(reasons, list):
+            reasons = []
+        coverage = parse_json("coverage_json", {})
+        if not isinstance(coverage, dict):
+            coverage = {}
+        results = parse_json("result_json", [])
+        if not isinstance(results, list):
+            results = []
+
         return {
             "id": row["id"],
             "created_at": row["created_at"],
@@ -836,7 +1242,10 @@ class Database:
             "onset_end": row["onset_end"],
             "lookback_days": row["lookback_days"],
             "status": row["status"],
-            "results": json.loads(row["result_json"] or "[]"),
+            "assessment": assessment,
+            "assessment_reasons": reasons,
+            "coverage": coverage,
+            "results": results,
             "feedback": {
                 "outcome": row["feedback_outcome"],
                 "event_id": row["feedback_event_id"],
@@ -1044,21 +1453,115 @@ class Database:
             )
         return result
 
-    def status(self) -> dict[str, Any]:
+    def investigation_coverage(
+        self,
+        subsystem: str,
+        *,
+        since: datetime | None = None,
+        until: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Summarize collection gaps across the investigation's scan window."""
+
+        clauses: list[str] = []
+        params: list[Any] = []
+        if until is not None:
+            clauses.append("started_at <= ?")
+            params.append(iso_datetime(until))
+        if since is not None:
+            clauses.append("(finished_at IS NULL OR finished_at >= ?)")
+            params.append(iso_datetime(since))
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        scan_rows = self.connection.execute(
+            f"SELECT status, summary_json FROM scans {where} ORDER BY started_at DESC",
+            params,
+        ).fetchall()
+        if not scan_rows:
+            return {
+                "known": False,
+                "limited": False,
+                "reasons": [],
+                "sources": [],
+                "uninitialized_sources": [],
+                "scan_count": 0,
+                "provider_warning_count": 0,
+                "scan_status_counts": {},
+            }
+
+        source_map = {
+            "graphics": {"drivers", "devices", "updates"},
+            "audio": {"drivers", "devices"},
+            "network": {"drivers", "devices"},
+            "bluetooth": {"drivers", "devices"},
+            "driver": {"drivers", "devices"},
+            "startup": {"services", "tasks", "startup"},
+            "application": {"apps"},
+            "windows-update": {"updates"},
+            "device": {"devices", "drivers"},
+            "general": {"updates", "apps", "drivers", "services", "tasks", "startup", "devices"},
+        }
+        statuses = {item["source"]: item for item in self.source_status()}
+        expected = sorted(source_map.get(subsystem, source_map["general"]))
+        uninitialized = [
+            source for source in expected
+            if not statuses.get(source, {}).get("initialized", False)
+        ]
+        status_counts: dict[str, int] = {}
+        provider_warning_count = 0
+        for row in scan_rows:
+            status = str(row["status"])
+            status_counts[status] = status_counts.get(status, 0) + 1
+            summary = self._scan_summary(row["summary_json"])
+            raw_warnings = summary.get("errors", [])
+            if isinstance(raw_warnings, list):
+                provider_warning_count += len(raw_warnings)
+        reasons: list[str] = []
+        impaired_counts = {
+            status: status_counts.get(status, 0)
+            for status in ("partial", "failed", "interrupted")
+            if status_counts.get(status, 0)
+        }
+        if impaired_counts:
+            descriptions = ", ".join(
+                f"{count} {status}" + (" scan" if count == 1 else " scans")
+                for status, count in sorted(impaired_counts.items())
+            )
+            reasons.append(f"The investigation window includes {descriptions}.")
+        if uninitialized:
+            reasons.append("Some relevant sources are still waiting for their first baseline.")
+        if provider_warning_count:
+            reasons.append(
+                f"{provider_warning_count} provider warning"
+                + (" was" if provider_warning_count == 1 else "s were")
+                + " recorded in the investigation window."
+            )
+        return {
+            "known": True,
+            "limited": bool(reasons),
+            "reasons": reasons,
+            "sources": expected,
+            "uninitialized_sources": uninitialized,
+            "provider_warning_count": provider_warning_count,
+            "scan_count": len(scan_rows),
+            "scan_status_counts": dict(sorted(status_counts.items())),
+        }
+
+    def status(self, *, include_integrity: bool = False) -> dict[str, Any]:
         last_scan_row = self.connection.execute(
             "SELECT finished_at, status, summary_json FROM scans ORDER BY started_at DESC LIMIT 1"
         ).fetchone()
         last_scan = None
         if last_scan_row:
-            try:
-                summary = json.loads(last_scan_row["summary_json"] or "{}")
-            except json.JSONDecodeError:
-                summary = {}
+            summary = redact_value(self._scan_summary(last_scan_row["summary_json"]))
             last_scan = {
                 "finished_at": last_scan_row["finished_at"],
                 "status": last_scan_row["status"],
                 "summary": summary,
             }
+        journal = (
+            self.journal_diagnostics()
+            if include_integrity
+            else self._journal_health_snapshot()
+        )
         return {
             "events": self.count_events(),
             "changes": self.count_events("change"),
@@ -1067,4 +1570,6 @@ class Database:
             "retention_days": self.retention_days(),
             "sources": self.source_status(),
             "last_scan": dict(last_scan) if last_scan else None,
+            "schema": journal["schema"],
+            "journal": journal,
         }
