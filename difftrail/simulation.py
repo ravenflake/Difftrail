@@ -165,6 +165,7 @@ class _ControlledFixture:
 def _normalized_snapshots(
     collector: WindowsCollector,
     *,
+    updates: Iterable[dict[str, Any]] = (),
     apps: Iterable[dict[str, Any]] = (),
     drivers: Iterable[dict[str, Any]] = (),
     services: Iterable[dict[str, Any]] = (),
@@ -181,7 +182,7 @@ def _normalized_snapshots(
         "tasks": collector._tasks(list(tasks)),
         "startup": collector._startup(list(startup)),
         "devices": collector._devices(list(devices)),
-        "updates": collector._updates([]),
+        "updates": collector._updates(list(updates)),
     }
 
 
@@ -271,6 +272,18 @@ def build_controlled_scenarios() -> tuple[ControlledScenario, ...]:
                 "DisplayVersion": "1.1.0",
                 "Publisher": "Difftrail Fixture",
                 "InstallDate": "20260802",
+            }
+        ],
+    )
+
+    update_before = _normalized_snapshots(collector)
+    update_after = _normalized_snapshots(
+        collector,
+        updates=[
+            {
+                "HotFixID": "KB5061234",
+                "Description": "Security Update",
+                "InstalledOn": "2026-08-03T09:00:00Z",
             }
         ],
     )
@@ -409,6 +422,24 @@ def build_controlled_scenarios() -> tuple[ControlledScenario, ...]:
             ),
             expected_changes=1,
             expectations=(FixtureExpectation("apps", "Difftrail Fixture Player", "updated", 1),),
+        ),
+        ControlledScenario(
+            name="windows-update-before-unexpected-restart",
+            description="A Windows update is installed before the computer restarts unexpectedly.",
+            problem="the computer restarted unexpectedly after Windows Update",
+            subsystem="general",
+            before=update_before,
+            after=update_after,
+            symptom=FixtureSymptom(
+                subsystem="general",
+                action="unexpected_restart",
+                title="Unexpected restart detected",
+                entity="Kernel-Power",
+                event_id="fixture:unexpected-restart",
+                message="Simulated unexpected restart after a Windows update.",
+            ),
+            expected_changes=1,
+            expectations=(FixtureExpectation("updates", "Windows update KB5061234", "installed", 1),),
         ),
         ControlledScenario(
             name="mixed-unrelated-changes",
