@@ -15,7 +15,7 @@ class DatabaseTests(unittest.TestCase):
         with Database(":memory:") as database:
             schema = database.schema_status()
             self.assertEqual(schema["current_version"], schema["supported_version"])
-            self.assertEqual([item["version"] for item in schema["migrations"]], [1, 2, 3, 4, 5])
+            self.assertEqual([item["version"] for item in schema["migrations"]], [1, 2, 3, 4, 5, 6])
 
     def test_stale_scan_is_detected_and_recovered_without_deleting_it(self) -> None:
         with Database(":memory:") as database:
@@ -98,7 +98,7 @@ class DatabaseTests(unittest.TestCase):
 
             with Database(path) as database:
                 schema = database.schema_status()
-                self.assertEqual(schema["current_version"], 5)
+                self.assertEqual(schema["current_version"], 6)
                 columns = {
                     row[1]
                     for row in database.connection.execute("PRAGMA table_info(incidents)").fetchall()
@@ -115,6 +115,122 @@ class DatabaseTests(unittest.TestCase):
                 self.assertIn("idx_events_source_occurred_at", event_indexes)
                 self.assertIn("idx_scans_status_started_at", scan_indexes)
 
+    def test_v013_journal_is_re_sanitized_on_upgrade(self) -> None:
+        legacy_path = r"C:\Users\<user> Doe\Games\Example Game.exe"
+        safe_path = r"C:\Users\<user>"
+        timestamp = "2026-08-09T12:00:00Z"
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "v013-journal.db"
+            connection = sqlite3.connect(path)
+            connection.executescript(BASE_SCHEMA)
+            connection.executescript(
+                """
+                ALTER TABLE incidents ADD COLUMN assessment TEXT NOT NULL DEFAULT 'insufficient_evidence';
+                ALTER TABLE incidents ADD COLUMN assessment_reasons_json TEXT NOT NULL DEFAULT '[]';
+                ALTER TABLE incidents ADD COLUMN coverage_json TEXT NOT NULL DEFAULT '{}';
+                """
+            )
+            connection.executemany(
+                "INSERT INTO meta(key, value) VALUES (?, ?)",
+                [("schema_version", "5"), ("migration:safe-application-entities", "1")],
+            )
+            connection.execute(
+                """
+                INSERT INTO events
+                (id, occurred_at, kind, subsystem, action, title, entity, severity, source,
+                 details_json, fingerprint, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "legacy-event",
+                    timestamp,
+                    "symptom",
+                    "application",
+                    "crash",
+                    f"Crash in {legacy_path}",
+                    f"Application Error at {legacy_path}",
+                    "high",
+                    "eventlog",
+                    json.dumps({"message": f'Faulting application name: "{legacy_path}", version 1.0'}),
+                    "legacy-fingerprint",
+                    timestamp,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO state_items(source, item_key, payload_json, payload_hash, last_seen_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                ("apps", "legacy-app", json.dumps({"install_location": legacy_path}), "legacy-hash", timestamp),
+            )
+            connection.execute(
+                "INSERT INTO scans(id, started_at, finished_at, status, summary_json) VALUES (?, ?, ?, ?, ?)",
+                ("legacy-scan", timestamp, timestamp, "ok", json.dumps({"errors": [legacy_path]})),
+            )
+            connection.execute(
+                """
+                INSERT INTO incidents
+                (id, created_at, description, subsystem, onset_start, onset_end, lookback_days, status,
+                 result_json, assessment, assessment_reasons_json, coverage_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "legacy-incident",
+                    timestamp,
+                    f"Crash after opening {legacy_path}",
+                    "application",
+                    timestamp,
+                    timestamp,
+                    7,
+                    "investigating",
+                    json.dumps([{"evidence": legacy_path}]),
+                    "insufficient_evidence",
+                    json.dumps([f"Review {legacy_path}"]),
+                    json.dumps({"path": legacy_path}),
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO automation_notifications
+                (id, created_at, kind, title, body, event_id, incident_id, read_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "legacy-notification",
+                    timestamp,
+                    "warning",
+                    f"Problem in {legacy_path}",
+                    f"Review {legacy_path}",
+                    None,
+                    None,
+                    None,
+                ),
+            )
+            connection.commit()
+            connection.close()
+
+            with Database(path) as database:
+                self.assertEqual(database.schema_status()["current_version"], 6)
+                event = database.list_events(kind="symptom")[0]
+                state = database.connection.execute(
+                    "SELECT payload_json, payload_hash FROM state_items WHERE source = ? AND item_key = ?",
+                    ("apps", "legacy-app"),
+                ).fetchone()
+                scan = database.list_scans()[0]
+                incident = database.get_incident("legacy-incident")
+                notification = database.list_automation_notifications()[0]
+
+                self.assertIsNotNone(state)
+                self.assertIsNotNone(incident)
+                self.assertIn(safe_path, event.details["message"])
+                self.assertEqual(json.loads(state["payload_json"])["install_location"], safe_path)
+                self.assertNotEqual(state["payload_hash"], "legacy-hash")
+                stored_text = json.dumps(
+                    [event.details, scan["summary"], incident, notification, json.loads(state["payload_json"])],
+                    ensure_ascii=False,
+                )
+                self.assertNotIn("Doe", stored_text)
+
     def test_concurrent_first_opens_finish_with_one_complete_schema(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "concurrent.db"
@@ -125,7 +241,7 @@ class DatabaseTests(unittest.TestCase):
                 try:
                     barrier.wait(timeout=10)
                     with Database(path) as database:
-                        self.assertEqual(database.schema_status()["current_version"], 5)
+                        self.assertEqual(database.schema_status()["current_version"], 6)
                 except Exception as exc:  # capture thread failures for the test thread
                     errors.append(exc)
 

@@ -1,6 +1,6 @@
 import unittest
 
-from difftrail.privacy import extract_safe_application_name, redact_text, redact_value
+from difftrail.privacy import extract_safe_application_name, redact_legacy_text, redact_text, redact_value
 
 
 class PrivacyTests(unittest.TestCase):
@@ -14,6 +14,23 @@ class PrivacyTests(unittest.TestCase):
             redact_text(text),
             r"The program C:\Users\<user> version 1.0 stopped interacting with Windows.",
         )
+
+    def test_repairs_v013_partially_redacted_profile_paths(self) -> None:
+        cases = {
+            r"C:\Users\<user> Doe\Games\Example Game.exe": r"C:\Users\<user>",
+            r"C:\Documents and Settings\<user> Doe\Games\Example Game.exe": (
+                r"C:\Documents and Settings\<user>"
+            ),
+            r"\\<machine>\Users\<user> Doe\Games\Example Game.exe": r"\\<machine>\Users\<user>",
+        }
+
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(redact_legacy_text(text), expected)
+
+    def test_current_redaction_keeps_context_after_a_safe_path_marker(self) -> None:
+        text = r"The program C:\Users\<user> version 1.0 stopped interacting."
+        self.assertEqual(redact_text(text), text)
 
     def test_redacts_non_executable_profile_paths_with_spaces(self) -> None:
         cases = {
