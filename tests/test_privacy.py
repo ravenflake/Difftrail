@@ -1,6 +1,11 @@
 import unittest
 
-from difftrail.privacy import extract_safe_application_name, redact_legacy_text, redact_text, redact_value
+from difftrail.privacy import (
+    extract_safe_application_name,
+    redact_legacy_text,
+    redact_text,
+    redact_value,
+)
 
 
 class PrivacyTests(unittest.TestCase):
@@ -17,11 +22,15 @@ class PrivacyTests(unittest.TestCase):
 
     def test_repairs_v013_partially_redacted_profile_paths(self) -> None:
         cases = {
-            r"C:\Users\<user> Doe\Games\Example Game.exe": r"C:\Users\<user>",
-            r"C:\Documents and Settings\<user> Doe\Games\Example Game.exe": (
-                r"C:\Documents and Settings\<user>"
+            r"The program C:\Users\<user> Doe\Games\Example Game.exe version 1.0 stopped interacting.": (
+                r"The program C:\Users\<user> version 1.0 stopped interacting."
             ),
-            r"\\<machine>\Users\<user> Doe\Games\Example Game.exe": r"\\<machine>\Users\<user>",
+            r"The program C:\Documents and Settings\<user> Doe\Games\Example Game.exe version 1.0 stopped interacting.": (
+                r"The program C:\Documents and Settings\<user> version 1.0 stopped interacting."
+            ),
+            r"The program \\<machine>\Users\<user> Doe\Games\Example Game.exe version 1.0 stopped interacting.": (
+                r"The program \\<machine>\Users\<user> version 1.0 stopped interacting."
+            ),
         }
 
         for text, expected in cases.items():
@@ -31,6 +40,18 @@ class PrivacyTests(unittest.TestCase):
     def test_current_redaction_keeps_context_after_a_safe_path_marker(self) -> None:
         text = r"The program C:\Users\<user> version 1.0 stopped interacting."
         self.assertEqual(redact_text(text), text)
+
+    def test_legacy_repair_keeps_context_after_an_already_safe_path_marker(self) -> None:
+        cases = [
+            r"The program C:\Users\<user> version 1.0 stopped interacting.",
+            r"The program C:\Users\<user> version 1.0 stopped. See C:\Windows\Logs\event.log.",
+            r"Opened C:\Documents and Settings\<user> at 10:00 today.",
+            r"Copied from \\<machine>\Users\<user> during the update.",
+        ]
+
+        for text in cases:
+            with self.subTest(text=text):
+                self.assertEqual(redact_legacy_text(text), text)
 
     def test_redacts_non_executable_profile_paths_with_spaces(self) -> None:
         cases = {

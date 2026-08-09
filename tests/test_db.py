@@ -6,7 +6,7 @@ import unittest
 from datetime import timedelta
 from pathlib import Path
 
-from difftrail.db import BASE_SCHEMA, Database
+from difftrail.db import BASE_SCHEMA, Database, _hash
 from difftrail.models import Event, IncidentRequest, SnapshotItem, utc_now
 
 
@@ -118,6 +118,7 @@ class DatabaseTests(unittest.TestCase):
     def test_v013_journal_is_re_sanitized_on_upgrade(self) -> None:
         legacy_path = r"C:\Users\<user> Doe\Games\Example Game.exe"
         safe_path = r"C:\Users\<user>"
+        safe_message = r"The program C:\Users\<user> version 1.0 stopped interacting."
         timestamp = "2026-08-09T12:00:00Z"
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "v013-journal.db"
@@ -162,6 +163,28 @@ class DatabaseTests(unittest.TestCase):
                 VALUES (?, ?, ?, ?, ?)
                 """,
                 ("apps", "legacy-app", json.dumps({"install_location": legacy_path}), "legacy-hash", timestamp),
+            )
+            connection.execute(
+                """
+                INSERT INTO events
+                (id, occurred_at, kind, subsystem, action, title, entity, severity, source,
+                 details_json, fingerprint, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "already-safe-event",
+                    timestamp,
+                    "symptom",
+                    "application",
+                    "hang",
+                    safe_message,
+                    "Application Hang",
+                    "high",
+                    "eventlog",
+                    json.dumps({"message": safe_message}),
+                    "already-safe-fingerprint",
+                    timestamp,
+                ),
             )
             connection.execute(
                 "INSERT INTO scans(id, started_at, finished_at, status, summary_json) VALUES (?, ?, ?, ?, ?)",
@@ -211,7 +234,9 @@ class DatabaseTests(unittest.TestCase):
 
             with Database(path) as database:
                 self.assertEqual(database.schema_status()["current_version"], 6)
-                event = database.list_events(kind="symptom")[0]
+                events = {event.event_id: event for event in database.list_events(kind="symptom")}
+                event = events["legacy-event"]
+                already_safe_event = events["already-safe-event"]
                 state = database.connection.execute(
                     "SELECT payload_json, payload_hash FROM state_items WHERE source = ? AND item_key = ?",
                     ("apps", "legacy-app"),
@@ -222,11 +247,21 @@ class DatabaseTests(unittest.TestCase):
 
                 self.assertIsNotNone(state)
                 self.assertIsNotNone(incident)
-                self.assertIn(safe_path, event.details["message"])
-                self.assertEqual(json.loads(state["payload_json"])["install_location"], safe_path)
-                self.assertNotEqual(state["payload_hash"], "legacy-hash")
+                self.assertEqual(event.details["message"], f'Faulting application name: "{safe_path}", version 1.0')
+                self.assertEqual(already_safe_event.title, safe_message)
+                self.assertEqual(already_safe_event.details["message"], safe_message)
+                state_payload = json.loads(state["payload_json"])
+                self.assertEqual(state_payload["install_location"], safe_path)
+                self.assertEqual(state["payload_hash"], _hash(state_payload))
                 stored_text = json.dumps(
-                    [event.details, scan["summary"], incident, notification, json.loads(state["payload_json"])],
+                    [
+                        event.details,
+                        already_safe_event.details,
+                        scan["summary"],
+                        incident,
+                        notification,
+                        state_payload,
+                    ],
                     ensure_ascii=False,
                 )
                 self.assertNotIn("Doe", stored_text)

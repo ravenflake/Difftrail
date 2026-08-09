@@ -39,12 +39,28 @@ _UNC_USER_PATH = re.compile(r"(?i)(\\\\[^\\\s\\]+\\Users\\)[^\"'<>\r\n]+")
 # v0.1.3 stopped at whitespace while replacing a profile name. These patterns
 # repair the remaining suffix (for example, "<user> Doe\Games\App.exe")
 # before the normal current-path rules run.
-_LEGACY_PARTIAL_USER_PATH = re.compile(r"(?i)([a-z]:\\Users\\)<user>(?:[ \t][^\"'<>\r\n]+)?")
+_LEGACY_PARTIAL_EXECUTABLE_SUFFIX = (
+    rf"(?:[ \t]{_PATH_CHARACTER}+\\){_EXECUTABLE_PATH_SUFFIX}"
+)
+_LEGACY_PARTIAL_PATH_SUFFIX = (
+    r"(?:[ \t][^\\/:*?\"<>|.,;:!?\r\n]+\\)"
+    r"[^\"'<>\r\n,;:)\]}\!?]+"
+)
+_LEGACY_PARTIAL_USER_EXECUTABLE_PATH = re.compile(
+    rf"(?i)([a-z]:\\Users\\)<user>{_LEGACY_PARTIAL_EXECUTABLE_SUFFIX}"
+)
+_LEGACY_PARTIAL_USER_PATH = re.compile(rf"(?i)([a-z]:\\Users\\)<user>{_LEGACY_PARTIAL_PATH_SUFFIX}")
+_LEGACY_PARTIAL_PROFILE_EXECUTABLE_PATH = re.compile(
+    rf"(?i)([a-z]:\\Documents and Settings\\)<user>{_LEGACY_PARTIAL_EXECUTABLE_SUFFIX}"
+)
 _LEGACY_PARTIAL_PROFILE_PATH = re.compile(
-    r"(?i)([a-z]:\\Documents and Settings\\)<user>(?:[ \t][^\"'<>\r\n]+)?"
+    rf"(?i)([a-z]:\\Documents and Settings\\)<user>{_LEGACY_PARTIAL_PATH_SUFFIX}"
+)
+_LEGACY_PARTIAL_UNC_USER_EXECUTABLE_PATH = re.compile(
+    rf"(?i)(\\\\<machine>\\Users\\)<user>{_LEGACY_PARTIAL_EXECUTABLE_SUFFIX}"
 )
 _LEGACY_PARTIAL_UNC_USER_PATH = re.compile(
-    r"(?i)(\\\\<machine>\\Users\\)<user>(?:[ \t][^\"'<>\r\n]+)?"
+    rf"(?i)(\\\\<machine>\\Users\\)<user>{_LEGACY_PARTIAL_PATH_SUFFIX}"
 )
 _LONG_WHITESPACE = re.compile(r"[ \t]{2,}")
 _FAULTING_APPLICATION = re.compile(r"(?im)faulting application name:\s*([^,\r\n]+)")
@@ -69,6 +85,9 @@ def redact_text(value: str) -> str:
 def redact_legacy_text(value: str) -> str:
     """Repair the partial profile-path redaction emitted by v0.1.3."""
 
+    value = _LEGACY_PARTIAL_USER_EXECUTABLE_PATH.sub(r"\1<user>", value)
+    value = _LEGACY_PARTIAL_PROFILE_EXECUTABLE_PATH.sub(r"\1<user>", value)
+    value = _LEGACY_PARTIAL_UNC_USER_EXECUTABLE_PATH.sub(r"\\\\<machine>\\Users\\<user>", value)
     value = _LEGACY_PARTIAL_USER_PATH.sub(r"\1<user>", value)
     value = _LEGACY_PARTIAL_PROFILE_PATH.sub(r"\1<user>", value)
     value = _LEGACY_PARTIAL_UNC_USER_PATH.sub(r"\\\\<machine>\\Users\\<user>", value)
