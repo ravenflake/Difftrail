@@ -135,7 +135,7 @@ class CollectorTests(unittest.TestCase):
                 "ProviderName": "Application Hang",
                 "Level": "Error",
                 "RecordId": "4",
-                "Message": r"The program C:\Users\testuser\Games\Example.exe version 1.0 stopped interacting with Windows.",
+                "Message": r"The program C:\Users\Jane Doe\Games\Example Game.exe version 1.0 stopped interacting with Windows.",
             },
             {
                 "TimeCreated": "2026-08-07T10:04:00Z",
@@ -163,7 +163,7 @@ class CollectorTests(unittest.TestCase):
                 ("crash", "application", "high"),
             ],
         )
-        self.assertEqual(events[3].entity, "Example.exe")
+        self.assertEqual(events[3].entity, "Example Game.exe")
         self.assertEqual(events[4].details["application_name"], "Example.exe")
         self.assertEqual(
             [event.details["message"] for event in events[3:]],
