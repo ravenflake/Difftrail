@@ -27,7 +27,8 @@ _PATH_CHARACTER = r"[^\\/:*?\"<>|\r\n]"
 _EXECUTABLE_EXTENSION = r"(?:exe|dll|sys|com|bat|cmd|ps1|vbs|js|msi|msix|appx)"
 _EXECUTABLE_PATH_SUFFIX = (
     rf"(?:{_PATH_CHARACTER}+\\)*"
-    rf"{_PATH_CHARACTER}*\.{_EXECUTABLE_EXTENSION}(?=[\s,;:)\]]|$)"
+    rf"{_PATH_CHARACTER}*\.{_EXECUTABLE_EXTENSION}"
+    r"(?=$|[\s,;:)\]}.\"'!?])"
 )
 _USER_EXECUTABLE_PATH = re.compile(rf"(?i)([a-z]:\\Users\\){_EXECUTABLE_PATH_SUFFIX}")
 _PROFILE_EXECUTABLE_PATH = re.compile(rf"(?i)([a-z]:\\Documents and Settings\\){_EXECUTABLE_PATH_SUFFIX}")
@@ -84,7 +85,7 @@ def extract_safe_application_name(message: str) -> str | None:
             break
     if not candidate:
         return None
-    candidate = re.split(r"[\\/]", candidate)[-1].strip()
+    candidate = re.split(r"[\\/]", candidate)[-1].strip().rstrip(".,;:!?)]}")
     candidate = re.sub(r"[^A-Za-z0-9._() +\-]", "", candidate)
     candidate = candidate[:128].strip()
     return candidate or None
