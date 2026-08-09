@@ -6,7 +6,7 @@ from typing import Any, Callable
 
 from ..correlation import infer_subsystem
 from ..models import Event, SnapshotItem, parse_datetime
-from ..privacy import extract_safe_application_name
+from ..privacy import extract_safe_application_name, redact_text
 from .powershell import PowerShellError, run_json
 
 
@@ -382,7 +382,7 @@ $rows | Sort-Object TimeCreated | ConvertTo-Json -Depth 5 -Compress
                 continue
             event_id = f"eventlog:{_text(row, 'LogName')}:{_text(row, 'RecordId')}"
             event_number = int(row.get("Id", 0) or 0)
-            message = _text(row, "Message")
+            raw_message = _text(row, "Message")
             if event_number == 4101:
                 title, subsystem, action, severity = "Display driver reset detected", "graphics", "driver_reset", "high"
             elif event_number == 41:
@@ -392,17 +392,17 @@ $rows | Sort-Object TimeCreated | ConvertTo-Json -Depth 5 -Compress
             elif event_number == 1002:
                 title, subsystem, action, severity = "Application hang detected", "application", "hang", "high"
             elif event_number == 1000:
-                title, subsystem, action, severity = "Application crash detected", infer_subsystem(message), "crash", "high"
+                title, subsystem, action, severity = "Application crash detected", infer_subsystem(raw_message), "crash", "high"
             else:
-                title, subsystem, action, severity = "Windows reliability event detected", infer_subsystem(message), "reliability_event", "medium"
-            application_name = extract_safe_application_name(message) if event_number in {1000, 1002} else None
+                title, subsystem, action, severity = "Windows reliability event detected", infer_subsystem(raw_message), "reliability_event", "medium"
+            application_name = extract_safe_application_name(raw_message) if event_number in {1000, 1002} else None
             details = {
                 "event_id": event_number,
                 "log_name": _text(row, "LogName"),
                 "provider": _text(row, "ProviderName"),
                 "level": _text(row, "Level"),
                 "record_id": _text(row, "RecordId"),
-                "message": message,
+                "message": redact_text(raw_message),
             }
             if application_name:
                 details["application_name"] = application_name

@@ -156,14 +156,22 @@ python -m difftrail validate
 python -m difftrail validate --json
 ```
 
-The scanner-backed fixture harness replays four safe Windows-shaped scenarios through the production collector normalizers, quiet baseline, SQLite diff, symptom ingestion, and investigation ranking. It uses disposable in-memory databases, so it cannot modify or contaminate a real journal:
+The scanner-backed fixture harness replays five safe Windows-shaped scenarios through the production collector normalizers, quiet baseline, SQLite diff, symptom ingestion, and investigation ranking. It uses disposable in-memory databases, so it cannot modify or contaminate a real journal:
 
 ```powershell
 python -m difftrail validate-scenarios
 python -m difftrail validate-scenarios --json
 ```
 
-The scenarios cover an audio endpoint replacement, service/task/startup additions, an application update, and a graphics driver change mixed with unrelated application and persistence changes. Each run checks that the baseline is quiet, the expected transitions are captured, the expected evidence appears in the top three, no unrelated change receives High confidence, and the evidence includes a safe diagnostic target. The audio scenario validates endpoint presence changes; the current Windows collector does not claim to observe the user's default-output setting itself.
+The scenarios cover:
+
+- an audio endpoint replacement;
+- service, task, and startup additions;
+- an application update;
+- a Windows Update transition followed by an unexpected restart; and
+- a graphics driver change mixed with unrelated application and persistence changes.
+
+Each run checks that the baseline is quiet, the expected transitions are captured, the expected evidence appears in the top three, no unrelated change receives High confidence, and the evidence includes a safe diagnostic target. The audio scenario validates endpoint presence changes; the current Windows collector does not claim to observe the user's default-output setting itself.
 
 The resource validator measures the real watcher process and collector children during startup and steady state. It requires the optional psutil package only for this validation command; the application itself still has no third-party runtime dependency.
 
@@ -175,6 +183,8 @@ python -m difftrail overhead --interval 15 --warmup 8 --duration 10 --json
 The report separates startup CPU/disk activity from steady-state CPU/RSS/disk activity. It measures the watcher process tree, not system-wide load.
 
 The validation commands report top-1/top-3 ranking and no-false-High metrics for the synthetic suite. Those results measure deterministic behavior against known inputs; they are not a claim of real-world causal accuracy. Host-validation and overhead results are machine-specific, so collect them with the commands above when comparing real installations.
+
+Before field testing a release candidate, follow the [v0.1.4 field-validation checklist](docs/v0.1.4-field-validation.md). It separates automated evidence from the Windows-only install, watcher, privacy, and real-incident checks that still need a host.
 
 ## Architecture
 
