@@ -18,6 +18,12 @@ class PrivacyTests(unittest.TestCase):
     def test_redacts_non_executable_profile_paths_with_spaces(self) -> None:
         cases = {
             r"Opened C:\Users\Jane Doe\Documents\My Report.docx": r"Opened C:\Users\<user>",
+            r"Opened C:\Documents and Settings\Jane Doe\My Documents\My Report.docx": (
+                r"Opened C:\Documents and Settings\<user>"
+            ),
+            r"Opened \\Workstation\Users\Jane Doe\Documents\My Report.docx": (
+                r"Opened \\<machine>\Users\<user>"
+            ),
             r'Could not access "C:\Users\Jane Doe\Documents\My Report.docx".': (
                 r'Could not access "C:\Users\<user>".'
             ),
