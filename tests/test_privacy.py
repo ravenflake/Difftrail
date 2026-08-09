@@ -58,6 +58,10 @@ class PrivacyTests(unittest.TestCase):
         message = r"The program C:\Users\Jane Doe\Games\Example Game.exe version 1.0 stopped interacting with Windows."
         self.assertEqual(extract_safe_application_name(message), "Example Game.exe")
 
+    def test_extracts_hanging_program_name_with_version_in_filename(self) -> None:
+        message = r"The program C:\Users\Jane Doe\Games\My version.exe version 1.0 stopped interacting with Windows."
+        self.assertEqual(extract_safe_application_name(message), "My version.exe")
+
     def test_strips_event_log_punctuation_from_hanging_program_name(self) -> None:
         message = r'The program "C:\Users\Jane Doe\Games\Example Game.exe" version 1.0 stopped interacting with Windows.'
         self.assertEqual(extract_safe_application_name(message), "Example Game.exe")
