@@ -165,5 +165,10 @@ class CollectorTests(unittest.TestCase):
         )
         self.assertEqual(events[3].entity, "Example.exe")
         self.assertEqual(events[4].details["application_name"], "Example.exe")
-        for event in events[3:]:
-            self.assertNotIn(r"C:\Users\testuser", str(event.details))
+        self.assertEqual(
+            [event.details["message"] for event in events[3:]],
+            [
+                r"The program C:\Users\<user> version 1.0 stopped interacting with Windows.",
+                r"Faulting application name: C:\Users\<user> version 1.2.3",
+            ],
+        )
