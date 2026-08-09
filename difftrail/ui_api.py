@@ -440,12 +440,15 @@ class UiRequestHandler(BaseHTTPRequestHandler):
                 payload = validate_bundle(body["bundle"])
             elif path.startswith("/api/incidents/") and path.endswith("/feedback"):
                 incident_id = path.split("/")[-2]
+                event_id = body.get("event_id")
+                if event_id is not None and not isinstance(event_id, str):
+                    raise ValueError("event_id must be a string")
 
                 def record(database: Database) -> dict[str, Any]:
                     return database.record_incident_feedback(
                         incident_id,
                         str(body.get("outcome", "unknown")),
-                        event_id=body.get("event_id"),
+                        event_id=event_id,
                     )
 
                 payload = {"incident": public_incident(self._with_database(record))}
