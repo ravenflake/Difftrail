@@ -169,6 +169,6 @@ class CollectorTests(unittest.TestCase):
             [event.details["message"] for event in events[3:]],
             [
                 r"The program C:\Users\<user> version 1.0 stopped interacting with Windows.",
-                r"Faulting application name: C:\Users\<user> version 1.2.3",
+                r"Faulting application name: C:\Users\<user>, version 1.2.3",
             ],
         )
