@@ -15,6 +15,19 @@ class PrivacyTests(unittest.TestCase):
             r"The program C:\Users\<user> version 1.0 stopped interacting with Windows.",
         )
 
+    def test_redacts_non_executable_profile_paths_with_spaces(self) -> None:
+        cases = {
+            r"Opened C:\Users\Jane Doe\Documents\My Report.docx": r"Opened C:\Users\<user>",
+            r'Could not access "C:\Users\Jane Doe\Documents\My Report.docx".': (
+                r'Could not access "C:\Users\<user>".'
+            ),
+            r"Path=C:\Users\Jane Doe\Downloads\report 2026.pdf; status=denied": r"Path=C:\Users\<user>",
+        }
+
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(redact_text(text), expected)
+
     def test_redacts_spaced_profile_paths_with_event_log_punctuation(self) -> None:
         cases = {
             r'The program "C:\Users\Jane Doe\Games\Example Game.exe" version 1.0 stopped interacting.': (
