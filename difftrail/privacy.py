@@ -23,17 +23,29 @@ KNOWN_ERROR_BUCKETS = frozenset(
 # Keep normalized evidence useful while preventing common personal paths from
 # leaking into logs, exports, or the UI. The local database still contains only
 # the normalized/redacted representation; no document contents are collected.
+_PATH_CHARACTER = r"[^\\/:*?\"<>|\r\n]"
+_EXECUTABLE_EXTENSION = r"(?:exe|dll|sys|com|bat|cmd|ps1|vbs|js|msi|msix|appx)"
+_EXECUTABLE_PATH_SUFFIX = (
+    rf"(?:{_PATH_CHARACTER}+\\)*"
+    rf"{_PATH_CHARACTER}*\.{_EXECUTABLE_EXTENSION}(?=[\s,;:)\]]|$)"
+)
+_USER_EXECUTABLE_PATH = re.compile(rf"(?i)([a-z]:\\Users\\){_EXECUTABLE_PATH_SUFFIX}")
+_PROFILE_EXECUTABLE_PATH = re.compile(rf"(?i)([a-z]:\\Documents and Settings\\){_EXECUTABLE_PATH_SUFFIX}")
+_UNC_USER_EXECUTABLE_PATH = re.compile(rf"(?i)(\\\\[^\\\s\\]+\\Users\\){_EXECUTABLE_PATH_SUFFIX}")
 _USER_PATH = re.compile(r"(?i)([a-z]:\\Users\\)[^\\\s\"']+(?:\\[^\\\s\"']+)*")
 _PROFILE_PATH = re.compile(r"(?i)([a-z]:\\Documents and Settings\\)[^\\\s\"']+(?:\\[^\\\s\"']+)*")
 _UNC_USER_PATH = re.compile(r"(?i)(\\\\[^\\\s\\]+\\Users\\)[^\\\s\"']+(?:\\[^\\\s\"']+)*")
 _LONG_WHITESPACE = re.compile(r"[ \t]{2,}")
 _FAULTING_APPLICATION = re.compile(r"(?im)faulting application name:\s*([^,\r\n]+)")
-_HANGING_APPLICATION = re.compile(r"(?im)the program\s+([^\s,]+)\s+(?:version|stopped interacting)")
+_HANGING_APPLICATION = re.compile(r"(?im)the program\s+([^\r\n]+?)\s+(?:version|stopped interacting)")
 
 
 def redact_text(value: str) -> str:
     """Redact common user-profile paths without hiding diagnostic labels."""
 
+    value = _USER_EXECUTABLE_PATH.sub(r"\1<user>", value)
+    value = _PROFILE_EXECUTABLE_PATH.sub(r"\1<user>", value)
+    value = _UNC_USER_EXECUTABLE_PATH.sub(r"\\\\<machine>\\Users\\<user>", value)
     value = _USER_PATH.sub(r"\1<user>", value)
     value = _PROFILE_PATH.sub(r"\1<user>", value)
     value = _UNC_USER_PATH.sub(r"\\\\<machine>\\Users\\<user>", value)
