@@ -40,10 +40,10 @@ class PrivacyTests(unittest.TestCase):
                 r'The program "C:\Users\<user>" version 1.0 stopped interacting.'
             ),
             r"The program C:\Users\Jane Doe\Games\Example Game.exe. version 1.0 stopped interacting.": (
-                r"The program C:\Users\<user> version 1.0 stopped interacting."
+                r"The program C:\Users\<user>. version 1.0 stopped interacting."
             ),
             r"The program C:\Users\Jane Doe\Games\Example Game.exe! version 1.0 stopped interacting.": (
-                r"The program C:\Users\<user> version 1.0 stopped interacting."
+                r"The program C:\Users\<user>! version 1.0 stopped interacting."
             ),
         }
 
