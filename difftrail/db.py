@@ -11,11 +11,17 @@ from typing import Any, Iterable
 
 from .assessment import ASSESSMENT_STATES, NEUTRAL_ASSESSMENT
 from .models import Event, Incident, IncidentRequest, SnapshotItem, ensure_utc, iso_datetime, parse_datetime, utc_now
-from .privacy import extract_safe_application_name, redact_text, redact_value
+from .privacy import (
+    extract_safe_application_name,
+    redact_legacy_text,
+    redact_legacy_value,
+    redact_text,
+    redact_value,
+)
 
 
 DEFAULT_RETENTION_DAYS = 30
-DATABASE_SCHEMA_VERSION = 5
+DATABASE_SCHEMA_VERSION = 6
 STALE_SCAN_AFTER = timedelta(minutes=15)
 VALID_SCAN_STATUSES = frozenset({"running", "ok", "partial", "failed", "interrupted"})
 VALID_INVESTIGATION_ASSESSMENTS = ASSESSMENT_STATES
@@ -183,6 +189,20 @@ def _hash(value: Any) -> str:
     return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
 
 
+def _redact_stored_json(value: str | None) -> tuple[str, Any | None]:
+    """Return a redacted stored JSON document without rewriting unchanged rows."""
+
+    encoded = value or ""
+    try:
+        parsed = json.loads(encoded)
+    except json.JSONDecodeError:
+        # Preserve a malformed legacy value rather than silently discarding it,
+        # but still remove any profile path that it may contain.
+        return redact_legacy_text(encoded), None
+    redacted = redact_legacy_value(parsed)
+    return (_canonical_json(redacted) if redacted != parsed else encoded, redacted)
+
+
 def _comparison_value(source: str, key: str, value: Any) -> Any:
     if isinstance(value, dict):
         return {str(child_key): _comparison_value(source, str(child_key), child_value) for child_key, child_value in value.items()}
@@ -310,6 +330,7 @@ class Database:
             3: ("safe application entity backfill", self._migration_safe_application_entities),
             4: ("journal lookup indexes", self._migration_lookup_indexes),
             5: ("investigation assessment fields", self._migration_investigation_assessment),
+            6: ("legacy journal privacy re-sanitization", self._migration_redact_legacy_journal),
         }
         for version in range(current_version + 1, DATABASE_SCHEMA_VERSION + 1):
             name, callback = migrations[version]
@@ -413,6 +434,86 @@ class Database:
         if "coverage_json" not in columns:
             self.connection.execute(
                 "ALTER TABLE incidents ADD COLUMN coverage_json TEXT NOT NULL DEFAULT '{}'"
+            )
+
+    def _migration_redact_legacy_journal(self) -> None:
+        """Apply the current profile-path redaction to data written by older builds."""
+
+        event_updates: list[tuple[str, str, str, str]] = []
+        for row in self.connection.execute("SELECT id, title, entity, details_json FROM events").fetchall():
+            title = redact_legacy_text(str(row["title"] or ""))
+            entity = redact_legacy_text(str(row["entity"] or ""))
+            details_json, _ = _redact_stored_json(row["details_json"])
+            if (title, entity, details_json) != (row["title"], row["entity"], row["details_json"]):
+                event_updates.append((title, entity, details_json, row["id"]))
+        if event_updates:
+            # Event identifiers and fingerprints are durable feedback/deduplication
+            # keys, so privacy normalization must not replace either one.
+            self.connection.executemany(
+                "UPDATE events SET title = ?, entity = ?, details_json = ? WHERE id = ?",
+                event_updates,
+            )
+
+        state_updates: list[tuple[str, str, str, str]] = []
+        for row in self.connection.execute(
+            "SELECT source, item_key, payload_json, payload_hash FROM state_items"
+        ).fetchall():
+            payload_json, payload = _redact_stored_json(row["payload_json"])
+            if payload_json != row["payload_json"]:
+                payload_hash = _hash(payload if payload is not None else payload_json)
+                state_updates.append((payload_json, payload_hash, row["source"], row["item_key"]))
+        if state_updates:
+            self.connection.executemany(
+                "UPDATE state_items SET payload_json = ?, payload_hash = ? WHERE source = ? AND item_key = ?",
+                state_updates,
+            )
+
+        scan_updates: list[tuple[str, str]] = []
+        for row in self.connection.execute("SELECT id, summary_json FROM scans").fetchall():
+            summary_json, _ = _redact_stored_json(row["summary_json"])
+            if summary_json != row["summary_json"]:
+                scan_updates.append((summary_json, row["id"]))
+        if scan_updates:
+            self.connection.executemany("UPDATE scans SET summary_json = ? WHERE id = ?", scan_updates)
+
+        incident_updates: list[tuple[str, str, str, str, str]] = []
+        for row in self.connection.execute(
+            "SELECT id, description, result_json, assessment_reasons_json, coverage_json FROM incidents"
+        ).fetchall():
+            description = redact_legacy_text(str(row["description"] or ""))
+            result_json, _ = _redact_stored_json(row["result_json"])
+            assessment_reasons_json, _ = _redact_stored_json(row["assessment_reasons_json"])
+            coverage_json, _ = _redact_stored_json(row["coverage_json"])
+            if (description, result_json, assessment_reasons_json, coverage_json) != (
+                row["description"],
+                row["result_json"],
+                row["assessment_reasons_json"],
+                row["coverage_json"],
+            ):
+                incident_updates.append(
+                    (description, result_json, assessment_reasons_json, coverage_json, row["id"])
+                )
+        if incident_updates:
+            self.connection.executemany(
+                """
+                UPDATE incidents
+                SET description = ?, result_json = ?, assessment_reasons_json = ?, coverage_json = ?
+                WHERE id = ?
+                """,
+                incident_updates,
+            )
+
+        notification_updates: list[tuple[str, str, str, str]] = []
+        for row in self.connection.execute("SELECT id, kind, title, body FROM automation_notifications").fetchall():
+            kind = redact_legacy_text(str(row["kind"] or ""))
+            title = redact_legacy_text(str(row["title"] or ""))
+            body = redact_legacy_text(str(row["body"] or ""))
+            if (kind, title, body) != (row["kind"], row["title"], row["body"]):
+                notification_updates.append((kind, title, body, row["id"]))
+        if notification_updates:
+            self.connection.executemany(
+                "UPDATE automation_notifications SET kind = ?, title = ?, body = ? WHERE id = ?",
+                notification_updates,
             )
 
     def _backfill_safe_application_entities(self, *, commit: bool = True) -> None:

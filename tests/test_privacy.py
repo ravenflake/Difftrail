@@ -1,6 +1,11 @@
 import unittest
 
-from difftrail.privacy import extract_safe_application_name, redact_text, redact_value
+from difftrail.privacy import (
+    extract_safe_application_name,
+    redact_legacy_text,
+    redact_text,
+    redact_value,
+)
 
 
 class PrivacyTests(unittest.TestCase):
@@ -14,6 +19,72 @@ class PrivacyTests(unittest.TestCase):
             redact_text(text),
             r"The program C:\Users\<user> version 1.0 stopped interacting with Windows.",
         )
+
+    def test_repairs_v013_partially_redacted_profile_paths(self) -> None:
+        cases = {
+            r"The program C:\Users\<user> Doe\Games\Example Game.exe version 1.0 stopped interacting.": (
+                r"The program C:\Users\<user> version 1.0 stopped interacting."
+            ),
+            r"The program C:\Documents and Settings\<user> Doe\Games\Example Game.exe version 1.0 stopped interacting.": (
+                r"The program C:\Documents and Settings\<user> version 1.0 stopped interacting."
+            ),
+            r"The program \\<machine>\Users\<user> Doe\Games\Example Game.exe version 1.0 stopped interacting.": (
+                r"The program \\<machine>\Users\<user> version 1.0 stopped interacting."
+            ),
+        }
+
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(redact_legacy_text(text), expected)
+
+    def test_current_redaction_keeps_context_after_a_safe_path_marker(self) -> None:
+        text = r"The program C:\Users\<user> version 1.0 stopped interacting."
+        self.assertEqual(redact_text(text), text)
+
+    def test_legacy_repair_keeps_context_after_an_already_safe_path_marker(self) -> None:
+        cases = [
+            r"The program C:\Users\<user> version 1.0 stopped interacting.",
+            r"The program C:\Users\<user> version 1.0 stopped. See C:\Windows\Logs\event.log.",
+            r"Opened C:\Documents and Settings\<user> at 10:00 today.",
+            r"Copied from \\<machine>\Users\<user> during the update.",
+        ]
+
+        for text in cases:
+            with self.subTest(text=text):
+                self.assertEqual(redact_legacy_text(text), text)
+
+    def test_legacy_repair_keeps_context_after_a_partially_redacted_file_path(self) -> None:
+        cases = {
+            r"Opened C:\Users\<user> Doe\Documents\Report.txt successfully.": (
+                r"Opened C:\Users\<user> successfully."
+            ),
+            r"Opened C:\Documents and Settings\<user> Doe\Documents\Report.txt successfully.": (
+                r"Opened C:\Documents and Settings\<user> successfully."
+            ),
+            r"Opened \\<machine>\Users\<user> Doe\Documents\Report.txt successfully.": (
+                r"Opened \\<machine>\Users\<user> successfully."
+            ),
+            r"Opened C:\Users\<user> Doe\Folder.v1\Report.2025.txt, status=done": (
+                r"Opened C:\Users\<user>, status=done"
+            ),
+        }
+
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(redact_legacy_text(text), expected)
+
+    def test_legacy_repair_removes_a_space_containing_final_path_component(self) -> None:
+        cases = {
+            r"Opened C:\Users\<user> Doe\Documents\Private Report": r"Opened C:\Users\<user>",
+            r"Opened C:\Users\<user> Doe\Documents\Private Report.": r"Opened C:\Users\<user>.",
+            r"Opened C:\Users\<user> Doe\Documents\Private Report; status=denied": (
+                r"Opened C:\Users\<user>; status=denied"
+            ),
+        }
+
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(redact_legacy_text(text), expected)
 
     def test_redacts_non_executable_profile_paths_with_spaces(self) -> None:
         cases = {
