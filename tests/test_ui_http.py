@@ -152,3 +152,11 @@ class UiHttpTests(unittest.TestCase):
         )
         self.assertEqual(status, 200)
         self.assertEqual(feedback["incident"]["feedback"]["outcome"], "unknown")
+
+        status, payload = self.request(
+            "POST",
+            f"/api/incidents/{incident_id}/feedback",
+            {"outcome": "correct", "event_id": {"not": "a string"}},
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"], "event_id must be a string")
