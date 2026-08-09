@@ -32,6 +32,14 @@ class PrivacyTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(redact_text(text), expected)
 
+    def test_redacts_spaced_profile_paths_for_supported_event_log_delimiters(self) -> None:
+        for delimiter in ['"', "'", ".", "!", "?", ")", "]", "}", ",", ";", ":"]:
+            with self.subTest(delimiter=delimiter):
+                text = rf"The program C:\Users\Jane Doe\Games\Example Game.exe{delimiter} version 1.0 stopped interacting."
+                redacted = redact_text(text)
+                self.assertNotIn("Jane Doe", redacted)
+                self.assertNotIn("Example Game.exe", redacted)
+
     def test_redacts_nested_values(self) -> None:
         value = {"path": r"C:\Users\testuser\Documents\notes.txt", "items": [r"C:\Users\testuser\x"]}
         redacted = redact_value(value)
