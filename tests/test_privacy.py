@@ -73,6 +73,19 @@ class PrivacyTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(redact_legacy_text(text), expected)
 
+    def test_legacy_repair_removes_a_space_containing_final_path_component(self) -> None:
+        cases = {
+            r"Opened C:\Users\<user> Doe\Documents\Private Report": r"Opened C:\Users\<user>",
+            r"Opened C:\Users\<user> Doe\Documents\Private Report.": r"Opened C:\Users\<user>.",
+            r"Opened C:\Users\<user> Doe\Documents\Private Report; status=denied": (
+                r"Opened C:\Users\<user>; status=denied"
+            ),
+        }
+
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(redact_legacy_text(text), expected)
+
     def test_redacts_non_executable_profile_paths_with_spaces(self) -> None:
         cases = {
             r"Opened C:\Users\Jane Doe\Documents\My Report.docx": r"Opened C:\Users\<user>",
