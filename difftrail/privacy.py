@@ -38,7 +38,10 @@ _PROFILE_PATH = re.compile(r"(?i)([a-z]:\\Documents and Settings\\)[^\\\s\"']+(?
 _UNC_USER_PATH = re.compile(r"(?i)(\\\\[^\\\s\\]+\\Users\\)[^\\\s\"']+(?:\\[^\\\s\"']+)*")
 _LONG_WHITESPACE = re.compile(r"[ \t]{2,}")
 _FAULTING_APPLICATION = re.compile(r"(?im)faulting application name:\s*([^,\r\n]+)")
-_HANGING_APPLICATION = re.compile(r"(?im)the program\s+([^\r\n]+?)\s+(?:version|stopped interacting)")
+_HANGING_APPLICATION = re.compile(
+    rf"(?im)the program\s+(.+?\.{_EXECUTABLE_EXTENSION})"
+    r"(?=(?:[\s,;:)\]}.\"'!?])*(?:version\s+\S|stopped\s+interacting\b))"
+)
 
 
 def redact_text(value: str) -> str:
