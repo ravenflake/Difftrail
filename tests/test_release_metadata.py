@@ -46,6 +46,7 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("Installer process timed out after", script)
         self.assertIn("$exitCode = $process.ExitCode", script)
         self.assertIn("if ($exitCode -ne 0)", script)
+
         self.assertIn('Filter "difftrail-desktop.exe"', script)
         self.assertIn('$startInfo.Arguments = $RawArguments', script)
         self.assertIn('Invoke-Installer -FilePath $installer -RawArguments "/S /D=$installRoot"', script)
@@ -56,6 +57,18 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("Remove-Item -LiteralPath $smokeRoot -Recurse -Force -ErrorAction Stop", script)
         self.assertIn("Installer smoke-test cleanup failed", script)
         self.assertNotIn('/D=`"$installRoot`"', script)
+
+    def test_uninstaller_removes_only_the_watcher_task(self) -> None:
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        hooks = (root / "ui" / "src-tauri" / "windows" / "installer-hooks.nsh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('/Delete /TN "Difftrail Watcher" /F', hooks)
+        self.assertIn("DifftrailRemoveWatcherTask", hooks)
+        self.assertNotIn("LOCALAPPDATA", hooks)
+        self.assertNotIn("difftrail.db", hooks.casefold())
 
     def test_release_workflow_reuses_metadata_checker(self) -> None:
         from pathlib import Path
@@ -72,3 +85,5 @@ class ReleaseMetadataTests(unittest.TestCase):
             workflow,
         )
         self.assertNotRegex(workflow, re.compile(r"\bversions\s*=\s*\{"))
+        self.assertIn("sha256sum -- *-setup.exe > SHA256SUMS.txt", workflow)
+        self.assertIn('checksum_file="release-assets/SHA256SUMS.txt"', workflow)

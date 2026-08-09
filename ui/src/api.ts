@@ -14,26 +14,36 @@ import type {
 
 const DEFAULT_API_BASE = "http://127.0.0.1:45917/api";
 const CONFIGURED_API_BASE = (import.meta.env.VITE_DIFFTRAIL_API_URL || "").replace(/\/$/, "");
+const CONFIGURED_API_TOKEN = import.meta.env.VITE_DIFFTRAIL_API_TOKEN || "";
 const REQUEST_TIMEOUT_MS = 10_000;
 
 type ApiEndpoint = {
   base: string;
   port?: number;
+  token?: string;
 };
 
 let apiEndpointPromise: Promise<ApiEndpoint> | undefined;
 
 async function resolveApiEndpoint(): Promise<ApiEndpoint> {
-  if (CONFIGURED_API_BASE) return { base: CONFIGURED_API_BASE };
+  if (CONFIGURED_API_BASE) {
+    return { base: CONFIGURED_API_BASE, token: CONFIGURED_API_TOKEN || undefined };
+  }
 
   try {
-    const port = await invoke<number>("api_port");
+    const [port, token] = await Promise.all([
+      invoke<number>("api_port"),
+      invoke<string>("api_token"),
+    ]);
     if (!Number.isInteger(port) || port < 1 || port > 65_535) {
       throw new Error("Difftrail returned an invalid local API port");
     }
-    return { base: `http://127.0.0.1:${port}/api`, port };
+    if (token.length < 32) {
+      throw new Error("Difftrail returned an invalid local API token");
+    }
+    return { base: `http://127.0.0.1:${port}/api`, port, token };
   } catch {
-    return { base: DEFAULT_API_BASE };
+    return { base: DEFAULT_API_BASE, token: CONFIGURED_API_TOKEN || undefined };
   }
 }
 
@@ -53,6 +63,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       headers: {
         Accept: "application/json",
         ...(init?.body ? { "Content-Type": "application/json" } : {}),
+        ...(endpoint.token ? { "X-Difftrail-Token": endpoint.token } : {}),
         ...init?.headers,
       },
     });

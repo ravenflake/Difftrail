@@ -132,6 +132,51 @@ class UiHttpTests(unittest.TestCase):
         self.assertEqual(response.status, 400)
         self.assertEqual(payload["error"], "Host header is required")
 
+    def test_per_launch_token_protects_loopback_routes(self) -> None:
+        token = "test-token-" + "a" * 32
+        protected = UiServer(("127.0.0.1", 0), self.database_path, api_token=token)
+        thread = threading.Thread(target=protected.serve_forever, daemon=True)
+        thread.start()
+        port = protected.server_address[1]
+
+        def protected_request(headers: dict[str, str] | None = None):
+            connection = HTTPConnection("127.0.0.1", port, timeout=5)
+            connection.request("GET", "/api/health", headers=headers or {})
+            response = connection.getresponse()
+            payload = json.loads(response.read().decode("utf-8"))
+            connection.close()
+            return response.status, payload
+
+        try:
+            connection = HTTPConnection("127.0.0.1", port, timeout=5)
+            connection.request(
+                "OPTIONS",
+                "/api/health",
+                headers={
+                    "Origin": "http://tauri.localhost",
+                    "Access-Control-Request-Headers": "x-difftrail-token",
+                },
+            )
+            response = connection.getresponse()
+            response.read()
+            connection.close()
+            self.assertEqual(response.status, 204)
+
+            status, payload = protected_request()
+            self.assertEqual(status, 401)
+            self.assertIn("token", payload["error"].casefold())
+
+            status, _ = protected_request({"X-Difftrail-Token": "wrong-" + "b" * 32})
+            self.assertEqual(status, 401)
+
+            status, payload = protected_request({"X-Difftrail-Token": token})
+            self.assertEqual(status, 200)
+            self.assertEqual(payload["api_port"], port)
+        finally:
+            protected.shutdown()
+            protected.server_close()
+            thread.join(timeout=2)
+
     def test_investigation_detail_and_feedback_routes(self) -> None:
         status, payload = self.request(
             "POST",

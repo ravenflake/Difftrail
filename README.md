@@ -1,10 +1,26 @@
 # Difftrail
 
-Difftrail is a Windows-first, local-first change journal and incident investigator. It answers:
+[![CI](https://github.com/ravenflake/Difftrail/actions/workflows/ci.yml/badge.svg)](https://github.com/ravenflake/Difftrail/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/ravenflake/Difftrail?sort=semver)](https://github.com/ravenflake/Difftrail/releases/latest)
+[![License: GPL-3.0-only](https://img.shields.io/github/license/ravenflake/Difftrail)](LICENSE)
+
+Difftrail is an open-source, Windows-first, local-first change journal and
+evidence-backed incident investigator. It answers:
 
 > My PC was fine yesterday. What changed?
 
-The MVP focuses on one useful loop:
+Windows troubleshooting often starts after the useful context has disappeared:
+an update, driver replacement, service change, or device transition happened,
+then the crash or failure appeared later. Difftrail keeps a quiet local history
+of those meaningful changes so a user can compare an incident with what actually
+changed around its onset.
+
+The core diagnostic engine is deterministic and works without AI, an account,
+cloud access, or network upload. SQLite is the local source of truth. Difftrail
+does not collect screenshots or document contents and does not automatically
+change Windows settings.
+
+The current MVP focuses on one useful loop:
 
 1. Build a quiet baseline from read-only Windows snapshots.
 2. Record meaningful changes instead of raw telemetry.
@@ -13,11 +29,32 @@ The MVP focuses on one useful loop:
 5. Rank candidate changes with reproducible evidence signals.
 6. Show supporting evidence, counter-evidence, a conservative next step, and a read-only Windows diagnostic target.
 
-The core works without AI or cloud access. The local SQLite database is the app's source of truth. No screenshots, document contents, or network uploads are collected.
-
 Normalized change history is kept locally for diagnosis. Raw Event Log message text is retained for the configured retention period (30 days by default) and then removed while the compact symptom event remains.
 
+> [!IMPORTANT]
+> **Project status:** Difftrail is an early pre-1.0 MVP. The current release is
+> usable for local exploration and the automated Windows installer path is
+> tested in CI, but real-world diagnostic accuracy, multi-day watcher evidence,
+> and installed-runtime field validation remain open work. See the
+> [roadmap](ROADMAP.md) and [v0.1.4 validation gate](docs/v0.1.4-field-validation.md).
+
 ## Quick start
+
+### Install the current Windows release
+
+Download `Difftrail_0.1.3_x64-setup.exe` from the
+[latest GitHub release](https://github.com/ravenflake/Difftrail/releases/latest),
+install it for the current user, launch Difftrail, and run the initial scan to
+create a quiet baseline.
+
+The installer is not currently code-signed, so Windows may show an unrecognized
+publisher warning. Download it only from the repository's GitHub Releases page.
+Tagged releases after v0.1.3 also include `SHA256SUMS.txt` for artifact
+verification. Download both files, run
+`Get-FileHash .\Difftrail_*_x64-setup.exe -Algorithm SHA256`, and compare the
+reported hash with the checksum file before installing.
+
+### Try the deterministic engine from source
 
 Python 3.11+ is enough for the local engine; it has no third-party Python runtime dependencies. The live collector, Windows Event Log reader, and scheduled watcher require Windows. The deterministic tests and fixture validation can run without a live Windows host.
 
@@ -46,6 +83,10 @@ The local engine is usable through the CLI, and the Windows desktop interface is
 
 The interface is a React/Vite front end in a lightweight Tauri shell. React owns presentation and interaction; the Python engine remains the source of truth behind a loopback-only JSON adapter. The UI never opens SQLite directly, and the adapter omits raw evidence details before data crosses into the browser.
 
+![Difftrail overview showing the built-in synthetic preview dataset](docs/images/difftrail-overview.png)
+
+_The built-in synthetic preview is shown here; it contains no host data._
+
 Desktop development additionally requires Node.js 20+, Rust stable, and the Windows build tools required by Tauri.
 
 From the repository root, install the Python package as above, then start the desktop app:
@@ -67,6 +108,11 @@ npm run dev
 ```
 
 Then open `http://127.0.0.1:5173`. Port `45917` is the standalone API default; the Tauri shell chooses its API port dynamically. If the API is unavailable, the UI uses a clearly labelled safe preview dataset so the layout can still be inspected; scans, investigations, feedback, and automation controls require the local API.
+
+The installed Tauri app creates a fresh API token for every launch. For
+standalone browser development, set `DIFFTRAIL_API_TOKEN` for the Python process
+and `VITE_DIFFTRAIL_API_TOKEN` for Vite to the same random value of at least 32
+characters when token-protected behavior needs to match the installed app.
 
 The current interface includes Overview, Timeline, Investigate, Incidents, System health, and Automation. The important user path is: review meaningful changes, describe a symptom, inspect ranked evidence and counter-evidence, then optionally label whether a candidate was useful. The UI does not claim causality beyond the deterministic evidence available in the local journal. Appearance follows the Windows system theme by default; the Appearance control can set a persistent light/dark preference or return to system behavior.
 
@@ -188,19 +234,11 @@ Before field testing a release candidate, follow the [v0.1.4 field-validation ch
 
 ## Architecture
 
-```
-PowerShell read-only providers
-        |
-normalized SnapshotItem / Event models
-        |
-SQLite state + semantic journal
-        |
-deterministic correlation engine
-        |                 \
-CLI / JSON      loopback UI API
-                          |
-                    React / Tauri
-```
+The Python engine owns collection, migrations, redaction, deterministic ranking,
+and all journal writes. React/Tauri talks to it through an authenticated
+loopback-only JSON boundary; the UI never opens SQLite directly. See
+[`docs/architecture.md`](docs/architecture.md) for the data lifecycle, process
+model, privilege assumptions, and failure behavior.
 
 Important boundaries:
 
@@ -291,3 +329,12 @@ The tag-triggered release workflow validates the tag format and release metadata
 ## License
 
 Difftrail is licensed under the GNU General Public License, version 3 only. See [LICENSE](LICENSE) for the complete terms. Third-party dependencies and bundled tools remain under their respective licenses.
+
+## Project documentation
+
+- [Architecture and trust boundaries](docs/architecture.md)
+- [Security policy and private reporting](SECURITY.md)
+- [Contribution guide](CONTRIBUTING.md)
+- [Roadmap](ROADMAP.md)
+- [Changelog](CHANGELOG.md)
+- [v0.1.4 Windows field-validation checklist](docs/v0.1.4-field-validation.md)

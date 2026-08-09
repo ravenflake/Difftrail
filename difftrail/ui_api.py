@@ -8,7 +8,9 @@ owned by the Python engine.  The server is intentionally dependency-free and
 binds to loopback by default; it is not an internet-facing web service.
 """
 
+import hmac
 import json
+import os
 import sys
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -57,6 +59,7 @@ ALLOWED_ORIGINS = frozenset(
 MAX_REQUEST_BODY_BYTES = 64 * 1024
 MAX_BUNDLE_REQUEST_BODY_BYTES = 32 * 1024 * 1024
 VALID_EVENT_KINDS = frozenset({"all", "change", "symptom"})
+API_TOKEN_ENV = "DIFFTRAIL_API_TOKEN"
 
 
 def _public_event(event: dict[str, Any]) -> dict[str, Any]:
@@ -218,7 +221,7 @@ class UiRequestHandler(BaseHTTPRequestHandler):
         origin = self.headers.get("Origin")
         if origin in ALLOWED_ORIGINS:
             self.send_header("Access-Control-Allow-Origin", origin)
-            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Difftrail-Token")
             self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
             self.send_header("Vary", "Origin")
         self.end_headers()
@@ -264,7 +267,7 @@ class UiRequestHandler(BaseHTTPRequestHandler):
             result[key] = items[0]
         return result
 
-    def _request_allowed(self) -> bool:
+    def _request_allowed(self, *, require_token: bool = True) -> bool:
         origin = self.headers.get("Origin")
         if origin and origin not in ALLOWED_ORIGINS:
             self._error(403, "Origin is not allowed")
@@ -286,6 +289,11 @@ class UiRequestHandler(BaseHTTPRequestHandler):
         if port is not None and port != self.server.server_address[1]:
             self._error(403, "Host port does not match the local API")
             return False
+        if require_token and self.server.api_token:
+            supplied_token = self.headers.get("X-Difftrail-Token", "")
+            if not hmac.compare_digest(supplied_token, self.server.api_token):
+                self._error(401, "A valid Difftrail API token is required")
+                return False
         return True
 
     @staticmethod
@@ -304,7 +312,9 @@ class UiRequestHandler(BaseHTTPRequestHandler):
             return callback(database)
 
     def do_OPTIONS(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
-        if not self._request_allowed():
+        # CORS preflight requests declare the custom token header but do not
+        # carry its value. The subsequent request is still authenticated.
+        if not self._request_allowed(require_token=False):
             return
         if self.headers.get("Origin") not in ALLOWED_ORIGINS:
             self._error(403, "Origin is not allowed")
@@ -315,7 +325,7 @@ class UiRequestHandler(BaseHTTPRequestHandler):
         origin = self.headers.get("Origin")
         if origin in ALLOWED_ORIGINS:
             self.send_header("Access-Control-Allow-Origin", origin)
-            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Difftrail-Token")
             self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
             self.send_header("Vary", "Origin")
         self.end_headers()
@@ -463,15 +473,31 @@ class UiRequestHandler(BaseHTTPRequestHandler):
 class UiServer(ThreadingHTTPServer):
     allow_reuse_address = True
 
-    def __init__(self, address: tuple[str, int], database_path: Path):
+    def __init__(
+        self,
+        address: tuple[str, int],
+        database_path: Path,
+        *,
+        api_token: str | None = None,
+    ):
+        if api_token is not None and len(api_token) < 32:
+            raise ValueError("The Difftrail API token must contain at least 32 characters")
         self.database_path = database_path
+        self.api_token = api_token
         super().__init__(address, UiRequestHandler)
 
 
-def serve(database_path: Path, *, host: str = "127.0.0.1", port: int = 45917) -> None:
+def serve(
+    database_path: Path,
+    *,
+    host: str = "127.0.0.1",
+    port: int = 45917,
+    api_token: str | None = None,
+) -> None:
     if host not in {"127.0.0.1", "localhost", "::1"}:
         raise ValueError("The Difftrail UI server only supports loopback hosts")
-    server = UiServer((host, port), database_path)
+    token = api_token if api_token is not None else os.environ.get(API_TOKEN_ENV)
+    server = UiServer((host, port), database_path, api_token=token)
     actual_port = server.server_address[1]
     print(f"Difftrail UI API ready on http://{host}:{actual_port}", flush=True)
     try:

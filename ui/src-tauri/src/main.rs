@@ -27,6 +27,14 @@ struct BackendProcess(Mutex<Option<Child>>);
 
 struct ApiEndpoint {
     port: u16,
+    token: String,
+}
+
+fn generate_api_token() -> Result<String, Box<dyn Error>> {
+    let mut bytes = [0_u8; 32];
+    getrandom::fill(&mut bytes)
+        .map_err(|error| io::Error::other(format!("could not generate the local API token: {error}")))?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 fn database_path() -> PathBuf {
@@ -160,7 +168,7 @@ fn report_startup_failure(error: &dyn Error) {
     }
 }
 
-fn api_is_ready(port: u16) -> bool {
+fn api_is_ready(port: u16, token: &str) -> bool {
     let address = format!("{API_HOST}:{port}");
     let Ok(mut stream) = TcpStream::connect_timeout(
         &address.parse().expect("the loopback API address is valid"),
@@ -171,7 +179,9 @@ fn api_is_ready(port: u16) -> bool {
     let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
     if stream
         .write_all(
-            format!("GET /api/health HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n")
+            format!(
+                "GET /api/health HTTP/1.1\r\nHost: {address}\r\nX-Difftrail-Token: {token}\r\nConnection: close\r\n\r\n"
+            )
                 .as_bytes(),
         )
         .is_err()
@@ -197,7 +207,7 @@ fn api_is_ready(port: u16) -> bool {
     compact_body.contains(&format!("\"api_port\":{port}"))
 }
 
-fn wait_for_api_ready(child: &mut Child, port: u16) -> Result<(), Box<dyn Error>> {
+fn wait_for_api_ready(child: &mut Child, port: u16, token: &str) -> Result<(), Box<dyn Error>> {
     let deadline = Instant::now() + API_READY_TIMEOUT;
     loop {
         if let Some(status) = child.try_wait()? {
@@ -205,7 +215,7 @@ fn wait_for_api_ready(child: &mut Child, port: u16) -> Result<(), Box<dyn Error>
                 "the backend exited before the API became ready ({status})"
             ))));
         }
-        if api_is_ready(port) {
+        if api_is_ready(port, token) {
             return Ok(());
         }
         if Instant::now() >= deadline {
@@ -221,7 +231,11 @@ fn wait_for_api_ready(child: &mut Child, port: u16) -> Result<(), Box<dyn Error>
     }
 }
 
-fn start_local_api(_app: &tauri::AppHandle, port: u16) -> Result<Child, Box<dyn Error>> {
+fn start_local_api(
+    _app: &tauri::AppHandle,
+    port: u16,
+    token: &str,
+) -> Result<Child, Box<dyn Error>> {
     let db = database_path();
     let mut command;
 
@@ -267,6 +281,7 @@ fn start_local_api(_app: &tauri::AppHandle, port: u16) -> Result<Child, Box<dyn 
         .arg(API_HOST)
         .arg("--port")
         .arg(port.to_string())
+        .env("DIFFTRAIL_API_TOKEN", token)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -288,7 +303,7 @@ fn start_local_api(_app: &tauri::AppHandle, port: u16) -> Result<Child, Box<dyn 
     let stdout = capture_output(child.stdout.take(), "stdout");
     let stderr = capture_output(child.stderr.take(), "stderr");
 
-    if let Err(error) = wait_for_api_ready(&mut child, port) {
+    if let Err(error) = wait_for_api_ready(&mut child, port, token) {
         let _ = child.kill();
         let _ = child.wait();
         return Err(Box::new(io::Error::other(format!(
@@ -306,20 +321,26 @@ fn api_port(endpoint: tauri::State<'_, ApiEndpoint>) -> u16 {
     endpoint.port
 }
 
+#[tauri::command]
+fn api_token(endpoint: tauri::State<'_, ApiEndpoint>) -> String {
+    endpoint.token.clone()
+}
+
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![api_port])
+        .invoke_handler(tauri::generate_handler![api_port, api_token])
         .setup(|app| {
-            let startup: Result<(Child, u16), Box<dyn Error>> = (|| {
+            let startup: Result<(Child, u16, String), Box<dyn Error>> = (|| {
                 let port = select_api_port()?;
-                let backend = start_local_api(app.handle(), port)?;
-                Ok((backend, port))
+                let token = generate_api_token()?;
+                let backend = start_local_api(app.handle(), port, &token)?;
+                Ok((backend, port, token))
             })();
-            let (backend, port) = startup.map_err(|error| {
+            let (backend, port, token) = startup.map_err(|error| {
                 report_startup_failure(error.as_ref());
                 error
             })?;
-            app.manage(ApiEndpoint { port });
+            app.manage(ApiEndpoint { port, token });
             app.manage(BackendProcess(Mutex::new(Some(backend))));
             Ok(())
         })

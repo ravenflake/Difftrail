@@ -20,7 +20,7 @@ if (-not (Test-Path -LiteralPath $watcherEntryPoint -PathType Leaf)) {
 
 & $PythonPath -c "import PyInstaller" 2>$null
 if ($LASTEXITCODE -ne 0) {
-    throw "PyInstaller is required to build the bundled backend. Install it with: $PythonPath -m pip install pyinstaller"
+    throw "PyInstaller 6.22.0 is required to build the bundled backend. Install it with: $PythonPath -m pip install pyinstaller==6.22.0"
 }
 
 New-Item -ItemType Directory -Force -Path $outputDirectory | Out-Null
