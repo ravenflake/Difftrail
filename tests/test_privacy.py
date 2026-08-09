@@ -15,6 +15,23 @@ class PrivacyTests(unittest.TestCase):
             r"The program C:\Users\<user> version 1.0 stopped interacting with Windows.",
         )
 
+    def test_redacts_spaced_profile_paths_with_event_log_punctuation(self) -> None:
+        cases = {
+            r'The program "C:\Users\Jane Doe\Games\Example Game.exe" version 1.0 stopped interacting.': (
+                r'The program "C:\Users\<user>" version 1.0 stopped interacting.'
+            ),
+            r"The program C:\Users\Jane Doe\Games\Example Game.exe. version 1.0 stopped interacting.": (
+                r"The program C:\Users\<user> version 1.0 stopped interacting."
+            ),
+            r"The program C:\Users\Jane Doe\Games\Example Game.exe! version 1.0 stopped interacting.": (
+                r"The program C:\Users\<user> version 1.0 stopped interacting."
+            ),
+        }
+
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(redact_text(text), expected)
+
     def test_redacts_nested_values(self) -> None:
         value = {"path": r"C:\Users\testuser\Documents\notes.txt", "items": [r"C:\Users\testuser\x"]}
         redacted = redact_value(value)
@@ -31,4 +48,8 @@ class PrivacyTests(unittest.TestCase):
 
     def test_extracts_hanging_program_name_from_spaced_profile_path(self) -> None:
         message = r"The program C:\Users\Jane Doe\Games\Example Game.exe version 1.0 stopped interacting with Windows."
+        self.assertEqual(extract_safe_application_name(message), "Example Game.exe")
+
+    def test_strips_event_log_punctuation_from_hanging_program_name(self) -> None:
+        message = r'The program "C:\Users\Jane Doe\Games\Example Game.exe" version 1.0 stopped interacting with Windows.'
         self.assertEqual(extract_safe_application_name(message), "Example Game.exe")
