@@ -53,6 +53,26 @@ class PrivacyTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(redact_legacy_text(text), text)
 
+    def test_legacy_repair_keeps_context_after_a_partially_redacted_file_path(self) -> None:
+        cases = {
+            r"Opened C:\Users\<user> Doe\Documents\Report.txt successfully.": (
+                r"Opened C:\Users\<user> successfully."
+            ),
+            r"Opened C:\Documents and Settings\<user> Doe\Documents\Report.txt successfully.": (
+                r"Opened C:\Documents and Settings\<user> successfully."
+            ),
+            r"Opened \\<machine>\Users\<user> Doe\Documents\Report.txt successfully.": (
+                r"Opened \\<machine>\Users\<user> successfully."
+            ),
+            r"Opened C:\Users\<user> Doe\Folder.v1\Report.2025.txt, status=done": (
+                r"Opened C:\Users\<user>, status=done"
+            ),
+        }
+
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(redact_legacy_text(text), expected)
+
     def test_redacts_non_executable_profile_paths_with_spaces(self) -> None:
         cases = {
             r"Opened C:\Users\Jane Doe\Documents\My Report.docx": r"Opened C:\Users\<user>",

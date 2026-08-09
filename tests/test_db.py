@@ -194,8 +194,9 @@ class DatabaseTests(unittest.TestCase):
                 """
                 INSERT INTO incidents
                 (id, created_at, description, subsystem, onset_start, onset_end, lookback_days, status,
-                 result_json, assessment, assessment_reasons_json, coverage_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 result_json, feedback_outcome, feedback_event_id, feedback_at, assessment,
+                 assessment_reasons_json, coverage_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     "legacy-incident",
@@ -207,6 +208,9 @@ class DatabaseTests(unittest.TestCase):
                     7,
                     "investigating",
                     json.dumps([{"evidence": legacy_path}]),
+                    "correct",
+                    "legacy-event",
+                    timestamp,
                     "insufficient_evidence",
                     json.dumps([f"Review {legacy_path}"]),
                     json.dumps({"path": legacy_path}),
@@ -224,8 +228,8 @@ class DatabaseTests(unittest.TestCase):
                     "warning",
                     f"Problem in {legacy_path}",
                     f"Review {legacy_path}",
-                    None,
-                    None,
+                    "legacy-event",
+                    "legacy-incident",
                     None,
                 ),
             )
@@ -235,6 +239,7 @@ class DatabaseTests(unittest.TestCase):
             with Database(path) as database:
                 self.assertEqual(database.schema_status()["current_version"], 6)
                 events = {event.event_id: event for event in database.list_events(kind="symptom")}
+                self.assertEqual(set(events), {"legacy-event", "already-safe-event"})
                 event = events["legacy-event"]
                 already_safe_event = events["already-safe-event"]
                 state = database.connection.execute(
@@ -247,24 +252,37 @@ class DatabaseTests(unittest.TestCase):
 
                 self.assertIsNotNone(state)
                 self.assertIsNotNone(incident)
+                self.assertEqual(event.fingerprint, "legacy-fingerprint")
+                self.assertEqual(event.title, f"Crash in {safe_path}")
+                self.assertEqual(event.entity, f"Application Error at {safe_path}")
                 self.assertEqual(event.details["message"], f'Faulting application name: "{safe_path}", version 1.0')
                 self.assertEqual(already_safe_event.title, safe_message)
                 self.assertEqual(already_safe_event.details["message"], safe_message)
                 state_payload = json.loads(state["payload_json"])
                 self.assertEqual(state_payload["install_location"], safe_path)
                 self.assertEqual(state["payload_hash"], _hash(state_payload))
-                stored_text = json.dumps(
-                    [
-                        event.details,
-                        already_safe_event.details,
-                        scan["summary"],
-                        incident,
-                        notification,
-                        state_payload,
-                    ],
-                    ensure_ascii=False,
+                self.assertEqual(scan["summary"], {"errors": [safe_path]})
+                self.assertEqual(incident["description"], f"Crash after opening {safe_path}")
+                self.assertEqual(incident["results"], [{"evidence": safe_path}])
+                self.assertEqual(incident["assessment_reasons"], [f"Review {safe_path}"])
+                self.assertEqual(incident["coverage"], {"path": safe_path})
+                self.assertEqual(
+                    incident["feedback"],
+                    {"outcome": "correct", "event_id": "legacy-event", "recorded_at": timestamp},
                 )
-                self.assertNotIn("Doe", stored_text)
+                self.assertEqual(
+                    notification,
+                    {
+                        "id": "legacy-notification",
+                        "created_at": timestamp,
+                        "kind": "warning",
+                        "title": f"Problem in {safe_path}",
+                        "body": f"Review {safe_path}",
+                        "event_id": "legacy-event",
+                        "incident_id": "legacy-incident",
+                        "read_at": None,
+                    },
+                )
 
     def test_concurrent_first_opens_finish_with_one_complete_schema(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

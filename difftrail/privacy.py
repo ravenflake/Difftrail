@@ -42,9 +42,19 @@ _UNC_USER_PATH = re.compile(r"(?i)(\\\\[^\\\s\\]+\\Users\\)[^\"'<>\r\n]+")
 _LEGACY_PARTIAL_EXECUTABLE_SUFFIX = (
     rf"(?:[ \t]{_PATH_CHARACTER}+\\){_EXECUTABLE_PATH_SUFFIX}"
 )
+_LEGACY_PARTIAL_PATH_COMPONENT = r"[^\\\s\"']+"
+_LEGACY_PARTIAL_PATH_BOUNDARY = r"(?=$|[\s,;:)\]}\"'!?]|\.(?![A-Za-z0-9]))"
 _LEGACY_PARTIAL_PATH_SUFFIX = (
-    r"(?:[ \t][^\\/:*?\"<>|.,;:!?\r\n]+\\)"
-    r"[^\"'<>\r\n,;:)\]}\!?]+"
+    rf"(?:"
+    # A file extension gives an unambiguous end when the filename has spaces.
+    rf"(?:[ \t]{_PATH_CHARACTER}+\\)(?:{_PATH_CHARACTER}+\\)*?"
+    rf"{_PATH_CHARACTER}*?\.[A-Za-z0-9]{{1,16}}{_LEGACY_PARTIAL_PATH_BOUNDARY}"
+    rf"|"
+    # This is the v0.1.3 grammar: only the first profile-name token was
+    # replaced, while later path components stopped at whitespace.
+    rf"(?:[ \t]{_PATH_CHARACTER}+\\)(?:{_LEGACY_PARTIAL_PATH_COMPONENT}\\)*"
+    rf"(?:{_LEGACY_PARTIAL_PATH_COMPONENT})?{_LEGACY_PARTIAL_PATH_BOUNDARY}"
+    rf")"
 )
 _LEGACY_PARTIAL_USER_EXECUTABLE_PATH = re.compile(
     rf"(?i)([a-z]:\\Users\\)<user>{_LEGACY_PARTIAL_EXECUTABLE_SUFFIX}"
