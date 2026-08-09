@@ -1,0 +1,37 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: "/ui"
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      ui-toolchain:
+        patterns: ["*"]
+
+  - package-ecosystem: cargo
+    directory: "/ui/src-tauri"
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      desktop-shell:
+        patterns: ["*"]
+
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      python-build:
+        patterns: ["*"]

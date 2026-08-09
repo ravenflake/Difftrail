@@ -1,0 +1,47 @@
+name: Feature request
+description: Propose a focused improvement that fits Difftrail's safety boundaries.
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Difftrail is local-first, deterministic, privacy-conscious, and read-only. Proposals should explain the troubleshooting gap rather than only naming a technology.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Troubleshooting problem
+      description: What real user problem is difficult today?
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence or example
+      description: Describe a safe synthetic example. Do not attach real journals or private logs.
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: What should a user be able to understand or do?
+    validations:
+      required: true
+  - type: textarea
+    id: boundaries
+    attributes:
+      label: Safety and privacy considerations
+      description: Explain required Windows privileges, data collected, retention, and why the proposal stays read-only.
+    validations:
+      required: true
+  - type: checkboxes
+    id: fit
+    attributes:
+      label: Project fit
+      options:
+        - label: This proposal does not require AI or cloud access for the core diagnostic path.
+          required: true
+        - label: This proposal does not apply automatic remediation or claim causality without evidence.
+          required: true
+
