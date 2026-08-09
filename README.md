@@ -107,7 +107,12 @@ Set-Location .\ui
 npm run dev
 ```
 
-Then open `http://127.0.0.1:5173`. Port `45917` is the standalone API default; the Tauri shell chooses its API port dynamically. If the API is unavailable, the UI uses a clearly labelled safe preview dataset so the layout can still be inspected; scans, investigations, feedback, and automation controls require the local API.
+Then open `http://127.0.0.1:5173`. Port `45917` is the standalone API default;
+for the desktop app, Python binds a dynamically assigned loopback port and
+reports that owned port to the Tauri shell through its private startup pipe. If
+the API is unavailable, the UI uses a clearly labelled safe preview dataset so
+the layout can still be inspected; scans, investigations, feedback, and
+automation controls require the local API.
 
 The installed Tauri app creates a fresh API token for every launch. For
 standalone browser development, set `DIFFTRAIL_API_TOKEN` for the Python process

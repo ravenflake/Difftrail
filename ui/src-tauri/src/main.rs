@@ -3,10 +3,10 @@
 use std::error::Error;
 use std::fs::OpenOptions;
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -14,6 +14,7 @@ use tauri::Manager;
 
 const API_HOST: &str = "127.0.0.1";
 const API_READY_TIMEOUT: Duration = Duration::from_secs(15);
+const API_READY_PREFIX: &str = "Difftrail UI API ready on http://127.0.0.1:";
 #[cfg(not(debug_assertions))]
 const BACKEND_EXECUTABLE: &str = if cfg!(windows) {
     "difftrail-backend.exe"
@@ -96,18 +97,62 @@ where
     captured
 }
 
+fn parse_api_ready_port(line: &str) -> Option<u16> {
+    let port = line.strip_prefix(API_READY_PREFIX)?.trim().parse().ok()?;
+    (port != 0).then_some(port)
+}
+
+fn capture_api_output<R>(stream: Option<R>) -> (mpsc::Receiver<Result<u16, String>>, BackendLog)
+where
+    R: Read + Send + 'static,
+{
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let Some(stream) = stream else {
+        let _ = sender.send(Err("the backend stdout pipe was unavailable".to_string()));
+        return (receiver, captured);
+    };
+
+    let captured_lines = Arc::clone(&captured);
+    thread::spawn(move || {
+        let mut sender = Some(sender);
+        for result in BufReader::new(stream).lines() {
+            let line = match result {
+                Ok(line) => line,
+                Err(error) => {
+                    if let Some(sender) = sender.take() {
+                        let _ = sender.send(Err(format!("could not read backend stdout: {error}")));
+                    }
+                    break;
+                }
+            };
+            eprintln!("[Difftrail backend stdout] {line}");
+            if let Ok(mut lines) = captured_lines.lock() {
+                if lines.len() >= 40 {
+                    lines.remove(0);
+                }
+                lines.push(format!("stdout: {line}"));
+            }
+            if let Some(port) = parse_api_ready_port(&line) {
+                if let Some(sender) = sender.take() {
+                    let _ = sender.send(Ok(port));
+                }
+            }
+        }
+        if let Some(sender) = sender {
+            let _ = sender.send(Err(
+                "the backend exited without reporting its bound API port".to_string(),
+            ));
+        }
+    });
+    (receiver, captured)
+}
+
 fn backend_output(logs: &BackendLog) -> String {
     match logs.lock() {
         Ok(lines) if !lines.is_empty() => lines.join(" | "),
         _ => "no backend output was captured".to_string(),
     }
-}
-
-fn select_api_port() -> Result<u16, Box<dyn Error>> {
-    let listener = TcpListener::bind((API_HOST, 0))?;
-    let port = listener.local_addr()?.port();
-    drop(listener);
-    Ok(port)
 }
 
 fn startup_log_path() -> PathBuf {
@@ -233,9 +278,8 @@ fn wait_for_api_ready(child: &mut Child, port: u16, token: &str) -> Result<(), B
 
 fn start_local_api(
     _app: &tauri::AppHandle,
-    port: u16,
     token: &str,
-) -> Result<Child, Box<dyn Error>> {
+) -> Result<(Child, u16), Box<dyn Error>> {
     let db = database_path();
     let mut command;
 
@@ -280,7 +324,7 @@ fn start_local_api(
         .arg("--host")
         .arg(API_HOST)
         .arg("--port")
-        .arg(port.to_string())
+        .arg("0")
         .env("DIFFTRAIL_API_TOKEN", token)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -300,8 +344,43 @@ fn start_local_api(
             ),
         )
     })?;
-    let stdout = capture_output(child.stdout.take(), "stdout");
+    let (port_receiver, stdout) = capture_api_output(child.stdout.take());
     let stderr = capture_output(child.stderr.take(), "stderr");
+
+    let port = match port_receiver.recv_timeout(API_READY_TIMEOUT) {
+        Ok(Ok(port)) => port,
+        Ok(Err(message)) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(Box::new(io::Error::other(format!(
+                "Difftrail backend startup failed: {message}; stdout: {}; stderr: {}",
+                backend_output(&stdout),
+                backend_output(&stderr)
+            ))));
+        }
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(Box::new(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!(
+                    "Difftrail backend did not report its bound API port within {} seconds; stdout: {}; stderr: {}",
+                    API_READY_TIMEOUT.as_secs(),
+                    backend_output(&stdout),
+                    backend_output(&stderr)
+                ),
+            )));
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(Box::new(io::Error::other(format!(
+                "Difftrail backend port channel closed unexpectedly; stdout: {}; stderr: {}",
+                backend_output(&stdout),
+                backend_output(&stderr)
+            ))));
+        }
+    };
 
     if let Err(error) = wait_for_api_ready(&mut child, port, token) {
         let _ = child.kill();
@@ -313,7 +392,42 @@ fn start_local_api(
         ))));
     }
 
-    Ok(child)
+    Ok((child, port))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{capture_api_output, parse_api_ready_port};
+    use std::io::Cursor;
+    use std::time::Duration;
+
+    #[test]
+    fn ready_port_requires_the_exact_backend_banner() {
+        assert_eq!(
+            parse_api_ready_port("Difftrail UI API ready on http://127.0.0.1:49152"),
+            Some(49152)
+        );
+        assert_eq!(
+            parse_api_ready_port("Difftrail UI API ready on http://localhost:49152"),
+            None
+        );
+        assert_eq!(
+            parse_api_ready_port("Difftrail UI API ready on http://127.0.0.1:0"),
+            None
+        );
+    }
+
+    #[test]
+    fn backend_owned_port_arrives_through_the_private_stdout_pipe() {
+        let output = Cursor::new(
+            b"startup warning\nDifftrail UI API ready on http://127.0.0.1:49153\n".to_vec(),
+        );
+        let (receiver, _) = capture_api_output(Some(output));
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_secs(1)).unwrap(),
+            Ok(49153)
+        );
+    }
 }
 
 #[tauri::command]
@@ -331,9 +445,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![api_port, api_token])
         .setup(|app| {
             let startup: Result<(Child, u16, String), Box<dyn Error>> = (|| {
-                let port = select_api_port()?;
                 let token = generate_api_token()?;
-                let backend = start_local_api(app.handle(), port, &token)?;
+                let (backend, port) = start_local_api(app.handle(), &token)?;
                 Ok((backend, port, token))
             })();
             let (backend, port, token) = startup.map_err(|error| {

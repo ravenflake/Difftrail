@@ -52,6 +52,9 @@ flowchart TD
 - Every installed-desktop launch generates a fresh 256-bit API token. It is
   passed to the child through its environment and returned only to the Tauri
   webview through an invoke command.
+- The Python child binds port `0` first, then reports the OS-assigned port to
+  Tauri through its private stdout pipe. Tauri never sends the token to a port
+  that was selected and released before the backend owned it.
 - The API listens only on loopback. Token authentication, Host validation,
   Origin allowlisting, JSON content-type checks, and bounded bodies protect
   state-changing routes.
@@ -82,4 +85,3 @@ builds and silently installs/uninstalls the NSIS package.
 Synthetic validation demonstrates behavior for known inputs. It is not evidence
 of real-world diagnostic accuracy. The remaining host evidence is tracked in the
 [v0.1.4 field-validation checklist](v0.1.4-field-validation.md).
-

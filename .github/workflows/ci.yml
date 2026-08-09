@@ -107,6 +107,12 @@ jobs:
       - name: Run UI unit tests
         run: npm test
 
+      - name: Build and type-check UI
+        run: npm run build
+
+      - name: Run desktop shell unit tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+
       - name: Install backend build tooling
         run: python -m pip install --disable-pip-version-check "pyinstaller==6.22.0"
 
