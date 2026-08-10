@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import unittest
+from datetime import timedelta
 from pathlib import Path
 from subprocess import CompletedProcess
 from tempfile import TemporaryDirectory
@@ -70,6 +72,20 @@ class AutomationTests(unittest.TestCase):
             marked = mark_notifications_read(database)
             self.assertEqual(marked["notifications"]["unread"], 0)
 
+    def test_automation_snapshot_redacts_notification_paths(self) -> None:
+        with Database(":memory:") as database:
+            database.create_automation_notification(
+                kind="change",
+                title=r"Changed C:\Program Files\Secret\tool.exe",
+                body=r"Observed at C:\Users\Alice\private\tool.exe",
+                event_id=r"C:\Users\Alice\event",
+            )
+
+            encoded = json.dumps(automation_snapshot(database))
+            self.assertNotIn("Alice", encoded)
+            self.assertNotIn(r"C:\Users", encoded)
+            self.assertNotIn(r"C:\Program Files", encoded)
+
     def test_automated_scan_processes_new_events_and_warnings(self) -> None:
         with Database(":memory:") as database:
             now = utc_now()
@@ -98,6 +114,234 @@ class AutomationTests(unittest.TestCase):
             self.assertEqual(database.unread_automation_notification_count(), 2)
             self.assertEqual(database.automation_draft_count(), 0)
             self.assertEqual({item["kind"] for item in database.list_automation_notifications()}, {"change", "warning"})
+
+    def test_automated_scan_finds_new_events_after_large_history(self) -> None:
+        with Database(":memory:") as database:
+            now = utc_now()
+            old = now - timedelta(days=1)
+            database.save_events(
+                [
+                    Event(old, "change", "graphics", "updated", f"old event {index}", severity="low", source="test")
+                    for index in range(10_001)
+                ]
+            )
+
+            class FakeScanner:
+                def scan(self):
+                    database.save_events(
+                        [
+                            Event(
+                                now,
+                                "change",
+                                "graphics",
+                                "updated",
+                                "new high-severity change",
+                                severity="high",
+                                source="test",
+                            )
+                        ]
+                    )
+                    return SimpleNamespace(scan_id="scan-after-history", errors=())
+
+            run_automated_scan(database, FakeScanner())
+
+            self.assertEqual(database.unread_automation_notification_count(), 1)
+            self.assertEqual(database.list_automation_notifications()[0]["kind"], "change")
+
+    def test_failed_notification_does_not_commit_its_idempotency_marker(self) -> None:
+        with Database(":memory:") as database:
+            event = Event(
+                utc_now(),
+                "change",
+                "graphics",
+                "updated",
+                "Important driver change",
+                severity="high",
+                source="test",
+                event_id="notification-retry",
+            )
+            result = SimpleNamespace(scan_id="scan-notification-retry", errors=())
+            with patch.object(database, "create_automation_notification", side_effect=RuntimeError("disk full")):
+                with self.assertRaisesRegex(RuntimeError, "disk full"):
+                    process_scan_events(database, result, [event])
+
+            actions = database.connection.execute("SELECT COUNT(*) FROM automation_actions").fetchone()[0]
+            self.assertEqual(actions, 0)
+            self.assertEqual(process_scan_events(database, result, [event]), {"notifications": 1, "drafts": 0})
+            self.assertEqual(database.unread_automation_notification_count(), 1)
+
+    def test_failed_draft_does_not_commit_its_idempotency_marker(self) -> None:
+        with Database(":memory:") as database:
+            event = Event(
+                utc_now(),
+                "symptom",
+                "application",
+                "crash",
+                "Application crash",
+                severity="high",
+                source="eventlog",
+                event_id="draft-retry",
+            )
+            result = SimpleNamespace(scan_id="scan-draft-retry", errors=())
+            with patch("difftrail.automation.run_investigation", side_effect=RuntimeError("write failed")):
+                with self.assertRaisesRegex(RuntimeError, "draft could not be persisted"):
+                    process_scan_events(database, result, [event])
+
+            actions = database.connection.execute(
+                "SELECT COUNT(*) FROM automation_actions WHERE action = 'draft_investigation'"
+            ).fetchone()[0]
+            self.assertEqual(actions, 0)
+            self.assertEqual(process_scan_events(database, result, [event])["drafts"], 1)
+            notification = database.list_automation_notifications()[0]
+            self.assertEqual(notification["incident_id"], database.recent_incidents()[0]["id"])
+
+    def test_failed_notification_retry_links_existing_draft(self) -> None:
+        with Database(":memory:") as database:
+            event = Event(
+                utc_now(),
+                "symptom",
+                "application",
+                "crash",
+                "Application crash",
+                severity="high",
+                source="eventlog",
+                event_id="notification-draft-link",
+            )
+            result = SimpleNamespace(scan_id="scan-notification-draft-link", errors=())
+            with patch.object(database, "create_automation_notification", side_effect=RuntimeError("disk full")):
+                with self.assertRaisesRegex(RuntimeError, "disk full"):
+                    process_scan_events(database, result, [event])
+
+            self.assertEqual(database.automation_draft_count(), 1)
+            self.assertEqual(process_scan_events(database, result, [event]), {"notifications": 1, "drafts": 0})
+            notification = database.list_automation_notifications()[0]
+            self.assertEqual(notification["incident_id"], database.recent_incidents()[0]["id"])
+
+    def test_automation_cursor_retries_events_after_a_post_scan_failure(self) -> None:
+        with Database(":memory:") as database:
+            now = utc_now()
+
+            class FakeScanner:
+                calls = 0
+
+                def scan(self):
+                    self.calls += 1
+                    if self.calls == 1:
+                        database.save_events(
+                            [
+                                Event(
+                                    now,
+                                    "change",
+                                    "graphics",
+                                    "updated",
+                                    "New high-severity change",
+                                    severity="high",
+                                    source="test",
+                                    event_id="cursor-retry",
+                                )
+                            ]
+                        )
+                    return SimpleNamespace(scan_id=f"scan-cursor-{self.calls}", errors=())
+
+            scanner = FakeScanner()
+            with patch.object(database, "create_automation_notification", side_effect=RuntimeError("disk full")):
+                with self.assertRaisesRegex(RuntimeError, "disk full"):
+                    run_automated_scan(database, scanner)
+
+            self.assertEqual(database.get_meta("automation:event_rowid"), "0")
+            run_automated_scan(database, scanner)
+            self.assertEqual(database.unread_automation_notification_count(), 1)
+            self.assertEqual(database.get_meta("automation:event_rowid"), "1")
+
+    def test_invalid_automation_cursor_is_repaired_before_a_retryable_scan(self) -> None:
+        with Database(":memory:") as database:
+            now = utc_now()
+            database.set_meta("automation:event_rowid", "not-a-number")
+
+            class FakeScanner:
+                calls = 0
+
+                def scan(self):
+                    self.calls += 1
+                    if self.calls == 1:
+                        database.save_events(
+                            [
+                                Event(
+                                    now,
+                                    "change",
+                                    "graphics",
+                                    "updated",
+                                    "Retryable high-severity change",
+                                    severity="high",
+                                    source="test",
+                                    event_id="invalid-cursor-retry",
+                                )
+                            ]
+                        )
+                    return SimpleNamespace(scan_id=f"scan-invalid-cursor-{self.calls}", errors=())
+
+            scanner = FakeScanner()
+            with patch.object(database, "create_automation_notification", side_effect=RuntimeError("disk full")):
+                with self.assertRaisesRegex(RuntimeError, "disk full"):
+                    run_automated_scan(database, scanner)
+
+            self.assertEqual(database.get_meta("automation:event_rowid"), "0")
+            run_automated_scan(database, scanner)
+            self.assertEqual(database.unread_automation_notification_count(), 1)
+
+    def test_automation_cursor_does_not_skip_events_added_during_processing(self) -> None:
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / "journal.db"
+            now = utc_now()
+            with Database(path) as database:
+                class FakeScanner:
+                    calls = 0
+
+                    def scan(self):
+                        self.calls += 1
+                        if self.calls == 1:
+                            database.save_events(
+                                [
+                                    Event(
+                                        now,
+                                        "change",
+                                        "graphics",
+                                        "updated",
+                                        "First high-severity change",
+                                        severity="high",
+                                        source="test",
+                                        event_id="cursor-first",
+                                    )
+                                ]
+                            )
+                        return SimpleNamespace(scan_id=f"scan-cursor-race-{self.calls}", errors=())
+
+                def insert_concurrent_event(current: Database, result, events):
+                    with Database(path) as concurrent:
+                        concurrent.save_events(
+                            [
+                                Event(
+                                    now,
+                                    "change",
+                                    "graphics",
+                                    "updated",
+                                    "Second high-severity change",
+                                    severity="high",
+                                    source="test",
+                                    event_id="cursor-second",
+                                )
+                            ]
+                        )
+                    return process_scan_events(current, result, events)
+
+                scanner = FakeScanner()
+                with patch("difftrail.automation.process_scan_events", side_effect=insert_concurrent_event):
+                    run_automated_scan(database, scanner)
+
+                self.assertEqual(database.get_meta("automation:event_rowid"), "1")
+                run_automated_scan(database, scanner)
+                event_ids = {item["event_id"] for item in database.list_automation_notifications()}
+                self.assertEqual(event_ids, {"cursor-first", "cursor-second"})
 
     def test_snapshot_keeps_task_status_separate_from_preferences(self) -> None:
         task_status = {

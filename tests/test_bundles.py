@@ -65,6 +65,149 @@ class BundleTests(unittest.TestCase):
             self.assertNotIn(r"C:\Program Files", encoded)
             self.assertIn("<path>", encoded)
 
+    def test_export_excludes_forward_slash_profile_paths(self) -> None:
+        with Database(":memory:") as database:
+            now = utc_now()
+            database.save_events(
+                [
+                    Event(
+                        now,
+                        "change",
+                        "application",
+                        "updated",
+                        "Tool C:/Users/Alice/Private/report.txt updated",
+                        entity="C:/Users/Alice/Private/report.txt",
+                        source="apps",
+                    )
+                ]
+            )
+            bundle = export_bundle(database, as_of=now + timedelta(minutes=1))
+            encoded = json.dumps(bundle["journal"])
+            self.assertNotIn("Alice", encoded)
+            self.assertNotIn("C:/Users", encoded)
+            self.assertIn("<path>", encoded)
+
+    def test_export_excludes_forward_slash_unc_paths(self) -> None:
+        with Database(":memory:") as database:
+            now = utc_now()
+            database.save_events(
+                [
+                    Event(
+                        now,
+                        "change",
+                        "application",
+                        "updated",
+                        "Tool //server/share/private/report.txt updated",
+                        entity="//server/share/private/report.txt",
+                        source="apps",
+                    )
+                ]
+            )
+            bundle = export_bundle(database, as_of=now + timedelta(minutes=1))
+            encoded = json.dumps(bundle["journal"])
+            self.assertNotIn("//server/share", encoded)
+            self.assertIn("<path>", encoded)
+
+    def test_validator_rejects_deeply_nested_shapes_without_recursion_error(self) -> None:
+        nested: object = "leaf"
+        for _ in range(100):
+            nested = {"nested": nested}
+        report = validate_bundle({"format": BUNDLE_FORMAT, "format_version": 1, "journal": {}, "nested": nested})
+        self.assertFalse(report["valid"])
+        self.assertIn("Bundle nesting exceeds 64 levels", report["errors"])
+
+    def test_export_keeps_more_than_the_ui_event_limit(self) -> None:
+        with Database(":memory:") as database:
+            now = utc_now()
+            database.save_events(
+                [
+                    Event(
+                        now - timedelta(seconds=10_001 - index),
+                        "change",
+                        "graphics",
+                        "updated",
+                        f"Synthetic event {index}",
+                        source="test",
+                        event_id=f"bundle-{index}",
+                    )
+                    for index in range(10_001)
+                ]
+            )
+            bundle = export_bundle(database, as_of=now + timedelta(minutes=1))
+
+            self.assertEqual(len(bundle["journal"]["events"]), 10_001)
+            self.assertEqual(bundle["journal"]["event_summary"]["changes"], 10_001)
+            self.assertFalse(bundle["journal"]["events_truncated"])
+
+    def test_export_redacts_aggregate_labels_as_well_as_event_values(self) -> None:
+        with Database(":memory:") as database:
+            now = utc_now()
+            database.save_events(
+                [
+                    Event(
+                        now,
+                        "change",
+                        "general",
+                        "updated",
+                        "Synthetic change",
+                        source="test",
+                        event_id="aggregate-redaction",
+                    )
+                ]
+            )
+            database.connection.execute(
+                "UPDATE events SET source = ?, subsystem = ? WHERE id = ?",
+                (r"C:\Users\Alice\Secret", r"C:\Users\Alice\Subsystem", "aggregate-redaction"),
+            )
+            database.connection.commit()
+            bundle = export_bundle(database, as_of=now + timedelta(minutes=1))
+
+            encoded = json.dumps(bundle)
+            self.assertNotIn("Alice", encoded)
+            self.assertNotIn(r"C:\Users", encoded)
+            self.assertTrue(validate_bundle(bundle)["valid"])
+
+    def test_export_redacts_malformed_path_event_ids(self) -> None:
+        with Database(":memory:") as database:
+            now = utc_now()
+            database.save_events(
+                [
+                    Event(
+                        now,
+                        "change",
+                        "general",
+                        "updated",
+                        "Synthetic change",
+                        source="test",
+                        event_id=r"C:\Users\Alice\private-event",
+                    )
+                ]
+            )
+            bundle = export_bundle(database, as_of=now + timedelta(minutes=1))
+            encoded = json.dumps(bundle)
+            self.assertNotIn("Alice", encoded)
+            self.assertNotIn(r"C:\Users", encoded)
+            self.assertTrue(validate_bundle(bundle)["valid"])
+
+    def test_export_preserves_urls_without_treating_them_as_unc_paths(self) -> None:
+        with Database(":memory:") as database:
+            now = utc_now()
+            database.save_events(
+                [
+                    Event(
+                        now,
+                        "change",
+                        "general",
+                        "updated",
+                        "See https://example.com/docs for details",
+                        source="test",
+                    )
+                ]
+            )
+            bundle = export_bundle(database, as_of=now + timedelta(minutes=1))
+            self.assertIn("https://example.com/docs", json.dumps(bundle))
+            self.assertTrue(validate_bundle(bundle)["valid"])
+
     def test_validator_rejects_tampering_and_sensitive_fields(self) -> None:
         invalid = {
             "format": "difftrail-diagnostic-bundle",
@@ -76,6 +219,19 @@ class BundleTests(unittest.TestCase):
         self.assertFalse(report["valid"])
         self.assertTrue(any("Forbidden sensitive field" in error for error in report["errors"]))
         self.assertIn("Bundle integrity digest does not match its contents", report["errors"])
+
+    def test_validator_does_not_echo_sensitive_field_names(self) -> None:
+        report = validate_bundle(
+            {
+                "format": BUNDLE_FORMAT,
+                "format_version": 1,
+                "integrity": {"sha256": "wrong"},
+                "journal": {r"C:\Users\Alice\private": {"message": "secret"}},
+            }
+        )
+        self.assertFalse(report["valid"])
+        self.assertNotIn("Alice", json.dumps(report))
+        self.assertNotIn(r"C:\Users", json.dumps(report))
 
     def test_validator_reports_malformed_shapes_without_crashing(self) -> None:
         report = validate_bundle({"format": BUNDLE_FORMAT, "format_version": 1, "journal": None})

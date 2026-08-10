@@ -29,25 +29,46 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(row["status"], "interrupted")
             self.assertEqual(row["summary"]["recovery"]["reason"], "stale_running_scan")
 
-    def test_slow_scan_can_finish_after_provisional_stale_recovery(self) -> None:
+    def test_stale_scan_owner_cannot_finish_after_replacement(self) -> None:
         with Database(":memory:") as database:
             now = utc_now()
             slow_scan = database.start_scan(now - timedelta(hours=1))
             replacement_scan = database.start_scan(now)
 
-            database.finish_scan(
-                slow_scan,
-                now + timedelta(minutes=1),
-                "ok",
-                {"sources": 7, "state_events": 2, "symptom_events": 0, "errors": []},
-            )
+            with self.assertRaisesRegex(RuntimeError, "lease is no longer active"):
+                database.finish_scan(
+                    slow_scan,
+                    now + timedelta(minutes=1),
+                    "ok",
+                    {"sources": 7, "state_events": 2, "symptom_events": 0, "errors": []},
+                )
 
             rows = {
                 row["id"]: row
                 for row in database.connection.execute("SELECT id, status FROM scans").fetchall()
             }
-            self.assertEqual(rows[slow_scan]["status"], "ok")
+            self.assertEqual(rows[slow_scan]["status"], "interrupted")
             self.assertEqual(rows[replacement_scan]["status"], "running")
+
+    def test_replaced_stale_scan_cannot_write_snapshot_state(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "journal.db"
+            now = utc_now()
+            with Database(path) as old_owner, Database(path) as replacement:
+                old_scan = old_owner.start_scan(now - timedelta(hours=1))
+                new_scan = replacement.start_scan(now)
+                old_item = SnapshotItem("apps", "old", "application", "Old", {"version": "1"})
+                new_item = SnapshotItem("apps", "new", "application", "New", {"version": "2"})
+
+                with self.assertRaisesRegex(RuntimeError, "lease is no longer active"):
+                    old_owner.apply_snapshot("apps", [old_item], occurred_at=now, scan_id=old_scan)
+                replacement.apply_snapshot("apps", [new_item], occurred_at=now, scan_id=new_scan)
+                replacement.finish_scan(new_scan, now, "ok", {"errors": []})
+
+                rows = old_owner.connection.execute(
+                    "SELECT item_key FROM state_items WHERE source = 'apps'"
+                ).fetchall()
+                self.assertEqual([row["item_key"] for row in rows], ["new"])
 
     def test_active_scan_blocks_a_second_scan(self) -> None:
         with Database(":memory:") as database:
@@ -55,6 +76,121 @@ class DatabaseTests(unittest.TestCase):
             database.start_scan(now)
             with self.assertRaisesRegex(RuntimeError, "already running"):
                 database.start_scan(now + timedelta(seconds=1))
+
+    def test_concurrent_scan_starts_on_one_connection_get_a_clean_conflict(self) -> None:
+        with Database(":memory:") as database:
+            now = utc_now()
+            barrier = threading.Barrier(2)
+            outcomes: list[str] = []
+
+            def start() -> None:
+                try:
+                    barrier.wait(timeout=5)
+                    database.start_scan(now)
+                    outcomes.append("started")
+                except RuntimeError as exc:
+                    outcomes.append(str(exc))
+
+            threads = [threading.Thread(target=start) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=5)
+
+            self.assertFalse(any(thread.is_alive() for thread in threads))
+            self.assertEqual(outcomes.count("started"), 1)
+            self.assertEqual(sum("already running" in outcome for outcome in outcomes), 1)
+
+    def test_invalid_snapshot_state_is_reset_for_a_quiet_resync(self) -> None:
+        with Database(":memory:") as database:
+            now = utc_now()
+            item = SnapshotItem("apps", "example", "application", "Example", {"version": "1"})
+            database.apply_snapshot("apps", [item], occurred_at=now)
+            database.connection.execute(
+                "UPDATE state_items SET payload_json = ? WHERE source = ? AND item_key = ?",
+                ("[]", "apps", "example"),
+            )
+            database.connection.commit()
+
+            with self.assertRaisesRegex(RuntimeError, "has been reset"):
+                database.apply_snapshot("apps", [item], occurred_at=now + timedelta(minutes=1))
+
+            self.assertEqual(
+                database.connection.execute("SELECT COUNT(*) FROM state_items WHERE source = 'apps'").fetchone()[0],
+                0,
+            )
+            self.assertIsNone(database.get_meta("source:apps:initialized"))
+            self.assertEqual(database.apply_snapshot("apps", [item], occurred_at=now + timedelta(minutes=2)), [])
+
+    def test_deep_persisted_event_details_are_ignored_on_read(self) -> None:
+        with Database(":memory:") as database:
+            now = utc_now()
+            database.save_events([Event(now, "symptom", "general", "failure", "Deep details", event_id="deep")])
+            deep_json = '{"nested":' * 100 + '"leaf"' + "}" * 100
+            database.connection.execute("UPDATE events SET details_json = ? WHERE id = ?", (deep_json, "deep"))
+            database.connection.commit()
+            self.assertEqual(database.list_events(limit=1)[0].details, {})
+
+    def test_v5_deep_json_migrates_without_blocking_database_open(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "deep-v5.db"
+            deep_json = '{"nested":' * 100 + '"leaf"' + "}" * 100
+            connection = sqlite3.connect(path)
+            connection.executescript(BASE_SCHEMA)
+            connection.executescript(
+                """
+                ALTER TABLE incidents ADD COLUMN assessment TEXT NOT NULL DEFAULT 'insufficient_evidence';
+                ALTER TABLE incidents ADD COLUMN assessment_reasons_json TEXT NOT NULL DEFAULT '[]';
+                ALTER TABLE incidents ADD COLUMN coverage_json TEXT NOT NULL DEFAULT '{}';
+                """
+            )
+            connection.execute("INSERT INTO meta(key, value) VALUES (?, ?)", ("schema_version", "5"))
+            connection.execute(
+                """
+                INSERT INTO events
+                (id, occurred_at, kind, subsystem, action, title, entity, severity, source,
+                 details_json, fingerprint, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "deep-legacy",
+                    "2026-08-10T10:00:00Z",
+                    "symptom",
+                    "general",
+                    "failure",
+                    "Legacy details",
+                    "",
+                    "medium",
+                    "eventlog",
+                    deep_json,
+                    "deep-legacy",
+                    "2026-08-10T10:00:00Z",
+                ),
+            )
+            connection.commit()
+            connection.close()
+
+            with Database(path) as database:
+                self.assertEqual(database.schema_status()["current_version"], 6)
+                self.assertEqual(database.list_events(limit=1)[0].details, {})
+
+    def test_ascending_event_limit_keeps_the_most_recent_evidence(self) -> None:
+        with Database(":memory:") as database:
+            now = utc_now()
+            database.save_events(
+                [
+                    Event(now - timedelta(minutes=2), "change", "general", "changed", "first", event_id="first"),
+                    Event(now - timedelta(minutes=1), "change", "general", "changed", "second", event_id="second"),
+                    Event(now, "change", "general", "changed", "third", event_id="third"),
+                ]
+            )
+            events = database.list_events(limit=10, maximum_limit=2, ascending=True)
+            self.assertEqual([event.event_id for event in events], ["second", "third"])
+
+    def test_journal_with_only_scan_history_is_not_empty_for_simulation(self) -> None:
+        with Database(":memory:") as database:
+            database.start_scan(utc_now())
+            self.assertFalse(database.is_empty())
     def test_old_journal_gets_additive_feedback_columns(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "legacy.db"
@@ -395,6 +531,35 @@ class DatabaseTests(unittest.TestCase):
                 self.assertEqual(events[0].action, "updated")
                 self.assertEqual(database.count_events("change"), 1)
 
+    def test_snapshot_state_rolls_back_when_event_write_fails(self) -> None:
+        with Database(":memory:") as database:
+            now = utc_now()
+            baseline = SnapshotItem("services", "svc", "startup", "Service Example", {"start_mode": "Auto"})
+            changed = SnapshotItem("services", "svc", "startup", "Service Example", {"start_mode": "Manual"})
+            database.apply_snapshot("services", [baseline], occurred_at=now)
+            database.connection.execute(
+                "CREATE TRIGGER fail_event_insert BEFORE INSERT ON events "
+                "BEGIN SELECT RAISE(ABORT, 'injected event write failure'); END"
+            )
+            database.connection.commit()
+
+            with self.assertRaises(sqlite3.IntegrityError):
+                database.apply_snapshot("services", [changed], occurred_at=now + timedelta(minutes=1))
+
+            stored_payload = json.loads(
+                database.connection.execute(
+                    "SELECT payload_json FROM state_items WHERE source = ? AND item_key = ?",
+                    ("services", "svc"),
+                ).fetchone()[0]
+            )
+            self.assertEqual(stored_payload["start_mode"], "Auto")
+            database.connection.execute("DROP TRIGGER fail_event_insert")
+            database.connection.commit()
+
+            retry_events = database.apply_snapshot("services", [changed], occurred_at=now + timedelta(minutes=2))
+            self.assertEqual(len(retry_events), 1)
+            self.assertEqual(database.count_events("change"), 1)
+
     def test_runtime_state_and_localized_display_fields_do_not_create_changes(self) -> None:
         with Database(":memory:") as database:
             now = utc_now()
@@ -569,6 +734,22 @@ class DatabaseTests(unittest.TestCase):
             stored = database.list_events(kind="symptom")[0]
             self.assertNotIn("message", stored.details)
             self.assertFalse(stored.details["raw_message_retained"])
+
+    def test_malformed_old_symptom_details_are_removed_without_blocking_pruning(self) -> None:
+        with Database(":memory:") as database:
+            now = utc_now()
+            database.save_events(
+                [Event(now - timedelta(days=31), "symptom", "application", "crash", "Application crash", source="test")]
+            )
+            database.connection.execute(
+                "UPDATE events SET details_json = ? WHERE kind = 'symptom'",
+                ("{not valid json with raw detail}",),
+            )
+            database.connection.commit()
+
+            self.assertEqual(database.prune_sensitive_symptom_details(as_of=now), 1)
+            stored = database.list_events(kind="symptom")[0]
+            self.assertEqual(stored.details, {"raw_message_retained": False})
 
     def test_search_source_status_and_retention_setting(self) -> None:
         with Database(":memory:") as database:

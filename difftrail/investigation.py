@@ -31,10 +31,11 @@ def run_investigation(
     request: IncidentRequest,
     *,
     status: str = "investigating",
+    commit: bool = True,
 ) -> InvestigationRun:
     """Create, assess, and persist one deterministic investigation."""
 
-    incident = database.create_incident(request, status=status)
+    incident = database.create_incident(request, status=status, commit=commit)
     window_start = request.onset_start - timedelta(days=request.lookback_days)
     events = database.list_events(
         limit=10_000,
@@ -57,5 +58,6 @@ def run_investigation(
         assessment=assessment.state,
         assessment_reasons=assessment.reasons,
         coverage=coverage,
+        commit=commit,
     )
     return InvestigationRun(incident, tuple(events), hypotheses, assessment, summary)

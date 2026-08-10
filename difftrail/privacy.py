@@ -36,6 +36,23 @@ _UNC_USER_EXECUTABLE_PATH = re.compile(rf"(?i)(\\\\[^\\\s\\]+\\Users\\){_EXECUTA
 _USER_PATH = re.compile(r"(?i)([a-z]:\\Users\\)[^\"'<>\r\n]+")
 _PROFILE_PATH = re.compile(r"(?i)([a-z]:\\Documents and Settings\\)[^\"'<>\r\n]+")
 _UNC_USER_PATH = re.compile(r"(?i)(\\\\[^\\\s\\]+\\Users\\)[^\"'<>\r\n]+")
+_EXTENDED_UNC_USER_PATH = re.compile(r"(?i)(\\\\\?\\UNC\\[^\\\s]+\\Users\\)[^\"'<>\r\n]+")
+_EXTENDED_DRIVE_USER_PATH = re.compile(r"(?i)(\\\\\?\\[a-z]:\\Users\\)[^\"'<>\r\n]+")
+# Windows accepts forward slashes in many APIs and event payloads. Treat them
+# as profile paths too so a normalized value cannot carry a username into the
+# UI or a diagnostic export merely by using the alternate separator.
+_FORWARD_USER_PATH = re.compile(r"(?i)([a-z]:/Users/)[^\"'<>\r\n]+")
+_FORWARD_PROFILE_PATH = re.compile(r"(?i)([a-z]:/Documents and Settings/)[^\"'<>\r\n]+")
+_FORWARD_UNC_USER_PATH = re.compile(r"(?i)(?<!:)(//[^/\s]+/Users/)[^\"'<>\r\n]+")
+_ABSOLUTE_PATH_VALUE = re.compile(
+    r"(?i)(?:"
+    r"\\\\\?\\UNC\\[^\r\n,;\"']+"
+    r"|\\\\\?\\[a-z]:[\\/][^\r\n,;\"']+"
+    r"|(?<![A-Za-z0-9])[a-z]:[\\/][^\r\n,;\"']+"
+    r"|\\\\[^\\\s]+\\[^\r\n,;\"']+"
+    r"|(?<!:)//[^/\s]+/[^\r\n,;\"']+"
+    r")"
+)
 # v0.1.3 stopped at whitespace while replacing a profile name. These patterns
 # repair the remaining suffix (for example, "<user> Doe\Games\App.exe")
 # before the normal current-path rules run.
@@ -93,7 +110,18 @@ def redact_text(value: str) -> str:
     value = _USER_PATH.sub(r"\1<user>", value)
     value = _PROFILE_PATH.sub(r"\1<user>", value)
     value = _UNC_USER_PATH.sub(r"\\\\<machine>\\Users\\<user>", value)
+    value = _EXTENDED_UNC_USER_PATH.sub(r"\\\\?\\UNC\\<machine>\\Users\\<user>", value)
+    value = _EXTENDED_DRIVE_USER_PATH.sub(r"\1<user>", value)
+    value = _FORWARD_USER_PATH.sub(r"\1<user>", value)
+    value = _FORWARD_PROFILE_PATH.sub(r"\1<user>", value)
+    value = _FORWARD_UNC_USER_PATH.sub(r"//<machine>/Users/<user>", value)
     return _LONG_WHITESPACE.sub(" ", value).strip()
+
+
+def redact_public_text(value: str) -> str:
+    """Return UI/export-safe text without user data or absolute paths."""
+
+    return _ABSOLUTE_PATH_VALUE.sub("<path>", redact_text(value))
 
 
 def redact_legacy_text(value: str) -> str:

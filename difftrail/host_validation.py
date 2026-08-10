@@ -7,7 +7,7 @@ from typing import Any
 from .assessment import NEUTRAL_ASSESSMENT
 from .db import Database
 from .models import ensure_utc, iso_datetime, utc_now
-from .privacy import error_bucket
+from .privacy import error_bucket, redact_public_text
 
 
 MAX_VALIDATION_DAYS = 3650
@@ -26,6 +26,18 @@ def _safe_count(value: object) -> int:
         return max(0, int(value or 0))
     except (TypeError, ValueError):
         return 0
+
+
+def _safe_label_counts(values: object) -> dict[str, int]:
+    """Keep aggregate metric labels within the report's no-path contract."""
+
+    result: dict[str, int] = {}
+    if not isinstance(values, dict):
+        return result
+    for key, value in values.items():
+        label = redact_public_text(str(key))
+        result[label] = result.get(label, 0) + _safe_count(value)
+    return dict(sorted(result.items()))
 
 
 def _aggregate_overhead(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -176,9 +188,9 @@ def build_host_validation_report(
             "symptoms": journal["symptoms"],
             "changes_per_scan": round(journal["changes"] / scan_count, 2) if scan_count else None,
             "changes_per_day": round(journal["changes"] / days, 2),
-            "changes_by_source": journal["changes_by_source"],
-            "changes_by_subsystem": journal["changes_by_subsystem"],
-            "symptoms_by_subsystem": journal["symptoms_by_subsystem"],
+            "changes_by_source": _safe_label_counts(journal["changes_by_source"]),
+            "changes_by_subsystem": _safe_label_counts(journal["changes_by_subsystem"]),
+            "symptoms_by_subsystem": _safe_label_counts(journal["symptoms_by_subsystem"]),
         },
         "overhead": _aggregate_overhead(overhead),
         "investigations": _investigation_metrics(incidents),

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .privacy import extract_safe_application_name
+from .privacy import extract_safe_application_name, redact_public_text
 
 
 SAFE_CHANGE_FIELDS = frozenset(
@@ -14,7 +14,9 @@ SAFE_EVENT_FIELDS = frozenset({"event_id", "log_name", "provider", "record_id", 
 
 
 def safe_detail_value(value: Any) -> str | int | float | bool | None:
-    if isinstance(value, (str, int, float, bool)) or value is None:
+    if isinstance(value, str):
+        return redact_public_text(value)
+    if isinstance(value, (int, float, bool)) or value is None:
         return value
     return None
 

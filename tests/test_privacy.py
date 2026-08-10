@@ -3,6 +3,7 @@ import unittest
 from difftrail.privacy import (
     extract_safe_application_name,
     redact_legacy_text,
+    redact_public_text,
     redact_text,
     redact_value,
 )
@@ -12,6 +13,23 @@ class PrivacyTests(unittest.TestCase):
     def test_redacts_user_profile_paths(self) -> None:
         text = r"C:\Users\testuser\AppData\Local\SomeTool\tool.exe"
         self.assertEqual(redact_text(text), r"C:\Users\<user>")
+
+    def test_redacts_forward_slash_profile_paths(self) -> None:
+        text = "Opened C:/Users/Jane Doe/Documents/private report.txt"
+        self.assertEqual(redact_text(text), "Opened C:/Users/<user>")
+
+    def test_redacts_extended_unc_profile_paths(self) -> None:
+        text = r"\\?\UNC\server\Users\Alice\secret.txt"
+        redacted = redact_text(text)
+        self.assertNotIn("Alice", redacted)
+        self.assertIn(r"\\?\UNC\<machine>\Users\<user>", redacted)
+
+    def test_public_redaction_removes_all_absolute_windows_paths(self) -> None:
+        self.assertEqual(redact_public_text(r"C:\Program Files\Secret\tool.exe"), "<path>")
+
+    def test_public_redaction_does_not_mangle_urls(self) -> None:
+        url = "See https://example.com/docs/foo"
+        self.assertEqual(redact_public_text(url), url)
 
     def test_redacts_profile_paths_with_spaces(self) -> None:
         text = r"The program C:\Users\Jane Doe\Games\Example Game.exe version 1.0 stopped interacting with Windows."

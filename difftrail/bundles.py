@@ -21,13 +21,14 @@ from . import __version__
 from .assessment import NEUTRAL_ASSESSMENT
 from .db import Database
 from .models import ensure_utc, iso_datetime, parse_datetime, utc_now
-from .privacy import error_bucket, redact_text
+from .privacy import error_bucket, redact_public_text
 from .public_data import SAFE_CHANGE_FIELDS, public_detail_summary
 
 
 BUNDLE_FORMAT = "difftrail-diagnostic-bundle"
 BUNDLE_VERSION = 1
 MAX_BUNDLE_ROWS = 100_000
+MAX_BUNDLE_NESTING = 64
 FORBIDDEN_KEYS = frozenset(
     {
         "message",
@@ -46,15 +47,14 @@ FORBIDDEN_KEYS = frozenset(
         "start_name",
     }
 )
-_ABSOLUTE_WINDOWS_PATH = re.compile(r"(?i)(?:[a-z]:\\|\\\\[^\\\s]+\\)")
-_PROFILE_PATH = re.compile(r"(?i)(?:[a-z]:\\Users\\|[a-z]:\\Documents and Settings\\)")
-_PATH_VALUE = re.compile(r"(?i)(?:[a-z]:\\[^\r\n,;\"']+|\\\\[^\r\n,;\"']+)")
+_ABSOLUTE_WINDOWS_PATH = re.compile(r"(?i)(?:(?<![A-Za-z0-9])[a-z]:[\\/]|\\\\[^\\\s]+\\|(?<!:)//[^/\s]+/)")
+_PROFILE_PATH = re.compile(r"(?i)(?:(?<![A-Za-z0-9])[a-z]:[\\/](?:Users|Documents and Settings)[\\/]|(?<!:)//[^/\s]+/Users/)")
 
 
 def _safe_text(value: Any) -> str:
     """Redact profile data and remove remaining absolute Windows paths."""
 
-    return _PATH_VALUE.sub("<path>", redact_text(str(value)))
+    return redact_public_text(str(value))
 
 
 def _safe_summary_value(value: Any) -> Any:
@@ -98,7 +98,7 @@ def _safe_event(event: Any) -> dict[str, Any]:
 
     raw = event.as_dict() if hasattr(event, "as_dict") else dict(event)
     safe = {
-        "id": raw.get("id"),
+        "id": _safe_text(raw.get("id", "")) if raw.get("id") is not None else None,
         "occurred_at": raw.get("occurred_at"),
         "kind": raw.get("kind"),
         "subsystem": _safe_text(raw.get("subsystem", "")),
@@ -233,6 +233,28 @@ def _safe_source(source: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _safe_event_summary(summary: dict[str, Any]) -> dict[str, Any]:
+    """Redact aggregate labels as well as the event values they summarize."""
+
+    result: dict[str, Any] = {
+        "changes": max(0, int(summary.get("changes", 0) or 0)),
+        "symptoms": max(0, int(summary.get("symptoms", 0) or 0)),
+    }
+    for name in ("changes_by_source", "changes_by_subsystem", "symptoms_by_subsystem"):
+        counts = summary.get(name)
+        safe_counts: dict[str, int] = {}
+        if isinstance(counts, dict):
+            for key, value in counts.items():
+                try:
+                    count = max(0, int(value))
+                except (TypeError, ValueError):
+                    continue
+                safe_key = _safe_text(key)
+                safe_counts[safe_key] = safe_counts.get(safe_key, 0) + count
+        result[name] = dict(sorted(safe_counts.items()))
+    return result
+
+
 def _period_for_export(
     database: Database,
     *,
@@ -268,11 +290,13 @@ def export_bundle(
         database, days=days, incident_id=incident_id, as_of=exported_at
     )
     duration_days = max(1, math.ceil((end - start).total_seconds() / 86_400))
+    event_summary = _safe_event_summary(database.event_summary(since=start, until=end))
     events = database.list_events(
         limit=MAX_BUNDLE_ROWS,
         ascending=True,
         since=start,
         until=end,
+        maximum_limit=MAX_BUNDLE_ROWS,
     )
     scans = database.list_scans(since=start, until=end, limit=MAX_BUNDLE_ROWS)
     payload: dict[str, Any] = {
@@ -283,7 +307,8 @@ def export_bundle(
         "period": {"start": iso_datetime(start), "end": iso_datetime(end), "days": duration_days},
         "scope": scope,
         "journal": {
-            "event_summary": database.event_summary(since=start, until=end),
+            "event_summary": event_summary,
+            "events_truncated": len(events) < event_summary["changes"] + event_summary["symptoms"],
             "sources": [_safe_source(item) for item in database.source_status()],
             "scans": [_safe_scan(item) for item in scans],
             "events": [_safe_event(event) for event in events],
@@ -349,26 +374,46 @@ def validate_bundle(bundle: Any) -> dict[str, Any]:
         errors.append("Privacy metadata must be an object")
     if isinstance(bundle.get("integrity"), dict):
         expected = bundle["integrity"].get("sha256")
-        if expected != _payload_digest(bundle):
-            errors.append("Bundle integrity digest does not match its contents")
+        try:
+            actual = _payload_digest(bundle)
+        except (RecursionError, TypeError, ValueError):
+            errors.append("Bundle structure is too deeply nested or malformed")
+        else:
+            if expected != actual:
+                errors.append("Bundle integrity digest does not match its contents")
     else:
         errors.append("Integrity metadata must be an object")
 
     def walk(value: Any, path: str = "$") -> None:
-        if isinstance(value, dict):
-            for key, child in value.items():
-                normalized_key = str(key).casefold()
-                if normalized_key in FORBIDDEN_KEYS:
-                    errors.append(f"Forbidden sensitive field at {path}.{key}")
-                walk(child, f"{path}.{key}")
-        elif isinstance(value, list):
-            for index, child in enumerate(value):
-                walk(child, f"{path}[{index}]")
-        elif isinstance(value, str):
-            if _PROFILE_PATH.search(value):
-                errors.append(f"User profile path detected at {path}")
-            elif _ABSOLUTE_WINDOWS_PATH.search(value):
-                errors.append(f"Absolute Windows path detected at {path}")
+        too_deep = False
+        stack: list[tuple[Any, str, int]] = [(value, path, 0)]
+        while stack:
+            current, current_path, depth = stack.pop()
+            if depth > MAX_BUNDLE_NESTING:
+                if not too_deep:
+                    errors.append(f"Bundle nesting exceeds {MAX_BUNDLE_NESTING} levels")
+                    too_deep = True
+                continue
+            if isinstance(current, dict):
+                for key, child in current.items():
+                    key_text = str(key)
+                    normalized_key = str(key).casefold()
+                    child_path = f"{current_path}.{_safe_text(key_text)}"
+                    if normalized_key in FORBIDDEN_KEYS:
+                        errors.append(f"Forbidden sensitive field at {child_path}")
+                    if _PROFILE_PATH.search(key_text):
+                        errors.append(f"User profile path detected in field name at {current_path}")
+                    elif _ABSOLUTE_WINDOWS_PATH.search(key_text):
+                        errors.append(f"Absolute Windows path detected in field name at {current_path}")
+                    stack.append((child, child_path, depth + 1))
+            elif isinstance(current, list):
+                for index, child in enumerate(current):
+                    stack.append((child, f"{current_path}[{index}]", depth + 1))
+            elif isinstance(current, str):
+                if _PROFILE_PATH.search(current):
+                    errors.append(f"User profile path detected at {current_path}")
+                elif _ABSOLUTE_WINDOWS_PATH.search(current):
+                    errors.append(f"Absolute Windows path detected at {current_path}")
 
     walk(bundle)
     return {
@@ -393,7 +438,7 @@ def read_bundle(path: str | Path) -> tuple[Any | None, dict[str, Any]]:
         return None, {"valid": False, "errors": [f"Bundle file was not found: {bundle_path}"], "warnings": []}
     except (OSError, UnicodeDecodeError) as exc:
         return None, {"valid": False, "errors": [f"Bundle could not be read: {exc}"], "warnings": []}
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, RecursionError) as exc:
         return None, {"valid": False, "errors": [f"Bundle is not valid JSON: {exc}"], "warnings": []}
     return bundle, validate_bundle(bundle)
 

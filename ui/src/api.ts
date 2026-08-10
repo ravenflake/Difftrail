@@ -13,8 +13,11 @@ import type {
 } from "./types";
 
 const DEFAULT_API_BASE = "http://127.0.0.1:45917/api";
-const CONFIGURED_API_BASE = (import.meta.env.VITE_DIFFTRAIL_API_URL || "").replace(/\/$/, "");
-const CONFIGURED_API_TOKEN = import.meta.env.VITE_DIFFTRAIL_API_TOKEN || "";
+const IS_DEVELOPMENT_BUILD = import.meta.env.DEV;
+const CONFIGURED_API_BASE = IS_DEVELOPMENT_BUILD
+  ? (import.meta.env.VITE_DIFFTRAIL_API_URL || "").replace(/\/$/, "")
+  : "";
+const CONFIGURED_API_TOKEN = IS_DEVELOPMENT_BUILD ? import.meta.env.VITE_DIFFTRAIL_API_TOKEN || "" : "";
 const REQUEST_TIMEOUT_MS = 10_000;
 
 type ApiEndpoint = {
@@ -43,7 +46,13 @@ async function resolveApiEndpoint(): Promise<ApiEndpoint> {
     }
     return { base: `http://127.0.0.1:${port}/api`, port, token };
   } catch {
-    return { base: DEFAULT_API_BASE, token: CONFIGURED_API_TOKEN || undefined };
+    // A packaged desktop build receives a per-launch endpoint and token from
+    // Tauri. Falling back to an unauthenticated fixed port would let another
+    // local process impersonate the backend if that bridge is unavailable.
+    if (IS_DEVELOPMENT_BUILD) {
+      return { base: DEFAULT_API_BASE, token: CONFIGURED_API_TOKEN || undefined };
+    }
+    throw new Error("Difftrail desktop backend is unavailable");
   }
 }
 
@@ -179,4 +188,4 @@ export function exportBundle(options: { days?: number; incident_id?: string }): 
   });
 }
 
-export const API_BASE = CONFIGURED_API_BASE || DEFAULT_API_BASE;
+export const API_BASE = CONFIGURED_API_BASE || (IS_DEVELOPMENT_BUILD ? DEFAULT_API_BASE : "");

@@ -20,6 +20,7 @@ from typing import Any, Iterable
 from .db import Database
 from .investigation import run_investigation
 from .models import KNOWN_SUBSYSTEMS, Event, IncidentRequest
+from .privacy import redact_public_text
 from ._process import _hidden_process_kwargs
 
 
@@ -307,12 +308,33 @@ def automation_snapshot(database: Database) -> dict[str, Any]:
     expected_executable = _expected_watcher_executable() if os.name == "nt" else None
     return {
         "config": load_automation_config(database),
-        "watcher": _task_status(expected_database, expected_executable),
+        "watcher": _public_watcher_status(_task_status(expected_database, expected_executable)),
         "notifications": {
             "unread": database.unread_automation_notification_count(),
-            "recent": database.list_automation_notifications(limit=25),
+            "recent": [
+                _public_notification(item)
+                for item in database.list_automation_notifications(limit=25)
+            ],
         },
         "drafts": database.automation_draft_count(),
+    }
+
+
+def _public_watcher_status(status: dict[str, Any]) -> dict[str, Any]:
+    """Keep scheduler diagnostics from carrying local paths into the UI."""
+
+    return {
+        key: redact_public_text(value) if isinstance(value, str) else value
+        for key, value in status.items()
+    }
+
+
+def _public_notification(notification: dict[str, Any]) -> dict[str, Any]:
+    """Expose local notification text through the same no-path UI boundary."""
+
+    return {
+        key: redact_public_text(value) if isinstance(value, str) else value
+        for key, value in notification.items()
     }
 
 
@@ -563,21 +585,43 @@ def _queue_event_notification(
     incident_id: str | None = None,
 ) -> bool:
     event_id = event.event_id
-    if not event_id or not database.record_automation_action(event_id, f"notification:{kind}", incident_id=incident_id):
+    if not event_id:
         return False
-    database.create_automation_notification(
-        kind=kind,
-        title=title,
-        body=body,
-        event_id=event_id,
-        incident_id=incident_id,
-    )
+    # The marker and its effect are one idempotent unit. A crash or a failed
+    # notification write must roll both back so the next watcher pass retries.
+    with database.connection:
+        marked = database.record_automation_action(
+            event_id,
+            f"notification:{kind}",
+            incident_id=incident_id,
+            commit=False,
+        )
+        if not marked:
+            if incident_id:
+                # A prior retry may have delivered a notification before its
+                # draft was available. Keep its idempotent action but repair
+                # the association once the draft exists.
+                database.link_automation_action_to_incident(
+                    event_id, f"notification:{kind}", incident_id, commit=False
+                )
+                database.link_automation_notification_to_incident(
+                    event_id, kind, incident_id, commit=False
+                )
+            return False
+        database.create_automation_notification(
+            kind=kind,
+            title=title,
+            body=body,
+            event_id=event_id,
+            incident_id=incident_id,
+            commit=False,
+        )
     return True
 
 
-def _create_investigation_draft(database: Database, event: Event) -> str | None:
-    if not event.event_id or not database.record_automation_action(event.event_id, "draft_investigation"):
-        return None
+def _create_investigation_draft(database: Database, event: Event) -> tuple[str | None, bool]:
+    if not event.event_id:
+        return None, False
     description = f"Automatic draft: {event.title}"
     subsystem = event.subsystem if event.subsystem in KNOWN_SUBSYSTEMS else "general"
     request = IncidentRequest(
@@ -587,8 +631,16 @@ def _create_investigation_draft(database: Database, event: Event) -> str | None:
         subsystem=subsystem,
         lookback_days=7,
     )
-    run = run_investigation(database, request, status="draft")
-    return run.incident.id
+    # Keep the idempotency marker together with both incident writes. If
+    # ranking/persistence fails, a later watcher pass can create the draft.
+    with database.connection:
+        if not database.record_automation_action(event.event_id, "draft_investigation", commit=False):
+            return database.automation_action_incident_id(event.event_id, "draft_investigation"), False
+        run = run_investigation(database, request, status="draft", commit=False)
+        database.link_automation_action_to_incident(
+            event.event_id, "draft_investigation", run.incident.id, commit=False
+        )
+    return run.incident.id, True
 
 
 def process_scan_events(
@@ -601,6 +653,7 @@ def process_scan_events(
     config = load_automation_config(database)
     notifications = 0
     drafts = 0
+    draft_failed = False
     for event in events:
         if not event.event_id:
             continue
@@ -608,10 +661,14 @@ def process_scan_events(
         incident_id: str | None = None
         if crash_signal and config["draft_investigations"]:
             try:
-                incident_id = _create_investigation_draft(database, event)
+                incident_id, created_draft = _create_investigation_draft(database, event)
             except (ValueError, RuntimeError):
+                # Continue with the notification, but make the caller retain
+                # its durable event cursor so this draft is retried later.
+                draft_failed = True
                 incident_id = None
-            if incident_id:
+                created_draft = False
+            if created_draft:
                 drafts += 1
         if not config["notifications_enabled"]:
             continue
@@ -638,35 +695,57 @@ def process_scan_events(
     errors = tuple(getattr(result, "errors", ()) or ())
     scan_id = str(getattr(result, "scan_id", ""))
     if errors and scan_id and config["notifications_enabled"] and config["notify_on_warnings"]:
-        if database.record_automation_action(f"scan:{scan_id}", "notification:warning"):
-            database.create_automation_notification(
-                kind="warning",
-                title="Scan completed with warnings",
-                body=f"{len(errors)} provider warning{'' if len(errors) == 1 else 's'} was recorded. Review System health.",
+        with database.connection:
+            marked = database.record_automation_action(
+                f"scan:{scan_id}",
+                "notification:warning",
+                commit=False,
             )
+            if marked:
+                database.create_automation_notification(
+                    kind="warning",
+                    title="Scan completed with warnings",
+                    body=f"{len(errors)} provider warning{'' if len(errors) == 1 else 's'} was recorded. Review System health.",
+                    commit=False,
+                )
+        if marked:
             notifications += 1
+    if draft_failed:
+        raise RuntimeError("Automation draft could not be persisted")
     return {"notifications": notifications, "drafts": drafts}
 
 
 def run_automated_scan(database: Database, scanner: Any | None = None) -> Any:
     """Run a scan and process only events newly added by that scan."""
 
-    before_ids = {
-        event.event_id
-        for event in database.list_events(limit=10_000, ascending=True)
-        if event.event_id
-    }
+    cursor_key = "automation:event_rowid"
+    current_rowid = database.event_rowid_watermark()
+    stored_cursor = database.get_meta(cursor_key)
+    try:
+        before_event_rowid = int(stored_cursor) if stored_cursor is not None else current_rowid
+    except (TypeError, ValueError):
+        before_event_rowid = -1
+    if before_event_rowid < 0 or before_event_rowid > current_rowid:
+        # Repair bad metadata before scanning. This preserves a valid
+        # pre-scan baseline if post-scan automation later fails, rather than
+        # skipping the new events on its retry.
+        before_event_rowid = current_rowid
+        database.set_meta(cursor_key, str(before_event_rowid))
+    elif stored_cursor is None:
+        # A first watcher pass starts from a quiet baseline, while a persisted
+        # cursor keeps events durable until their automation effects commit.
+        database.set_meta(cursor_key, str(before_event_rowid))
     if scanner is None:
         from .service import Scanner
 
         scanner = Scanner(database)
     result = scanner.scan()
-    new_events = [
-        event
-        for event in database.list_events(limit=10_000, ascending=True)
-        if event.event_id and event.event_id not in before_ids
-    ]
+    claimed_through_rowid = database.event_rowid_watermark()
+    new_events = database.list_events_after_rowid(
+        before_event_rowid, through_rowid=claimed_through_rowid
+    )
     process_scan_events(database, result, new_events)
+    database.set_meta(cursor_key, str(claimed_through_rowid))
     return result
 
 

@@ -23,6 +23,7 @@ from .privacy import (
 DEFAULT_RETENTION_DAYS = 30
 DATABASE_SCHEMA_VERSION = 6
 STALE_SCAN_AFTER = timedelta(minutes=15)
+MAX_PERSISTED_JSON_NESTING = 64
 VALID_SCAN_STATUSES = frozenset({"running", "ok", "partial", "failed", "interrupted"})
 VALID_INVESTIGATION_ASSESSMENTS = ASSESSMENT_STATES
 _DATABASE_INITIALIZATION_LOCK = threading.RLock()
@@ -189,17 +190,38 @@ def _hash(value: Any) -> str:
     return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
 
 
+def _json_nesting_is_safe(value: Any, *, maximum: int = MAX_PERSISTED_JSON_NESTING) -> bool:
+    """Bound legacy JSON traversal before it reaches recursive serializers."""
+
+    stack: list[tuple[Any, int]] = [(value, 0)]
+    while stack:
+        current, depth = stack.pop()
+        if depth > maximum:
+            return False
+        if isinstance(current, dict):
+            stack.extend((child, depth + 1) for child in current.values())
+        elif isinstance(current, list):
+            stack.extend((child, depth + 1) for child in current)
+    return True
+
+
 def _redact_stored_json(value: str | None) -> tuple[str, Any | None]:
     """Return a redacted stored JSON document without rewriting unchanged rows."""
 
     encoded = value or ""
     try:
         parsed = json.loads(encoded)
-    except json.JSONDecodeError:
-        # Preserve a malformed legacy value rather than silently discarding it,
-        # but still remove any profile path that it may contain.
-        return redact_legacy_text(encoded), None
-    redacted = redact_legacy_value(parsed)
+    except (json.JSONDecodeError, RecursionError):
+        # Invalid legacy JSON cannot be safely interpreted or redacted. Drop
+        # it instead of leaving a potentially sensitive payload that can make
+        # every later scan fail.
+        return "{}", None
+    if not _json_nesting_is_safe(parsed):
+        return "{}", None
+    try:
+        redacted = redact_legacy_value(parsed)
+    except RecursionError:
+        return "{}", None
     return (_canonical_json(redacted) if redacted != parsed else encoded, redacted)
 
 
@@ -259,6 +281,7 @@ class Database:
     """Small SQLite repository for normalized local evidence."""
 
     def __init__(self, path: str | Path) -> None:
+        self._scan_lock = threading.RLock()
         self.path = Path(path) if str(path) != ":memory:" else Path(":memory:")
         database_target = ":memory:" if str(path) == ":memory:" else str(self.path)
         if database_target != ":memory:":
@@ -455,18 +478,28 @@ class Database:
             )
 
         state_updates: list[tuple[str, str, str, str]] = []
+        invalid_state_sources: set[str] = set()
         for row in self.connection.execute(
             "SELECT source, item_key, payload_json, payload_hash FROM state_items"
         ).fetchall():
             payload_json, payload = _redact_stored_json(row["payload_json"])
+            if not isinstance(payload, dict):
+                invalid_state_sources.add(str(row["source"]))
+                continue
             if payload_json != row["payload_json"]:
-                payload_hash = _hash(payload if payload is not None else payload_json)
+                payload_hash = _hash(payload)
                 state_updates.append((payload_json, payload_hash, row["source"], row["item_key"]))
         if state_updates:
             self.connection.executemany(
                 "UPDATE state_items SET payload_json = ?, payload_hash = ? WHERE source = ? AND item_key = ?",
                 state_updates,
             )
+        for source in invalid_state_sources:
+            # A partial source state cannot produce a trustworthy diff. Reset
+            # it so the next successful provider read establishes a quiet
+            # baseline rather than emitting a storm of false removals.
+            self.connection.execute("DELETE FROM state_items WHERE source = ?", (source,))
+            self.connection.execute("DELETE FROM meta WHERE key = ?", (f"source:{source}:initialized",))
 
         scan_updates: list[tuple[str, str]] = []
         for row in self.connection.execute("SELECT id, summary_json FROM scans").fetchall():
@@ -531,9 +564,9 @@ class Database:
                 continue
             try:
                 details = json.loads(row["details_json"] or "{}")
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, RecursionError):
                 continue
-            if not isinstance(details, dict):
+            if not isinstance(details, dict) or not _json_nesting_is_safe(details):
                 continue
             application_name = details.get("application_name") or extract_safe_application_name(str(details.get("message", "")))
             if not application_name:
@@ -577,11 +610,23 @@ class Database:
         self.set_meta("retention:symptom_days", str(days))
 
     def set_meta(self, key: str, value: str) -> None:
+        self._set_meta_without_commit(key, value)
+        self.connection.commit()
+
+    def _set_meta_without_commit(self, key: str, value: str) -> None:
+        """Persist metadata inside the caller's transaction."""
+
         self.connection.execute(
             "INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             (key, value),
         )
-        self.connection.commit()
+
+    def set_meta_for_active_scan(self, scan_id: str, key: str, value: str) -> None:
+        """Set scan-owned metadata only while the scan still holds its lease."""
+
+        with self.connection:
+            self._assert_scan_lease(scan_id)
+            self._set_meta_without_commit(key, value)
 
     def record_automation_action(
         self,
@@ -590,11 +635,11 @@ class Database:
         *,
         incident_id: str | None = None,
         created_at: datetime | None = None,
+        commit: bool = True,
     ) -> bool:
         """Record an automation action once so retries remain idempotent."""
 
-        before_changes = self.connection.total_changes
-        self.connection.execute(
+        cursor = self.connection.execute(
             """
             INSERT OR IGNORE INTO automation_actions
             (id, event_id, action, created_at, incident_id)
@@ -602,8 +647,62 @@ class Database:
             """,
             (str(uuid.uuid4()), event_id, action, iso_datetime(created_at or utc_now()), incident_id),
         )
-        self.connection.commit()
-        return self.connection.total_changes > before_changes
+        if commit:
+            self.connection.commit()
+        return cursor.rowcount == 1
+
+    def automation_action_incident_id(self, event_id: str, action: str) -> str | None:
+        """Return an existing automation action's draft link, if any."""
+
+        row = self.connection.execute(
+            "SELECT incident_id FROM automation_actions WHERE event_id = ? AND action = ?",
+            (event_id, action),
+        ).fetchone()
+        return str(row["incident_id"]) if row and row["incident_id"] is not None else None
+
+    def link_automation_action_to_incident(
+        self,
+        event_id: str,
+        action: str,
+        incident_id: str,
+        *,
+        commit: bool = True,
+    ) -> int:
+        """Attach a retry-created draft without overwriting an existing link."""
+
+        cursor = self.connection.execute(
+            """
+            UPDATE automation_actions
+            SET incident_id = ?
+            WHERE event_id = ? AND action = ? AND incident_id IS NULL
+            """,
+            (incident_id, event_id, action),
+        )
+        if commit:
+            self.connection.commit()
+        return int(cursor.rowcount)
+
+    def link_automation_notification_to_incident(
+        self,
+        event_id: str,
+        kind: str,
+        incident_id: str,
+        *,
+        commit: bool = True,
+    ) -> int:
+        """Attach a retry-created draft to an already delivered notification."""
+
+        cursor = self.connection.execute(
+            """
+            UPDATE automation_notifications
+            SET incident_id = ?
+            WHERE event_id = ? AND kind = ? AND incident_id IS NULL
+            """,
+            (incident_id, event_id, kind),
+        )
+        if commit:
+            self.connection.commit()
+        return int(cursor.rowcount)
 
     def create_automation_notification(
         self,
@@ -614,6 +713,7 @@ class Database:
         event_id: str | None = None,
         incident_id: str | None = None,
         created_at: datetime | None = None,
+        commit: bool = True,
     ) -> str:
         """Persist a safe, local notification for the desktop inbox."""
 
@@ -634,7 +734,8 @@ class Database:
                 incident_id,
             ),
         )
-        self.connection.commit()
+        if commit:
+            self.connection.commit()
         return notification_id
 
     def list_automation_notifications(
@@ -697,17 +798,20 @@ class Database:
         return int(row[0])
 
     def _safe_event(self, event: Event) -> tuple[Event, str, str]:
-        safe_title = redact_text(event.title)
-        safe_entity = redact_text(event.entity)
+        safe_title = redact_text(str(event.title))
+        safe_entity = redact_text(str(event.entity))
+        safe_subsystem = redact_text(str(event.subsystem))
+        safe_action = redact_text(str(event.action))
+        safe_source = redact_text(str(event.source))
         safe_details = redact_value(event.details)
         fingerprint_payload = {
             "occurred_at": iso_datetime(event.occurred_at),
             "kind": event.kind,
-            "subsystem": event.subsystem,
-            "action": event.action,
+            "subsystem": safe_subsystem,
+            "action": safe_action,
             "title": safe_title,
             "entity": safe_entity,
-            "source": event.source,
+            "source": safe_source,
             "details": safe_details,
         }
         fingerprint = event.fingerprint or _hash(fingerprint_payload)
@@ -716,12 +820,12 @@ class Database:
             Event(
                 occurred_at=ensure_utc(event.occurred_at),
                 kind=event.kind,
-                subsystem=event.subsystem,
-                action=event.action,
+                subsystem=safe_subsystem,
+                action=safe_action,
                 title=safe_title,
                 entity=safe_entity,
                 severity=event.severity,
-                source=event.source,
+                source=safe_source,
                 details=safe_details,
                 event_id=event_id,
                 fingerprint=fingerprint,
@@ -730,7 +834,7 @@ class Database:
             fingerprint,
         )
 
-    def save_events(self, events: Iterable[Event]) -> int:
+    def _event_rows(self, events: Iterable[Event]) -> list[tuple[Any, ...]]:
         rows = []
         for event in events:
             safe_event, event_id, fingerprint = self._safe_event(event)
@@ -750,28 +854,42 @@ class Database:
                     iso_datetime(datetime.now(safe_event.occurred_at.tzinfo)),
                 )
             )
+        return rows
+
+    def _insert_event_rows(self, rows: Iterable[tuple[Any, ...]]) -> int:
+        """Insert normalized event rows without opening or closing a transaction."""
+
+        rows = list(rows)
         if not rows:
             return 0
         before_changes = self.connection.total_changes
-        with self.connection:
-            self.connection.executemany(
-                """
-                INSERT OR IGNORE INTO events
-                (id, occurred_at, kind, subsystem, action, title, entity, severity, source,
-                 details_json, fingerprint, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                rows,
-            )
+        self.connection.executemany(
+            """
+            INSERT OR IGNORE INTO events
+            (id, occurred_at, kind, subsystem, action, title, entity, severity, source,
+             details_json, fingerprint, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
         return self.connection.total_changes - before_changes
+
+    def save_events(self, events: Iterable[Event], *, scan_id: str | None = None) -> int:
+        rows = self._event_rows(events)
+        if not rows:
+            return 0
+        with self.connection:
+            if scan_id is not None:
+                self._assert_scan_lease(scan_id)
+            return self._insert_event_rows(rows)
 
     @staticmethod
     def _row_to_event(row: sqlite3.Row) -> Event:
         try:
             details = json.loads(row["details_json"] or "{}")
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError):
             details = {}
-        if not isinstance(details, dict):
+        if not isinstance(details, dict) or not _json_nesting_is_safe(details):
             details = {}
         return Event(
             occurred_at=parse_datetime(row["occurred_at"]),
@@ -797,6 +915,7 @@ class Database:
         since: datetime | None = None,
         until: datetime | None = None,
         ascending: bool = False,
+        maximum_limit: int = 10_000,
     ) -> list[Event]:
         clauses: list[str] = []
         params: list[Any] = []
@@ -817,11 +936,30 @@ class Database:
             clauses.append("(title LIKE ? OR entity LIKE ? OR details_json LIKE ?)")
             params.extend([needle, needle, needle])
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        order = "ASC" if ascending else "DESC"
-        params.append(max(1, min(limit, 10_000)))
-        rows = self.connection.execute(
-            f"SELECT * FROM events {where} ORDER BY occurred_at {order} LIMIT ?", params
-        ).fetchall()
+        if maximum_limit < 1:
+            raise ValueError("maximum_limit must be positive")
+        params.append(max(1, min(limit, maximum_limit, 100_000)))
+        if ascending:
+            # For an overfull historical window, retain the events nearest to
+            # the present/incident and then return that bounded slice in
+            # chronological order. The old ASC LIMIT query silently selected
+            # the oldest evidence instead.
+            rows = self.connection.execute(
+                f"""
+                SELECT * FROM (
+                    SELECT *, rowid AS _event_rowid
+                    FROM events {where}
+                    ORDER BY occurred_at DESC, rowid DESC
+                    LIMIT ?
+                )
+                ORDER BY occurred_at ASC, _event_rowid ASC
+                """,
+                params,
+            ).fetchall()
+        else:
+            rows = self.connection.execute(
+                f"SELECT * FROM events {where} ORDER BY occurred_at DESC, rowid DESC LIMIT ?", params
+            ).fetchall()
         return [self._row_to_event(row) for row in rows]
 
     def count_events(self, kind: str | None = None) -> int:
@@ -830,6 +968,31 @@ class Database:
         else:
             row = self.connection.execute("SELECT COUNT(*) FROM events").fetchone()
         return int(row[0])
+
+    def event_rowid_watermark(self) -> int:
+        """Return the newest physical event row marker for a scan-local delta."""
+
+        row = self.connection.execute("SELECT COALESCE(MAX(rowid), 0) FROM events").fetchone()
+        return int(row[0])
+
+    def list_events_after_rowid(
+        self,
+        rowid: int,
+        *,
+        through_rowid: int | None = None,
+    ) -> list[Event]:
+        """Return a bounded physical journal delta in insertion order."""
+
+        clauses = ["rowid > ?"]
+        params: list[Any] = [max(0, int(rowid))]
+        if through_rowid is not None:
+            clauses.append("rowid <= ?")
+            params.append(max(0, int(through_rowid)))
+        rows = self.connection.execute(
+            f"SELECT * FROM events WHERE {' AND '.join(clauses)} ORDER BY rowid ASC",
+            params,
+        ).fetchall()
+        return [self._row_to_event(row) for row in rows]
 
     def event_summary(
         self,
@@ -888,6 +1051,10 @@ class Database:
                 (SELECT COUNT(*) FROM events)
                 + (SELECT COUNT(*) FROM state_items)
                 + (SELECT COUNT(*) FROM incidents)
+                + (SELECT COUNT(*) FROM scans)
+                + (SELECT COUNT(*) FROM overhead_measurements)
+                + (SELECT COUNT(*) FROM automation_actions)
+                + (SELECT COUNT(*) FROM automation_notifications)
             """
         ).fetchone()
         return int(row[0]) == 0
@@ -899,6 +1066,7 @@ class Database:
         *,
         occurred_at: datetime,
         baseline_if_empty: bool = True,
+        scan_id: str | None = None,
     ) -> list[Event]:
         """Diff a complete source snapshot against the last one.
 
@@ -912,15 +1080,38 @@ class Database:
         previous_rows = self.connection.execute(
             "SELECT item_key, payload_json FROM state_items WHERE source = ?", (source,)
         ).fetchall()
-        previous = {row["item_key"]: json.loads(row["payload_json"]) for row in previous_rows}
         initialized_key = f"source:{source}:initialized"
+        previous: dict[str, dict[str, Any]] = {}
+        invalid_state = False
+        for row in previous_rows:
+            try:
+                payload = json.loads(row["payload_json"])
+            except (json.JSONDecodeError, RecursionError):
+                invalid_state = True
+                break
+            if not isinstance(payload, dict) or not _json_nesting_is_safe(payload):
+                invalid_state = True
+                break
+            previous[str(row["item_key"])] = payload
+        if invalid_state:
+            with self.connection:
+                if scan_id is not None:
+                    self._assert_scan_lease(scan_id)
+                self.connection.execute("DELETE FROM state_items WHERE source = ?", (source,))
+                self.connection.execute("DELETE FROM meta WHERE key = ?", (initialized_key,))
+            raise RuntimeError(
+                f"Stored snapshot state for {source} was invalid and has been reset; it will baseline on the next scan"
+            )
         initialized = self.get_meta(initialized_key) == "1"
 
         generated: list[Event] = []
         matched_previous_keys: set[str] = set()
         if not initialized and baseline_if_empty:
-            self._replace_state(source, current, now)
-            self.set_meta(initialized_key, "1")
+            with self.connection:
+                if scan_id is not None:
+                    self._assert_scan_lease(scan_id)
+                self._replace_state(source, current, now)
+                self._set_meta_without_commit(initialized_key, "1")
             return generated
 
         for key, item in current.items():
@@ -981,9 +1172,17 @@ class Database:
                     )
                 )
 
-        self._replace_state(source, current, now)
-        self.set_meta(initialized_key, "1")
-        self.save_events(generated)
+        # State replacement, its source marker, and the generated evidence
+        # are one durable unit. If the event insert fails (for example, from
+        # disk pressure), a retry must still see the previous state and emit
+        # the transition rather than silently losing it.
+        event_rows = self._event_rows(generated)
+        with self.connection:
+            if scan_id is not None:
+                self._assert_scan_lease(scan_id)
+            self._replace_state(source, current, now)
+            self._set_meta_without_commit(initialized_key, "1")
+            self._insert_event_rows(event_rows)
         return generated
 
     @staticmethod
@@ -1006,93 +1205,92 @@ class Database:
 
     def _replace_state(self, source: str, current: dict[str, SnapshotItem], now: datetime) -> None:
         timestamp = iso_datetime(now)
-        with self.connection:
-            self.connection.execute("DELETE FROM state_items WHERE source = ?", (source,))
-            self.connection.executemany(
-                """
-                INSERT INTO state_items(source, item_key, payload_json, payload_hash, last_seen_at)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                [
-                    (
-                        source,
-                        item.key,
-                        _canonical_json(redact_value(item.payload)),
-                        _hash(redact_value(item.payload)),
-                        timestamp,
-                    )
-                    for item in current.values()
-                ],
-            )
+        self.connection.execute("DELETE FROM state_items WHERE source = ?", (source,))
+        self.connection.executemany(
+            """
+            INSERT INTO state_items(source, item_key, payload_json, payload_hash, last_seen_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    source,
+                    item.key,
+                    _canonical_json(redact_value(item.payload)),
+                    _hash(redact_value(item.payload)),
+                    timestamp,
+                )
+                for item in current.values()
+            ],
+        )
 
     def start_scan(self, started_at: datetime) -> str:
-        scan_id = str(uuid.uuid4())
-        started = ensure_utc(started_at)
-        try:
-            self.connection.execute("BEGIN IMMEDIATE")
-            self._recover_stale_scans_locked(started, STALE_SCAN_AFTER)
-            running = self.connection.execute(
-                "SELECT id, started_at FROM scans WHERE status = 'running' ORDER BY started_at ASC"
-            ).fetchall()
-            if running:
-                oldest = parse_datetime(running[0]["started_at"])
-                raise RuntimeError(
-                    f"A scan is already running (started {iso_datetime(oldest)}); wait for it to finish"
+        # sqlite3 connections configured for cross-thread access still need
+        # lifecycle serialization. Without this, two callers can issue BEGIN
+        # concurrently on one connection and receive an opaque SQLite error
+        # instead of the public "scan already running" result.
+        with self._scan_lock:
+            scan_id = str(uuid.uuid4())
+            started = ensure_utc(started_at)
+            try:
+                self.connection.execute("BEGIN IMMEDIATE")
+                self._recover_stale_scans_locked(started, STALE_SCAN_AFTER)
+                self._clear_expired_scan_lease()
+                running = self.connection.execute(
+                    "SELECT id, started_at FROM scans WHERE status = 'running' ORDER BY started_at ASC"
+                ).fetchall()
+                if running:
+                    oldest = parse_datetime(running[0]["started_at"])
+                    raise RuntimeError(
+                        f"A scan is already running (started {iso_datetime(oldest)}); wait for it to finish"
+                    )
+                self.connection.execute(
+                    "INSERT INTO scans(id, started_at, status) VALUES (?, ?, ?)",
+                    (scan_id, iso_datetime(started), "running"),
                 )
-            self.connection.execute(
-                "INSERT INTO scans(id, started_at, status) VALUES (?, ?, ?)",
-                (scan_id, iso_datetime(started), "running"),
-            )
-            self.connection.commit()
-            return scan_id
-        except Exception:
-            self.connection.rollback()
-            raise
+                self._set_meta_without_commit("scan:active", scan_id)
+                self.connection.commit()
+                return scan_id
+            except Exception:
+                self.connection.rollback()
+                raise
 
     def finish_scan(self, scan_id: str, finished_at: datetime, status: str, summary: dict[str, Any]) -> None:
         if status not in VALID_SCAN_STATUSES - {"running"}:
             raise ValueError(f"Unsupported scan status: {status}")
         encoded_summary = _canonical_json(redact_value(summary))
-        cursor = self.connection.execute(
-            "UPDATE scans SET finished_at = ?, status = ?, summary_json = ? WHERE id = ? AND status = 'running'",
-            (iso_datetime(finished_at), status, encoded_summary, scan_id),
-        )
-        if cursor.rowcount != 1:
-            recovered = self.connection.execute(
-                "SELECT status, summary_json FROM scans WHERE id = ?",
-                (scan_id,),
-            ).fetchone()
-            recovery_summary = self._scan_summary(recovered["summary_json"]) if recovered else {}
-            recovery = recovery_summary.get("recovery")
-            if (
-                not recovered
-                or recovered["status"] != "interrupted"
-                or not isinstance(recovery, dict)
-                or recovery.get("reason") != "stale_running_scan"
-            ):
-                raise ValueError(f"Unknown or already finished scan: {scan_id}")
-            # Stale recovery is provisional: a scan owner that was merely slow
-            # may still finish. Preserve its completed result instead of
-            # discarding work that was already collected.
-            cursor = self.connection.execute(
-                """
-                UPDATE scans
-                SET finished_at = ?, status = ?, summary_json = ?
-                WHERE id = ? AND status = 'interrupted'
-                """,
-                (iso_datetime(finished_at), status, encoded_summary, scan_id),
-            )
-            if cursor.rowcount != 1:
-                raise ValueError(f"Unknown or already finished scan: {scan_id}")
-        self.connection.commit()
+        with self._scan_lock:
+            with self.connection:
+                self._assert_scan_lease(scan_id)
+                cursor = self.connection.execute(
+                    "UPDATE scans SET finished_at = ?, status = ?, summary_json = ? WHERE id = ? AND status = 'running'",
+                    (iso_datetime(finished_at), status, encoded_summary, scan_id),
+                )
+                if cursor.rowcount != 1:
+                    raise ValueError(f"Unknown or already finished scan: {scan_id}")
+                if self.get_meta("scan:active") == scan_id:
+                    self.connection.execute("DELETE FROM meta WHERE key = 'scan:active'")
 
     @staticmethod
     def _scan_summary(value: str | None) -> dict[str, Any]:
         try:
             parsed = json.loads(value or "{}")
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError):
             return {}
-        return parsed if isinstance(parsed, dict) else {}
+        return parsed if isinstance(parsed, dict) and _json_nesting_is_safe(parsed) else {}
+
+    def _assert_scan_lease(self, scan_id: str) -> None:
+        row = self.connection.execute("SELECT status FROM scans WHERE id = ?", (scan_id,)).fetchone()
+        active = self.get_meta("scan:active")
+        if not row or row["status"] != "running" or (active is not None and active != scan_id):
+            raise RuntimeError("Scan lease is no longer active")
+
+    def _clear_expired_scan_lease(self) -> None:
+        active = self.get_meta("scan:active")
+        if active is None:
+            return
+        row = self.connection.execute("SELECT status FROM scans WHERE id = ?", (active,)).fetchone()
+        if not row or row["status"] != "running":
+            self.connection.execute("DELETE FROM meta WHERE key = 'scan:active'")
 
     def _recover_stale_scans_locked(self, now: datetime, stale_after: timedelta) -> int:
         cutoff = ensure_utc(now) - stale_after
@@ -1119,6 +1317,7 @@ class Database:
                 """,
                 (iso_datetime(now), _canonical_json(summary), row["id"]),
             )
+        self._clear_expired_scan_lease()
         return len(rows)
 
     def recover_stale_scans(
@@ -1132,14 +1331,15 @@ class Database:
         if stale_after <= timedelta(0):
             raise ValueError("stale_after must be positive")
         current = ensure_utc(now or utc_now())
-        try:
-            self.connection.execute("BEGIN IMMEDIATE")
-            recovered = self._recover_stale_scans_locked(current, stale_after)
-            self.connection.commit()
-            return recovered
-        except Exception:
-            self.connection.rollback()
-            raise
+        with self._scan_lock:
+            try:
+                self.connection.execute("BEGIN IMMEDIATE")
+                recovered = self._recover_stale_scans_locked(current, stale_after)
+                self.connection.commit()
+                return recovered
+            except Exception:
+                self.connection.rollback()
+                raise
 
     def schema_status(self) -> dict[str, Any]:
         raw_version = self.get_meta("schema_version", "0") or "0"
@@ -1214,6 +1414,7 @@ class Database:
         *,
         created_at: datetime | None = None,
         status: str = "investigating",
+        commit: bool = True,
     ) -> Incident:
         if not status.strip():
             raise ValueError("Incident status must not be empty")
@@ -1240,7 +1441,8 @@ class Database:
                 "{}",
             ),
         )
-        self.connection.commit()
+        if commit:
+            self.connection.commit()
         return incident
 
     def update_incident_results(
@@ -1252,6 +1454,7 @@ class Database:
         assessment: str = NEUTRAL_ASSESSMENT,
         assessment_reasons: Iterable[str] = (),
         coverage: dict[str, Any] | None = None,
+        commit: bool = True,
     ) -> None:
         if assessment not in VALID_INVESTIGATION_ASSESSMENTS:
             raise ValueError(f"Unsupported investigation assessment: {assessment}")
@@ -1274,7 +1477,8 @@ class Database:
         )
         if cursor.rowcount != 1:
             raise ValueError(f"Unknown incident: {incident_id}")
-        self.connection.commit()
+        if commit:
+            self.connection.commit()
 
     def record_incident_feedback(
         self,
@@ -1317,9 +1521,9 @@ class Database:
         def parse_json(name: str, default: Any) -> Any:
             try:
                 value = json.loads(row[name] or "")
-            except (KeyError, IndexError, TypeError, json.JSONDecodeError):
+            except (KeyError, IndexError, TypeError, json.JSONDecodeError, RecursionError):
                 return default
-            return value
+            return value if _json_nesting_is_safe(value) else default
 
         assessment = row["assessment"] if "assessment" in row.keys() else NEUTRAL_ASSESSMENT
         if assessment not in VALID_INVESTIGATION_ASSESSMENTS:
@@ -1404,7 +1608,7 @@ class Database:
         for row in rows:
             try:
                 summary = json.loads(row["summary_json"] or "{}")
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, RecursionError):
                 summary = {}
             result.append(
                 {
@@ -1412,7 +1616,7 @@ class Database:
                     "started_at": row["started_at"],
                     "finished_at": row["finished_at"],
                     "status": row["status"],
-                    "summary": summary if isinstance(summary, dict) else {},
+                    "summary": summary if isinstance(summary, dict) and _json_nesting_is_safe(summary) else {},
                 }
             )
         return result
@@ -1495,7 +1699,13 @@ class Database:
         ).fetchall()
         return [dict(row) for row in rows]
 
-    def prune_sensitive_symptom_details(self, *, retain_days: int = 30, as_of: datetime | None = None) -> int:
+    def prune_sensitive_symptom_details(
+        self,
+        *,
+        retain_days: int = 30,
+        as_of: datetime | None = None,
+        scan_id: str | None = None,
+    ) -> int:
         """Drop raw Event Log messages after the short evidence-retention window."""
 
         if retain_days < 1:
@@ -1507,7 +1717,15 @@ class Database:
         ).fetchall()
         updates: list[tuple[str, str]] = []
         for row in rows:
-            details = json.loads(row["details_json"] or "{}")
+            try:
+                details = json.loads(row["details_json"] or "{}")
+            except (json.JSONDecodeError, RecursionError):
+                details = None
+            if not isinstance(details, dict) or not _json_nesting_is_safe(details):
+                # A malformed legacy detail document must not keep a raw
+                # symptom message forever or make every future scan partial.
+                updates.append((_canonical_json({"raw_message_retained": False}), row["id"]))
+                continue
             if "message" not in details:
                 continue
             details.pop("message", None)
@@ -1515,6 +1733,8 @@ class Database:
             updates.append(("{}".format(_canonical_json(details)), row["id"]))
         if updates:
             with self.connection:
+                if scan_id is not None:
+                    self._assert_scan_lease(scan_id)
                 self.connection.executemany("UPDATE events SET details_json = ? WHERE id = ?", updates)
         return len(updates)
 
