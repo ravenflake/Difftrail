@@ -5,6 +5,7 @@ import threading
 import unittest
 from datetime import timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 from difftrail.db import BASE_SCHEMA, Database, _hash
 from difftrail.models import Event, IncidentRequest, SnapshotItem, utc_now
@@ -69,6 +70,48 @@ class DatabaseTests(unittest.TestCase):
                     "SELECT item_key FROM state_items WHERE source = 'apps'"
                 ).fetchall()
                 self.assertEqual([row["item_key"] for row in rows], ["new"])
+
+    def test_scan_lease_check_keeps_the_write_lock_until_snapshot_write(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "journal.db"
+            now = utc_now()
+            with Database(path) as owner:
+                scan_id = owner.start_scan(now)
+                contender = sqlite3.connect(path, timeout=0)
+                contender.execute("PRAGMA busy_timeout = 0")
+                takeover = {"succeeded": False, "blocked": False}
+                original_get_meta = owner.get_meta
+
+                def get_meta_with_takeover(key: str, default: str | None = None) -> str | None:
+                    value = original_get_meta(key, default)
+                    if key == "scan:active":
+                        try:
+                            contender.execute(
+                                "UPDATE scans SET status = 'interrupted' WHERE id = ?", (scan_id,)
+                            )
+                            contender.execute(
+                                "UPDATE meta SET value = ? WHERE key = 'scan:active'", ("replacement",)
+                            )
+                            contender.commit()
+                            takeover["succeeded"] = True
+                        except sqlite3.OperationalError:
+                            contender.rollback()
+                            takeover["blocked"] = True
+                    return value
+
+                item = SnapshotItem("apps", "owned", "application", "Owned", {"version": "1"})
+                try:
+                    with patch.object(owner, "get_meta", side_effect=get_meta_with_takeover):
+                        owner.apply_snapshot("apps", [item], occurred_at=now, scan_id=scan_id)
+                finally:
+                    contender.close()
+
+                self.assertTrue(takeover["blocked"])
+                self.assertFalse(takeover["succeeded"])
+                rows = owner.connection.execute(
+                    "SELECT item_key FROM state_items WHERE source = 'apps'"
+                ).fetchall()
+                self.assertEqual([row["item_key"] for row in rows], ["owned"])
 
     def test_active_scan_blocks_a_second_scan(self) -> None:
         with Database(":memory:") as database:

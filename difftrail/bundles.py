@@ -236,9 +236,17 @@ def _safe_source(source: dict[str, Any]) -> dict[str, Any]:
 def _safe_event_summary(summary: dict[str, Any]) -> dict[str, Any]:
     """Redact aggregate labels as well as the event values they summarize."""
 
+    try:
+        changes = max(0, int(summary.get("changes", 0) or 0))
+    except (TypeError, ValueError, OverflowError):
+        changes = 0
+    try:
+        symptoms = max(0, int(summary.get("symptoms", 0) or 0))
+    except (TypeError, ValueError, OverflowError):
+        symptoms = 0
     result: dict[str, Any] = {
-        "changes": max(0, int(summary.get("changes", 0) or 0)),
-        "symptoms": max(0, int(summary.get("symptoms", 0) or 0)),
+        "changes": changes,
+        "symptoms": symptoms,
     }
     for name in ("changes_by_source", "changes_by_subsystem", "symptoms_by_subsystem"):
         counts = summary.get(name)
@@ -247,7 +255,7 @@ def _safe_event_summary(summary: dict[str, Any]) -> dict[str, Any]:
             for key, value in counts.items():
                 try:
                     count = max(0, int(value))
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     continue
                 safe_key = _safe_text(key)
                 safe_counts[safe_key] = safe_counts.get(safe_key, 0) + count

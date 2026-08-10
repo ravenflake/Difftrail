@@ -1279,6 +1279,11 @@ class Database:
         return parsed if isinstance(parsed, dict) and _json_nesting_is_safe(parsed) else {}
 
     def _assert_scan_lease(self, scan_id: str) -> None:
+        # ``with self.connection`` starts a transaction only on its first
+        # write. Take the write lock before the lease reads so a replacement
+        # scan cannot take over between this check and the owned mutation.
+        if not self.connection.in_transaction:
+            self.connection.execute("BEGIN IMMEDIATE")
         row = self.connection.execute("SELECT status FROM scans WHERE id = ?", (scan_id,)).fetchone()
         active = self.get_meta("scan:active")
         if not row or row["status"] != "running" or (active is not None and active != scan_id):

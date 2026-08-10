@@ -269,7 +269,15 @@ def public_status(status: dict[str, Any]) -> dict[str, Any]:
 def public_scan_result(result: Any) -> dict[str, Any]:
     """Return a scan result without surfacing provider exception text."""
 
-    raw = result.as_dict() if hasattr(result, "as_dict") else {}
+    if isinstance(result, dict):
+        raw = result
+    else:
+        serialize = getattr(result, "as_dict", None)
+        if not callable(serialize):
+            raise ValueError("The scan result could not be serialized")
+        raw = serialize()
+    if not isinstance(raw, dict):
+        raise ValueError("The scan result could not be serialized")
     errors = raw.get("errors", []) if isinstance(raw.get("errors", []), list) else []
     safe = {
         key: raw.get(key)
@@ -451,7 +459,7 @@ class UiRequestHandler(BaseHTTPRequestHandler):
             return False
         if require_token and self.server.api_token:
             supplied_token = self.headers.get("X-Difftrail-Token", "")
-            if not hmac.compare_digest(supplied_token, self.server.api_token):
+            if not supplied_token.isascii() or not hmac.compare_digest(supplied_token, self.server.api_token):
                 self._error(401, "A valid Difftrail API token is required")
                 return False
         return True

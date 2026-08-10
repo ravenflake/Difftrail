@@ -24,7 +24,7 @@ def _error_bucket(error: object) -> str:
 def _safe_count(value: object) -> int:
     try:
         return max(0, int(value or 0))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0
 
 

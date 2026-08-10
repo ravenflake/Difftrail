@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from datetime import timedelta
+from unittest.mock import patch
 
 from difftrail.bundles import BUNDLE_FORMAT, export_bundle, load_bundle, validate_bundle, write_bundle
 from difftrail.db import Database
@@ -138,6 +139,26 @@ class BundleTests(unittest.TestCase):
             self.assertEqual(len(bundle["journal"]["events"]), 10_001)
             self.assertEqual(bundle["journal"]["event_summary"]["changes"], 10_001)
             self.assertFalse(bundle["journal"]["events_truncated"])
+
+    def test_export_tolerates_malformed_aggregate_counts(self) -> None:
+        with Database(":memory:") as database, patch.object(
+            database,
+            "event_summary",
+            return_value={
+                "changes": "not-a-count",
+                "symptoms": float("inf"),
+                "changes_by_source": {"safe": "not-a-count"},
+                "changes_by_subsystem": {"general": float("inf")},
+                "symptoms_by_subsystem": {},
+            },
+        ):
+            bundle = export_bundle(database, as_of=utc_now())
+
+        summary = bundle["journal"]["event_summary"]
+        self.assertEqual(summary["changes"], 0)
+        self.assertEqual(summary["symptoms"], 0)
+        self.assertEqual(summary["changes_by_source"], {})
+        self.assertEqual(summary["changes_by_subsystem"], {})
 
     def test_export_redacts_aggregate_labels_as_well_as_event_values(self) -> None:
         with Database(":memory:") as database:

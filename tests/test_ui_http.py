@@ -200,6 +200,10 @@ class UiHttpTests(unittest.TestCase):
             status, _ = protected_request({"X-Difftrail-Token": "wrong-" + "b" * 32})
             self.assertEqual(status, 401)
 
+            status, payload = protected_request({"X-Difftrail-Token": "é" * 32})
+            self.assertEqual(status, 401)
+            self.assertIn("token", payload["error"].casefold())
+
             status, payload = protected_request({"X-Difftrail-Token": token})
             self.assertEqual(status, 200)
             self.assertEqual(payload["api_port"], port)
@@ -245,6 +249,14 @@ class UiHttpTests(unittest.TestCase):
                     self.assertNotIn(r"C:\Users", encoded)
                     self.assertEqual(payload["scan"]["errors"], [])
                     self.assertEqual(payload["scan"]["error_count"], 1)
+
+    def test_scan_routes_reject_an_unserializable_result(self) -> None:
+        with patch("difftrail.ui_api.run_automated_scan", return_value=object()):
+            for path, body in (("/api/scan", {}), ("/api/automation/watcher", {"action": "run"})):
+                with self.subTest(path=path):
+                    status, payload = self.request("POST", path, body)
+                    self.assertEqual(status, 400)
+                    self.assertEqual(payload["error"], "The scan result could not be serialized")
 
     def test_public_event_metadata_and_detail_summary_hide_absolute_paths(self) -> None:
         with Database(self.database_path) as database:

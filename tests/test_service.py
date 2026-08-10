@@ -88,7 +88,7 @@ class ServiceTests(unittest.TestCase):
             self.assertNotIn("message", details)
             self.assertFalse(details["raw_message_retained"])
 
-    def test_scan_finishes_when_legacy_last_scan_metadata_write_fails(self) -> None:
+    def test_scan_finishes_when_symptom_cursor_metadata_write_fails(self) -> None:
         class EmptyCollector:
             def collect_snapshots(self):
                 return {}
@@ -99,17 +99,18 @@ class ServiceTests(unittest.TestCase):
         with Database(":memory:") as database:
             database.connection.execute(
                 """
-                CREATE TRIGGER fail_legacy_last_scan_meta BEFORE INSERT ON meta
-                WHEN NEW.key = 'last_scan'
-                BEGIN SELECT RAISE(ABORT, 'injected last scan metadata failure'); END
+                CREATE TRIGGER fail_symptom_cursor_meta BEFORE INSERT ON meta
+                WHEN NEW.key = 'symptoms:cursor'
+                BEGIN SELECT RAISE(ABORT, 'injected symptom cursor metadata failure'); END
                 """
             )
             database.connection.commit()
 
             result = Scanner(database, EmptyCollector()).scan()
-            self.assertEqual(result.status, "ok")
+            self.assertEqual(result.status, "partial")
+            self.assertIn("symptoms:", " ".join(result.errors))
             scan = database.list_scans(limit=1)[0]
-            self.assertEqual(scan["status"], "ok")
+            self.assertEqual(scan["status"], "partial")
             self.assertIsNotNone(scan["finished_at"])
 
     def test_long_running_watcher_retries_after_automation_failure(self) -> None:

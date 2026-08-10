@@ -8,6 +8,28 @@ from difftrail.models import Event, IncidentRequest, utc_now
 
 
 class HostValidationTests(unittest.TestCase):
+    def test_report_tolerates_nonfinite_scan_summary_counts(self) -> None:
+        now = utc_now()
+        with Database(":memory:") as database:
+            scan_id = database.start_scan(now)
+            database.finish_scan(
+                scan_id,
+                now,
+                "ok",
+                {
+                    "sources": float("inf"),
+                    "state_events": float("inf"),
+                    "symptom_events": float("inf"),
+                    "errors": [],
+                },
+            )
+
+            report = build_host_validation_report(database, days=1, as_of=now)
+
+        self.assertEqual(report["scans"]["reported_changes"], 0)
+        self.assertEqual(report["scans"]["reported_symptoms"], 0)
+        self.assertEqual(report["scans"]["sources_per_scan_mean"], 0.0)
+
     def test_report_aggregates_scans_overhead_and_labeled_top_three_outcome(self) -> None:
         now = utc_now()
         with Database(":memory:") as database:
