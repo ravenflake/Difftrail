@@ -60,7 +60,9 @@ ALLOWED_ORIGINS = frozenset(
 )
 MAX_REQUEST_BODY_BYTES = 64 * 1024
 MAX_BUNDLE_REQUEST_BODY_BYTES = 32 * 1024 * 1024
-MAX_REQUEST_JSON_NESTING = 64
+# Keep parser depth well below Python's recursion limit while allowing a
+# maximum-depth diagnostic bundle plus its API request wrapper.
+MAX_REQUEST_JSON_NESTING = 128
 VALID_EVENT_KINDS = frozenset({"all", "change", "symptom"})
 API_TOKEN_ENV = "DIFFTRAIL_API_TOKEN"
 VALID_CONFIDENCES = frozenset({"High", "Medium", "Low"})

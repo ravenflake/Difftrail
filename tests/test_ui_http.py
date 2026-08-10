@@ -140,7 +140,17 @@ class UiHttpTests(unittest.TestCase):
         connection.close()
 
         self.assertEqual(response.status, 400)
-        self.assertEqual(payload["error"], "Request body nesting exceeds 64 levels")
+        self.assertEqual(payload["error"], "Request body nesting exceeds 128 levels")
+
+    def test_bundle_depth_limit_allows_the_api_request_wrapper(self) -> None:
+        nested: object = None
+        for _ in range(65):
+            nested = {"nested": nested}
+
+        status, payload = self.request("POST", "/api/validate-bundle", {"bundle": {"nested": nested}})
+
+        self.assertEqual(status, 200)
+        self.assertIn("Bundle nesting exceeds 64 levels", payload["errors"])
 
     def test_missing_host_header_is_rejected(self) -> None:
         connection = HTTPConnection("127.0.0.1", self.port, timeout=5)
