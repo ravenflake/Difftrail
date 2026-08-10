@@ -10,7 +10,9 @@ binds to loopback by default; it is not an internet-facing web service.
 
 import hmac
 import json
+import math
 import os
+import socket
 import sys
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -35,7 +37,7 @@ from .models import IncidentRequest, parse_datetime, utc_now
 from .host_validation import build_host_validation_report
 from .overhead import measure_watcher_overhead
 from .assessment import NEUTRAL_ASSESSMENT
-from .privacy import error_bucket, redact_text
+from .privacy import error_bucket, redact_public_text, redact_text
 from .public_data import public_detail_summary
 
 
@@ -58,14 +60,49 @@ ALLOWED_ORIGINS = frozenset(
 )
 MAX_REQUEST_BODY_BYTES = 64 * 1024
 MAX_BUNDLE_REQUEST_BODY_BYTES = 32 * 1024 * 1024
+# Keep parser depth well below Python's recursion limit while allowing a
+# maximum-depth diagnostic bundle plus its API request wrapper.
+MAX_REQUEST_JSON_NESTING = 128
 VALID_EVENT_KINDS = frozenset({"all", "change", "symptom"})
 API_TOKEN_ENV = "DIFFTRAIL_API_TOKEN"
+VALID_CONFIDENCES = frozenset({"High", "Medium", "Low"})
+VALID_FEEDBACK_OUTCOMES = frozenset({"correct", "incorrect", "unknown"})
+
+
+def _json_nesting_exceeds(payload: bytes, *, maximum: int = MAX_REQUEST_JSON_NESTING) -> bool:
+    """Check structural JSON nesting without recursing into untrusted input."""
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for byte in payload:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif byte == ord("\\"):
+                escaped = True
+            elif byte == ord('"'):
+                in_string = False
+            continue
+        if byte == ord('"'):
+            in_string = True
+        elif byte in (ord("{"), ord("[")):
+            depth += 1
+            if depth > maximum:
+                return True
+        elif byte in (ord("}"), ord("]")) and depth:
+            depth -= 1
+    return False
 
 
 def _public_event(event: dict[str, Any]) -> dict[str, Any]:
     """Return UI-safe event metadata without raw detail payloads."""
 
     result = dict(event)
+    if result.get("id") is not None:
+        result["id"] = redact_public_text(str(result["id"]))
+    for key in ("subsystem", "action", "title", "entity", "severity", "source"):
+        result[key] = redact_public_text(str(result.get(key, "")))
     detail_summary = public_detail_summary(result)
     result.pop("details", None)
     if detail_summary:
@@ -74,31 +111,135 @@ def _public_event(event: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _public_evidence(item: Any) -> dict[str, Any]:
+    if not isinstance(item, dict):
+        return {}
+    event_id = item.get("event_id")
+    return {
+        "signal": redact_public_text(str(item.get("signal", ""))),
+        "strength": redact_public_text(str(item.get("strength", ""))),
+        "explanation": redact_public_text(str(item.get("explanation", ""))),
+        "event_id": redact_public_text(str(event_id)) if event_id is not None else None,
+    }
+
+
 def _public_hypothesis(hypothesis: dict[str, Any]) -> dict[str, Any]:
-    result = dict(hypothesis)
-    if isinstance(result.get("event"), dict):
-        result["event"] = _public_event(result["event"])
-    result["evidence"] = [dict(item) for item in result.get("evidence", [])]
-    result["counter_evidence"] = [dict(item) for item in result.get("counter_evidence", [])]
+    raw = hypothesis if isinstance(hypothesis, dict) else {}
+    score = raw.get("score")
+    if (
+        isinstance(score, bool)
+        or not isinstance(score, (int, float))
+        or (isinstance(score, float) and not math.isfinite(score))
+    ):
+        score = 0
+    confidence = str(raw.get("confidence", "Low"))
+    diagnostic = raw.get("safe_diagnostic") if isinstance(raw.get("safe_diagnostic"), dict) else {}
+    evidence = raw.get("evidence") if isinstance(raw.get("evidence"), list) else []
+    counter_evidence = raw.get("counter_evidence") if isinstance(raw.get("counter_evidence"), list) else []
+    result: dict[str, Any] = {
+        "score": score,
+        "confidence": confidence if confidence in VALID_CONFIDENCES else "Low",
+        "next_action": redact_public_text(str(raw.get("next_action", ""))),
+        "safe_diagnostic": {
+            key: redact_public_text(str(diagnostic.get(key, "")))
+            for key in ("label", "target", "note")
+        },
+        "evidence": [_public_evidence(item) for item in evidence if isinstance(item, dict)],
+        "counter_evidence": [
+            _public_evidence(item) for item in counter_evidence if isinstance(item, dict)
+        ],
+    }
+    if isinstance(raw.get("event"), dict):
+        result["event"] = _public_event(raw["event"])
     return result
+
+
+def _safe_count(value: Any) -> int:
+    if isinstance(value, bool):
+        return 0
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _public_coverage(coverage: Any) -> dict[str, Any]:
+    raw = coverage if isinstance(coverage, dict) else {}
+
+    def safe_strings(key: str) -> list[str]:
+        values = raw.get(key)
+        return [redact_public_text(str(value)) for value in values] if isinstance(values, list) else []
+
+    raw_counts = raw.get("scan_status_counts")
+    status_counts: dict[str, int] = {}
+    if isinstance(raw_counts, dict):
+        for key, value in raw_counts.items():
+            safe_key = redact_public_text(str(key))
+            status_counts[safe_key] = status_counts.get(safe_key, 0) + _safe_count(value)
+    return {
+        "known": bool(raw.get("known", False)),
+        "limited": bool(raw.get("limited", False)),
+        "reasons": safe_strings("reasons"),
+        "sources": safe_strings("sources"),
+        "uninitialized_sources": safe_strings("uninitialized_sources"),
+        "provider_warning_count": _safe_count(raw.get("provider_warning_count")),
+        "scan_count": _safe_count(raw.get("scan_count")),
+        "scan_status_counts": dict(sorted(status_counts.items())),
+    }
 
 
 def public_incident(incident: dict[str, Any]) -> dict[str, Any]:
-    result = dict(incident)
-    result["description"] = redact_text(str(result.get("description", "")))
-    raw_results = result.get("results", [])
+    raw = incident if isinstance(incident, dict) else {}
+    raw_results = raw.get("results", [])
     if not isinstance(raw_results, list):
         raw_results = []
-    result["results"] = [_public_hypothesis(item) for item in raw_results if isinstance(item, dict)]
-    result["assessment"] = str(result.get("assessment", NEUTRAL_ASSESSMENT))
-    raw_reasons = result.get("assessment_reasons", [])
+    assessment = str(raw.get("assessment", NEUTRAL_ASSESSMENT))
+    raw_reasons = raw.get("assessment_reasons", [])
     if not isinstance(raw_reasons, list):
         raw_reasons = []
-    result["assessment_reasons"] = [
-        redact_text(str(reason)) for reason in raw_reasons
-    ]
-    result["coverage"] = result.get("coverage") if isinstance(result.get("coverage"), dict) else {}
-    return result
+    feedback = raw.get("feedback") if isinstance(raw.get("feedback"), dict) else {}
+    outcome = feedback.get("outcome")
+    return {
+        "id": redact_public_text(str(raw.get("id", ""))),
+        "created_at": redact_public_text(str(raw.get("created_at", ""))),
+        "description": redact_public_text(str(raw.get("description", ""))),
+        "subsystem": redact_public_text(str(raw.get("subsystem", ""))),
+        "onset_start": redact_public_text(str(raw.get("onset_start", ""))),
+        "onset_end": redact_public_text(str(raw.get("onset_end", ""))),
+        "lookback_days": _safe_count(raw.get("lookback_days")),
+        "status": redact_public_text(str(raw.get("status", ""))),
+        "assessment": assessment if assessment in {NEUTRAL_ASSESSMENT, "candidate_found", "no_recent_changes", "limited_coverage"} else NEUTRAL_ASSESSMENT,
+        "assessment_reasons": [redact_public_text(str(reason)) for reason in raw_reasons],
+        "coverage": _public_coverage(raw.get("coverage")),
+        "results": [_public_hypothesis(item) for item in raw_results if isinstance(item, dict)],
+        "feedback": {
+            "outcome": outcome if outcome in VALID_FEEDBACK_OUTCOMES else None,
+            "event_id": redact_public_text(str(feedback["event_id"])) if feedback.get("event_id") is not None else None,
+            "recorded_at": redact_public_text(str(feedback["recorded_at"])) if feedback.get("recorded_at") is not None else None,
+        },
+    }
+
+
+def public_investigation_summary(summary: Any) -> dict[str, Any]:
+    raw = summary if isinstance(summary, dict) else {}
+    assessment = raw.get("assessment") if isinstance(raw.get("assessment"), dict) else {}
+    state = str(assessment.get("state", NEUTRAL_ASSESSMENT))
+    reasons = assessment.get("reasons") if isinstance(assessment.get("reasons"), list) else []
+    hypotheses = raw.get("hypotheses") if isinstance(raw.get("hypotheses"), list) else []
+    return {
+        "description": redact_public_text(str(raw.get("description", ""))),
+        "subsystem": redact_public_text(str(raw.get("subsystem", ""))),
+        "onset_start": redact_public_text(str(raw.get("onset_start", ""))),
+        "onset_end": redact_public_text(str(raw.get("onset_end", ""))),
+        "lookback_days": _safe_count(raw.get("lookback_days")),
+        "method": redact_public_text(str(raw.get("method", ""))),
+        "assessment": {
+            "state": state if state in {NEUTRAL_ASSESSMENT, "candidate_found", "no_recent_changes", "limited_coverage"} else NEUTRAL_ASSESSMENT,
+            "reasons": [redact_public_text(str(reason)) for reason in reasons],
+            "coverage": _public_coverage(assessment.get("coverage")),
+        },
+        "hypotheses": [_public_hypothesis(item) for item in hypotheses if isinstance(item, dict)],
+    }
 
 
 def public_status(status: dict[str, Any]) -> dict[str, Any]:
@@ -123,6 +264,30 @@ def public_status(status: dict[str, Any]) -> dict[str, Any]:
         safe_last_scan["summary"]["error_buckets"] = sorted({error_bucket(error) for error in errors})
         result["last_scan"] = safe_last_scan
     return result
+
+
+def public_scan_result(result: Any) -> dict[str, Any]:
+    """Return a scan result without surfacing provider exception text."""
+
+    if isinstance(result, dict):
+        raw = result
+    else:
+        serialize = getattr(result, "as_dict", None)
+        if not callable(serialize):
+            raise ValueError("The scan result could not be serialized")
+        raw = serialize()
+    if not isinstance(raw, dict):
+        raise ValueError("The scan result could not be serialized")
+    errors = raw.get("errors", []) if isinstance(raw.get("errors", []), list) else []
+    safe = {
+        key: raw.get(key)
+        for key in ("scan_id", "status", "sources", "state_events", "symptom_events")
+        if key in raw
+    }
+    safe["errors"] = []
+    safe["error_count"] = len(errors)
+    safe["error_buckets"] = sorted({error_bucket(error) for error in errors})
+    return safe
 
 
 def _now_or_parse(value: str | None) -> datetime:
@@ -170,9 +335,9 @@ def create_investigation(database: Database, body: dict[str, Any]) -> dict[str, 
     stored = database.get_incident(incident.id)
     if stored is None:  # pragma: no cover - the insert was just performed
         raise ValueError("The investigation could not be loaded after creation")
-    summary["incident_id"] = incident.id
-    summary["hypotheses"] = [_public_hypothesis(item) for item in summary["hypotheses"]]
-    return {"summary": summary, "incident": public_incident(stored)}
+    public_summary = public_investigation_summary(summary)
+    public_summary["incident_id"] = redact_public_text(incident.id)
+    return {"summary": public_summary, "incident": public_incident(stored)}
 
 
 def create_bundle(database: Database, body: dict[str, Any]) -> dict[str, Any]:
@@ -242,9 +407,12 @@ class UiRequestHandler(BaseHTTPRequestHandler):
             raise ValueError("Content-Length must not be negative")
         if length > maximum_bytes:
             raise ValueError(f"Request body is too large (maximum {maximum_bytes} bytes)")
+        raw_body = self.rfile.read(length) or b"{}"
+        if _json_nesting_exceeds(raw_body):
+            raise ValueError(f"Request body nesting exceeds {MAX_REQUEST_JSON_NESTING} levels")
         try:
-            payload = json.loads(self.rfile.read(length) or b"{}")
-        except json.JSONDecodeError as exc:
+            payload = json.loads(raw_body)
+        except (json.JSONDecodeError, UnicodeDecodeError, RecursionError) as exc:
             raise ValueError("Request body must be valid JSON") from exc
         if not isinstance(payload, dict):
             raise ValueError("Request body must be a JSON object")
@@ -291,7 +459,7 @@ class UiRequestHandler(BaseHTTPRequestHandler):
             return False
         if require_token and self.server.api_token:
             supplied_token = self.headers.get("X-Difftrail-Token", "")
-            if not hmac.compare_digest(supplied_token, self.server.api_token):
+            if not supplied_token.isascii() or not hmac.compare_digest(supplied_token, self.server.api_token):
                 self._error(401, "A valid Difftrail API token is required")
                 return False
         return True
@@ -407,7 +575,7 @@ class UiRequestHandler(BaseHTTPRequestHandler):
             )
             if path == "/api/scan":
                 result = self._with_database(run_automated_scan)
-                payload = {"scan": result.as_dict()}
+                payload = {"scan": public_scan_result(result)}
             elif path == "/api/automation/config":
                 def update_config(database: Database) -> dict[str, Any]:
                     update_automation_config(database, body)
@@ -429,7 +597,7 @@ class UiRequestHandler(BaseHTTPRequestHandler):
                         raise ValueError("Watcher action must be enable, disable, or run")
                     result: dict[str, Any] = {"automation": automation_snapshot(database)}
                     if scan is not None:
-                        result["scan"] = scan.as_dict()
+                        result["scan"] = public_scan_result(scan)
                     return result
 
                 payload = self._with_database(update_watcher)
@@ -480,8 +648,17 @@ class UiServer(ThreadingHTTPServer):
         *,
         api_token: str | None = None,
     ):
-        if api_token is not None and len(api_token) < 32:
-            raise ValueError("The Difftrail API token must contain at least 32 characters")
+        if address[0] not in {"127.0.0.1", "localhost", "::1"}:
+            raise ValueError("The Difftrail UI server only supports loopback hosts")
+        if address[0] == "::1":
+            self.address_family = socket.AF_INET6
+        if api_token is not None:
+            try:
+                api_token.encode("ascii")
+            except UnicodeEncodeError as exc:
+                raise ValueError("The Difftrail API token must use ASCII characters") from exc
+            if len(api_token) < 32:
+                raise ValueError("The Difftrail API token must contain at least 32 characters")
         self.database_path = database_path
         self.api_token = api_token
         super().__init__(address, UiRequestHandler)

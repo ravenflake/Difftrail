@@ -41,18 +41,23 @@ def run_json(script: str, *, timeout: int = 45) -> list[dict[str, Any]]:
         **_hidden_process_kwargs(),
     )
     stdout = result.stdout.strip()
-    if result.returncode != 0 and not stdout:
+    # A non-zero PowerShell exit can still leave partial JSON on stdout. That
+    # data is not a complete snapshot, so accepting it could turn a provider
+    # failure into false removals from the local state journal.
+    if result.returncode != 0:
         raise PowerShellError(result.stderr.strip() or f"PowerShell exited with code {result.returncode}")
     if not stdout:
         return []
     try:
         parsed = json.loads(stdout)
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, RecursionError) as exc:
         raise PowerShellError(f"PowerShell returned invalid JSON: {exc}") from exc
     if parsed is None:
         return []
     if isinstance(parsed, dict):
         return [parsed]
     if isinstance(parsed, list):
-        return [item for item in parsed if isinstance(item, dict)]
-    return []
+        if all(isinstance(item, dict) for item in parsed):
+            return parsed
+        raise PowerShellError("PowerShell returned a JSON array containing a non-object row")
+    raise PowerShellError("PowerShell returned JSON that was not an object or array")

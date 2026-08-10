@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import platform
 from datetime import datetime, timedelta
 from typing import Any, Callable
 
 from ..correlation import infer_subsystem
-from ..models import Event, SnapshotItem, parse_datetime
+from ..models import Event, SnapshotItem, iso_datetime, parse_datetime
 from ..privacy import extract_safe_application_name, redact_text
 from .powershell import PowerShellError, run_json
 
@@ -378,11 +379,31 @@ $rows | Sort-Object TimeCreated | ConvertTo-Json -Depth 5 -Compress
         for row in rows:
             try:
                 occurred_at = parse_datetime(_text(row, "TimeCreated"))
-            except (TypeError, ValueError):
+                event_number = int(row.get("Id", 0) or 0)
+            except (AttributeError, TypeError, ValueError):
+                # One malformed provider row must not make us discard the
+                # valid Event Log rows that followed it.
+                self.last_errors.append("eventlog: skipped malformed event row")
                 continue
-            event_id = f"eventlog:{_text(row, 'LogName')}:{_text(row, 'RecordId')}"
-            event_number = int(row.get("Id", 0) or 0)
+            log_name = _text(row, "LogName")
+            record_id = _text(row, "RecordId")
             raw_message = _text(row, "Message")
+            if record_id.isdecimal() and log_name in {"Application", "System"}:
+                event_id = f"eventlog:{log_name}:{record_id}"
+            else:
+                # RecordId is normally present. When it is not, use a stable
+                # opaque identity instead of collapsing all rows from a log
+                # into the same deduplication key.
+                fallback = "\x1f".join(
+                    (
+                        iso_datetime(occurred_at),
+                        str(event_number),
+                        log_name,
+                        _text(row, "ProviderName"),
+                        raw_message,
+                    )
+                )
+                event_id = "eventlog:fallback:" + hashlib.sha256(fallback.encode("utf-8")).hexdigest()
             if event_number == 4101:
                 title, subsystem, action, severity = "Display driver reset detected", "graphics", "driver_reset", "high"
             elif event_number == 41:
@@ -398,10 +419,10 @@ $rows | Sort-Object TimeCreated | ConvertTo-Json -Depth 5 -Compress
             application_name = extract_safe_application_name(raw_message) if event_number in {1000, 1002} else None
             details = {
                 "event_id": event_number,
-                "log_name": _text(row, "LogName"),
+                "log_name": log_name,
                 "provider": _text(row, "ProviderName"),
                 "level": _text(row, "Level"),
-                "record_id": _text(row, "RecordId"),
+                "record_id": record_id,
                 "message": redact_text(raw_message),
             }
             if application_name:

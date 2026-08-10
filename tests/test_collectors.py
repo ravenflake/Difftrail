@@ -26,6 +26,30 @@ class CollectorTests(unittest.TestCase):
             self.assertEqual(run_json("@() | ConvertTo-Json"), [])
         self.assertNotIn("creationflags", run.call_args.kwargs)
 
+    def test_powershell_rejects_non_object_or_failed_output(self) -> None:
+        cases = (
+            (0, '"oops"', "not an object or array"),
+            (0, '[{"Name":"valid"}, 42]', "non-object row"),
+            (1, "[]", "PowerShell exited with code 1"),
+        )
+        for returncode, stdout, message in cases:
+            with self.subTest(stdout=stdout):
+                completed = subprocess.CompletedProcess(["powershell.exe"], returncode, stdout, "")
+                with patch("difftrail.collectors.powershell.powershell_path", return_value="powershell.exe"), patch(
+                    "difftrail.collectors.powershell.subprocess.run", return_value=completed
+                ):
+                    with self.assertRaisesRegex(PowerShellError, message):
+                        run_json("Get-Item")
+
+    def test_powershell_rejects_deeply_nested_json_without_aborting_collection(self) -> None:
+        deep_json = '{"nested":' * 10_000 + "null" + "}" * 10_000
+        completed = subprocess.CompletedProcess(["powershell.exe"], 0, deep_json, "")
+        with patch("difftrail.collectors.powershell.powershell_path", return_value="powershell.exe"), patch(
+            "difftrail.collectors.powershell.subprocess.run", return_value=completed
+        ):
+            with self.assertRaisesRegex(PowerShellError, "invalid JSON"):
+                run_json("Get-Item")
+
     def test_application_event_identity_is_safe_and_stable(self) -> None:
         self.assertEqual(
             extract_safe_application_name(r"Faulting application name: C:\Games\Example.exe, version 1.0"),
@@ -172,3 +196,38 @@ class CollectorTests(unittest.TestCase):
                 r"Faulting application name: C:\Users\<user>, version 1.2.3",
             ],
         )
+
+    def test_malformed_eventlog_rows_do_not_discard_valid_rows_or_collapse_ids(self) -> None:
+        rows = [
+            {
+                "TimeCreated": "2026-08-07T10:00:00Z",
+                "Id": "not-an-event-id",
+                "LogName": "Application",
+            },
+            {
+                "TimeCreated": "2026-08-07T10:01:00Z",
+                "Id": 1000,
+                "LogName": "Application",
+                "RecordId": r"C:\Users\Alice\record",
+                "ProviderName": "Application Error",
+                "Message": "First crash",
+            },
+            {
+                "TimeCreated": "2026-08-07T10:02:00Z",
+                "Id": 1000,
+                "LogName": "Application",
+                "ProviderName": "Application Error",
+                "Message": "Second crash",
+            },
+        ]
+        collector = WindowsCollector()
+        with patch("difftrail.collectors.windows.platform.system", return_value="Windows"), patch(
+            "difftrail.collectors.windows.run_json", return_value=rows
+        ):
+            events = collector.collect_symptoms(datetime(2026, 8, 7, 9, 59, tzinfo=timezone.utc))
+
+        self.assertEqual(len(events), 2)
+        self.assertEqual(len({event.event_id for event in events}), 2)
+        self.assertTrue(all((event.event_id or "").startswith("eventlog:fallback:") for event in events))
+        self.assertNotIn("Alice", " ".join(event.event_id or "" for event in events))
+        self.assertIn("eventlog: skipped malformed event row", collector.last_errors)

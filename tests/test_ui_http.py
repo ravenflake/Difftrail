@@ -1,12 +1,16 @@
 import json
+import socket
 import tempfile
 import threading
 import unittest
+from datetime import timedelta
 from http.client import HTTPConnection
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from difftrail.db import Database
-from difftrail.models import Event, utc_now
+from difftrail.models import Event, IncidentRequest, utc_now
 from difftrail.ui_api import UiServer
 
 
@@ -121,6 +125,33 @@ class UiHttpTests(unittest.TestCase):
             self.assertEqual(status, 400)
             self.assertIn("days must be between", payload["error"])
 
+    def test_deeply_nested_json_body_returns_a_safe_error(self) -> None:
+        depth = 2_000
+        body = b'{"bundle":' + (b'{"nested":' * depth) + b"null" + (b"}" * depth) + b"}"
+        connection = HTTPConnection("127.0.0.1", self.port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/validate-bundle",
+            body=body,
+            headers={"Content-Type": "application/json"},
+        )
+        response = connection.getresponse()
+        payload = json.loads(response.read().decode("utf-8"))
+        connection.close()
+
+        self.assertEqual(response.status, 400)
+        self.assertEqual(payload["error"], "Request body nesting exceeds 128 levels")
+
+    def test_bundle_depth_limit_allows_the_api_request_wrapper(self) -> None:
+        nested: object = None
+        for _ in range(65):
+            nested = {"nested": nested}
+
+        status, payload = self.request("POST", "/api/validate-bundle", {"bundle": {"nested": nested}})
+
+        self.assertEqual(status, 200)
+        self.assertIn("Bundle nesting exceeds 64 levels", payload["errors"])
+
     def test_missing_host_header_is_rejected(self) -> None:
         connection = HTTPConnection("127.0.0.1", self.port, timeout=5)
         connection.putrequest("GET", "/api/health", skip_host=True)
@@ -169,6 +200,10 @@ class UiHttpTests(unittest.TestCase):
             status, _ = protected_request({"X-Difftrail-Token": "wrong-" + "b" * 32})
             self.assertEqual(status, 401)
 
+            status, payload = protected_request({"X-Difftrail-Token": "é" * 32})
+            self.assertEqual(status, 401)
+            self.assertIn("token", payload["error"].casefold())
+
             status, payload = protected_request({"X-Difftrail-Token": token})
             self.assertEqual(status, 200)
             self.assertEqual(payload["api_port"], port)
@@ -176,6 +211,159 @@ class UiHttpTests(unittest.TestCase):
             protected.shutdown()
             protected.server_close()
             thread.join(timeout=2)
+
+    def test_non_ascii_api_token_is_rejected_at_startup(self) -> None:
+        with self.assertRaisesRegex(ValueError, "ASCII"):
+            UiServer(("127.0.0.1", 0), self.database_path, api_token="é" * 32)
+
+    def test_ui_server_constructor_rejects_non_loopback_bindings(self) -> None:
+        with self.assertRaisesRegex(ValueError, "loopback"):
+            UiServer(("0.0.0.0", 0), self.database_path)
+
+    @unittest.skipUnless(socket.has_ipv6, "IPv6 is unavailable")
+    def test_ui_server_accepts_ipv6_loopback(self) -> None:
+        try:
+            with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as probe:
+                probe.bind(("::1", 0))
+        except OSError:
+            self.skipTest("IPv6 loopback is unavailable")
+        server = UiServer(("::1", 0), self.database_path)
+        try:
+            self.assertEqual(server.server_address[0], "::1")
+        finally:
+            server.server_close()
+
+    def test_scan_routes_bucket_provider_errors_without_returning_them(self) -> None:
+        result = SimpleNamespace(
+            as_dict=lambda: {
+                "scan_id": "scan-safe-errors",
+                "status": "partial",
+                "sources": 1,
+                "state_events": 0,
+                "symptom_events": 0,
+                "errors": [r"eventlog: C:\Users\Alice\Secret\provider.log"],
+            }
+        )
+        with patch("difftrail.ui_api.run_automated_scan", return_value=result):
+            for path, body in (("/api/scan", {}), ("/api/automation/watcher", {"action": "run"})):
+                with self.subTest(path=path):
+                    status, payload = self.request("POST", path, body)
+                    self.assertEqual(status, 200)
+                    encoded = json.dumps(payload)
+                    self.assertNotIn("Alice", encoded)
+                    self.assertNotIn(r"C:\Users", encoded)
+                    self.assertEqual(payload["scan"]["errors"], [])
+                    self.assertEqual(payload["scan"]["error_count"], 1)
+
+    def test_scan_routes_reject_an_unserializable_result(self) -> None:
+        with patch("difftrail.ui_api.run_automated_scan", return_value=object()):
+            for path, body in (("/api/scan", {}), ("/api/automation/watcher", {"action": "run"})):
+                with self.subTest(path=path):
+                    status, payload = self.request("POST", path, body)
+                    self.assertEqual(status, 400)
+                    self.assertEqual(payload["error"], "The scan result could not be serialized")
+
+    def test_public_event_metadata_and_detail_summary_hide_absolute_paths(self) -> None:
+        with Database(self.database_path) as database:
+            now = utc_now()
+            database.save_events(
+                [
+                    Event(
+                        now,
+                        "change",
+                        "general",
+                        "updated",
+                        "Synthetic event",
+                        source="test",
+                        details={"after": {"display_name": r"C:\Program Files\Secret\tool.exe"}},
+                        event_id="public-redaction",
+                    )
+                ]
+            )
+            database.connection.execute(
+                "UPDATE events SET source = ?, subsystem = ? WHERE id = ?",
+                (r"C:\Users\Alice\Secret", r"C:\Users\Alice\Subsystem", "public-redaction"),
+            )
+            database.connection.commit()
+
+        status, payload = self.request("GET", "/api/bootstrap")
+        self.assertEqual(status, 200)
+        encoded = json.dumps(payload)
+        self.assertNotIn("Alice", encoded)
+        self.assertNotIn(r"C:\Users", encoded)
+        self.assertNotIn(r"C:\Program Files", encoded)
+
+    def test_incident_routes_filter_malformed_stored_result_payloads(self) -> None:
+        with Database(self.database_path) as database:
+            now = utc_now()
+            incident = database.create_incident(
+                IncidentRequest("Investigate a display issue", now - timedelta(hours=1), now, "graphics", 7)
+            )
+            result = {
+                "event": {
+                    "id": r"C:\Users\Alice\event",
+                    "occurred_at": now.isoformat(),
+                    "kind": "change",
+                    "subsystem": r"C:\Users\Alice\graphics",
+                    "action": "updated",
+                    "title": r"Changed C:\Program Files\Secret\tool.exe",
+                    "entity": r"C:\Program Files\Secret\tool.exe",
+                    "severity": "high",
+                    "source": r"C:\Users\Alice\source",
+                    "details": {"message": "private raw collector message"},
+                },
+                "score": float("inf"),
+                "confidence": "High",
+                "evidence": [
+                    {
+                        "signal": r"C:\Users\Alice\signal",
+                        "strength": "strong",
+                        "explanation": r"Review C:\Program Files\Secret\tool.exe",
+                        "event_id": r"C:\Users\Alice\event",
+                        "private_message": "private evidence payload",
+                    }
+                ],
+                "counter_evidence": None,
+                "next_action": r"Open C:\Program Files\Secret\tool.exe",
+                "safe_diagnostic": {
+                    "label": r"C:\Users\Alice\label",
+                    "target": r"C:\Program Files\Secret\tool.exe",
+                    "note": "private diagnostic note",
+                },
+            }
+            database.connection.execute(
+                "UPDATE incidents SET description = ?, result_json = ?, coverage_json = ? WHERE id = ?",
+                (
+                    r"Investigate C:\Users\Alice\private",
+                    json.dumps([result]),
+                    json.dumps(
+                        {
+                            "reasons": [r"Missing C:\Users\Alice\source"],
+                            "scan_count": float("inf"),
+                            "private_message": "secret",
+                        }
+                    ),
+                    incident.id,
+                ),
+            )
+            database.connection.commit()
+
+        status, payload = self.request("GET", "/api/incidents")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload[0]["results"][0]["score"], 0)
+        self.assertEqual(payload[0]["coverage"]["scan_count"], 0)
+        encoded = json.dumps(payload)
+        for secret in ("Alice", r"C:\Users", r"C:\Program Files", "private raw collector", "private evidence payload"):
+            self.assertNotIn(secret, encoded)
+
+        status, payload = self.request(
+            "POST",
+            "/api/investigations",
+            {"description": r"Investigate C:\Users\Alice\private", "subsystem": "graphics", "lookback_days": 7},
+        )
+        self.assertEqual(status, 200)
+        self.assertNotIn("Alice", json.dumps(payload))
+        self.assertNotIn(r"C:\Users", json.dumps(payload))
 
     def test_investigation_detail_and_feedback_routes(self) -> None:
         status, payload = self.request(
