@@ -60,10 +60,37 @@ ALLOWED_ORIGINS = frozenset(
 )
 MAX_REQUEST_BODY_BYTES = 64 * 1024
 MAX_BUNDLE_REQUEST_BODY_BYTES = 32 * 1024 * 1024
+MAX_REQUEST_JSON_NESTING = 64
 VALID_EVENT_KINDS = frozenset({"all", "change", "symptom"})
 API_TOKEN_ENV = "DIFFTRAIL_API_TOKEN"
 VALID_CONFIDENCES = frozenset({"High", "Medium", "Low"})
 VALID_FEEDBACK_OUTCOMES = frozenset({"correct", "incorrect", "unknown"})
+
+
+def _json_nesting_exceeds(payload: bytes, *, maximum: int = MAX_REQUEST_JSON_NESTING) -> bool:
+    """Check structural JSON nesting without recursing into untrusted input."""
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for byte in payload:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif byte == ord("\\"):
+                escaped = True
+            elif byte == ord('"'):
+                in_string = False
+            continue
+        if byte == ord('"'):
+            in_string = True
+        elif byte in (ord("{"), ord("[")):
+            depth += 1
+            if depth > maximum:
+                return True
+        elif byte in (ord("}"), ord("]")) and depth:
+            depth -= 1
+    return False
 
 
 def _public_event(event: dict[str, Any]) -> dict[str, Any]:
@@ -370,8 +397,11 @@ class UiRequestHandler(BaseHTTPRequestHandler):
             raise ValueError("Content-Length must not be negative")
         if length > maximum_bytes:
             raise ValueError(f"Request body is too large (maximum {maximum_bytes} bytes)")
+        raw_body = self.rfile.read(length) or b"{}"
+        if _json_nesting_exceeds(raw_body):
+            raise ValueError(f"Request body nesting exceeds {MAX_REQUEST_JSON_NESTING} levels")
         try:
-            payload = json.loads(self.rfile.read(length) or b"{}")
+            payload = json.loads(raw_body)
         except (json.JSONDecodeError, UnicodeDecodeError, RecursionError) as exc:
             raise ValueError("Request body must be valid JSON") from exc
         if not isinstance(payload, dict):

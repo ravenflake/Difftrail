@@ -139,9 +139,8 @@ class UiHttpTests(unittest.TestCase):
         payload = json.loads(response.read().decode("utf-8"))
         connection.close()
 
-        self.assertEqual(response.status, 200)
-        self.assertFalse(payload["valid"])
-        self.assertIn("Bundle nesting exceeds 64 levels", payload["errors"])
+        self.assertEqual(response.status, 400)
+        self.assertEqual(payload["error"], "Request body nesting exceeds 64 levels")
 
     def test_missing_host_header_is_rejected(self) -> None:
         connection = HTTPConnection("127.0.0.1", self.port, timeout=5)
