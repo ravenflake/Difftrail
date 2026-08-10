@@ -9,7 +9,7 @@ edition = "2021"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-getrandom = "0.3.4"
+getrandom = "0.4.3"
 tauri = { version = "2", features = [] }
 
 [features]
