@@ -222,6 +222,11 @@ class UiHttpTests(unittest.TestCase):
 
     @unittest.skipUnless(socket.has_ipv6, "IPv6 is unavailable")
     def test_ui_server_accepts_ipv6_loopback(self) -> None:
+        try:
+            with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as probe:
+                probe.bind(("::1", 0))
+        except OSError:
+            self.skipTest("IPv6 loopback is unavailable")
         server = UiServer(("::1", 0), self.database_path)
         try:
             self.assertEqual(server.server_address[0], "::1")
