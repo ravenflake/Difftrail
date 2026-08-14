@@ -18,6 +18,7 @@ from .privacy import (
     redact_text,
     redact_value,
 )
+from .service_identity import is_per_user_service_payload, service_base_name
 
 
 DEFAULT_RETENTION_DAYS = 30
@@ -244,6 +245,19 @@ def _comparison_value(source: str, key: str, value: Any) -> Any:
 def _comparison_payload(source: str, payload: dict[str, Any]) -> dict[str, Any]:
     safe_payload = _comparison_value(source, "", redact_value(payload))
     ignored = IGNORED_SNAPSHOT_FIELDS.get(source, frozenset())
+    if source == "services" and is_per_user_service_payload(safe_payload):
+        # The suffixed name and LUID identify a user session. They are not a
+        # durable service configuration change and would otherwise turn every
+        # sign-in/session refresh into an add/remove storm.
+        ignored = ignored | frozenset(
+            {
+                "name",
+                "service_instance_suffix",
+                "per_user_service",
+                "service_base_name",
+                "service_type",
+            }
+        )
     return {key: value for key, value in safe_payload.items() if key not in ignored}
 
 
@@ -277,6 +291,26 @@ def _event_subsystem(source: str, stored_subsystem: str, title: str, entity: str
     return REMOVED_SUBSYSTEMS.get(stored_subsystem, stored_subsystem)
 
 
+def _legacy_snapshot_key(
+    current_key: str,
+    previous: dict[str, dict[str, Any]],
+    matched_previous_keys: set[str],
+    source: str,
+) -> str | None:
+    """Match state keys across stable-identity migrations."""
+
+    if source == "apps":
+        return Database._legacy_app_key(current_key, previous, matched_previous_keys, source)
+    if source != "services" or service_base_name(current_key) != current_key:
+        return None
+    candidates = [
+        key
+        for key in previous
+        if key not in matched_previous_keys and service_base_name(key) == current_key
+    ]
+    return candidates[0] if len(candidates) == 1 else None
+
+
 class Database:
     """Small SQLite repository for normalized local evidence."""
 
@@ -304,6 +338,7 @@ class Database:
                 # also repairs a journal where an older build's marker was lost without
                 # changing the schema version or deleting any evidence.
                 self._backfill_safe_application_entities()
+                self._repair_automation_links()
             except Exception:
                 connection = getattr(self, "connection", None)
                 if connection is not None:
@@ -581,6 +616,70 @@ class Database:
         )
         # When called outside a migration, persist the marker immediately. A
         # migration caller already owns the transaction and opts out.
+        if commit:
+            self.connection.commit()
+
+    def _repair_automation_links(self, *, commit: bool = True) -> None:
+        """Repair unlinked automatic drafts when their exact incident exists.
+
+        Older watcher races could persist the idempotency marker and draft but
+        lose the association between them. Only an exact event/title/time
+        match is repaired, so this is safe to rerun whenever the journal opens.
+        """
+
+        rows = self.connection.execute(
+            """
+            SELECT event_id
+            FROM automation_actions
+            WHERE action = 'draft_investigation' AND incident_id IS NULL
+            """
+        ).fetchall()
+        action_updates: list[tuple[str, str]] = []
+        for row in rows:
+            event = self.connection.execute(
+                "SELECT title, subsystem, occurred_at FROM events WHERE id = ?",
+                (row["event_id"],),
+            ).fetchone()
+            if event is None:
+                continue
+            candidates = self.connection.execute(
+                """
+                SELECT id
+                FROM incidents
+                WHERE description = ?
+                  AND subsystem = ?
+                  AND onset_start = ?
+                  AND onset_end = ?
+                  AND lookback_days = 7
+                  AND status = 'draft'
+                ORDER BY created_at DESC
+                """,
+                (
+                    f"Automatic draft: {event['title']}",
+                    event["subsystem"],
+                    event["occurred_at"],
+                    event["occurred_at"],
+                ),
+            ).fetchall()
+            if len(candidates) == 1:
+                action_updates.append((str(candidates[0]["id"]), str(row["event_id"])))
+        if action_updates:
+            self.connection.executemany(
+                """
+                UPDATE automation_actions
+                SET incident_id = ?
+                WHERE event_id = ? AND action = 'draft_investigation' AND incident_id IS NULL
+                """,
+                action_updates,
+            )
+            self.connection.executemany(
+                """
+                UPDATE automation_notifications
+                SET incident_id = ?
+                WHERE event_id = ? AND kind = 'crash' AND incident_id IS NULL
+                """,
+                action_updates,
+            )
         if commit:
             self.connection.commit()
 
@@ -1115,7 +1214,7 @@ class Database:
             return generated
 
         for key, item in current.items():
-            previous_key = key if key in previous else self._legacy_app_key(key, previous, matched_previous_keys, source)
+            previous_key = key if key in previous else _legacy_snapshot_key(key, previous, matched_previous_keys, source)
             old_payload = previous.get(previous_key) if previous_key is not None else None
             safe_payload = redact_value(item.payload)
             comparison_payload = _comparison_payload(source, item.payload)
@@ -1419,11 +1518,14 @@ class Database:
         *,
         created_at: datetime | None = None,
         status: str = "investigating",
+        incident_id: str | None = None,
         commit: bool = True,
     ) -> Incident:
         if not status.strip():
             raise ValueError("Incident status must not be empty")
-        incident = Incident(id=str(uuid.uuid4()), created_at=created_at or utc_now(), request=request, status=status)
+        if incident_id is not None and not incident_id.strip():
+            raise ValueError("Incident id must not be empty")
+        incident = Incident(id=incident_id or str(uuid.uuid4()), created_at=created_at or utc_now(), request=request, status=status)
         self.connection.execute(
             """
             INSERT INTO incidents
@@ -1521,6 +1623,27 @@ class Database:
             raise ValueError(f"Unknown incident: {incident_id}")
         return updated
 
+    def delete_incident(self, incident_id: str) -> bool:
+        """Remove an investigation and clear automation links to it."""
+
+        with self.connection:
+            exists = self.connection.execute(
+                "SELECT 1 FROM incidents WHERE id = ?",
+                (incident_id,),
+            ).fetchone()
+            if exists is None:
+                return False
+            self.connection.execute(
+                "UPDATE automation_actions SET incident_id = NULL WHERE incident_id = ?",
+                (incident_id,),
+            )
+            self.connection.execute(
+                "UPDATE automation_notifications SET incident_id = NULL WHERE incident_id = ?",
+                (incident_id,),
+            )
+            self.connection.execute("DELETE FROM incidents WHERE id = ?", (incident_id,))
+        return True
+
     @staticmethod
     def _incident_row(row: sqlite3.Row) -> dict[str, Any]:
         def parse_json(name: str, default: Any) -> Any:
@@ -1566,6 +1689,32 @@ class Database:
     def get_incident(self, incident_id: str) -> dict[str, Any] | None:
         row = self.connection.execute("SELECT * FROM incidents WHERE id = ?", (incident_id,)).fetchone()
         return self._incident_row(row) if row else None
+
+    def find_incident_id(self, request: IncidentRequest, *, status: str | None = None) -> str | None:
+        """Return an incident matching the complete request, if it is unique."""
+
+        clauses = [
+            "description = ?",
+            "subsystem = ?",
+            "onset_start = ?",
+            "onset_end = ?",
+            "lookback_days = ?",
+        ]
+        params: list[Any] = [
+            request.description,
+            request.subsystem,
+            iso_datetime(request.onset_start),
+            iso_datetime(request.onset_end),
+            request.lookback_days,
+        ]
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(status)
+        rows = self.connection.execute(
+            f"SELECT id FROM incidents WHERE {' AND '.join(clauses)} ORDER BY created_at DESC",
+            params,
+        ).fetchall()
+        return str(rows[0]["id"]) if len(rows) == 1 else None
 
     def list_incidents(
         self,

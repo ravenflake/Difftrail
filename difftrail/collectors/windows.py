@@ -8,6 +8,7 @@ from typing import Any, Callable
 from ..correlation import infer_subsystem
 from ..models import Event, SnapshotItem, iso_datetime, parse_datetime
 from ..privacy import extract_safe_application_name, redact_text
+from ..service_identity import per_user_service_identity
 from .powershell import PowerShellError, run_json
 
 
@@ -115,6 +116,7 @@ $rows = @(Get-CimInstance Win32_Service | ForEach-Object {
         StartMode = [string]$_.StartMode
         StartName = [string]$_.StartName
         PathName = [string]$_.PathName
+        ServiceType = [string]$_.ServiceType
     }
 })
 if ($null -eq $rows) { $rows = @() }
@@ -252,28 +254,57 @@ $rows | ConvertTo-Json -Depth 5 -Compress
         ]
 
     def _services(self, rows: list[dict[str, Any]]) -> list[SnapshotItem]:
-        return [
-            SnapshotItem(
-                source="services",
-                key=_text(row, "Name"),
-                subsystem=_subsystem_for_service(row),
-                display_name=f"Service {_text(row, 'DisplayName', _text(row, 'Name'))}",
-                payload={
-                    "name": _text(row, "Name"),
-                    "display_name": _text(row, "DisplayName"),
-                    "state": _text(row, "State"),
-                    "start_mode": _text(row, "StartMode"),
-                    "start_name": _text(row, "StartName"),
-                    "path": _text(row, "PathName"),
-                },
-                severity="medium",
-                entity=_text(row, "Name"),
-                action_on_add="added",
-                action_on_update="updated",
+        items: list[SnapshotItem] = []
+        for row in rows:
+            name = _text(row, "Name")
+            if not name:
+                continue
+            display_name = _text(row, "DisplayName", name)
+            path = _text(row, "PathName")
+            service_type = _text(row, "ServiceType")
+            identity = per_user_service_identity(name, path=path, service_type=service_type)
+            base_name = identity[0] if identity else name
+            display_base_name = per_user_service_identity(
+                display_name,
+                path=path,
+                service_type=service_type,
             )
-            for row in rows
-            if _text(row, "Name")
-        ]
+            if display_base_name:
+                display_name = display_base_name[0]
+            payload = {
+                "name": name,
+                "display_name": _text(row, "DisplayName"),
+                "state": _text(row, "State"),
+                "start_mode": _text(row, "StartMode"),
+                "start_name": _text(row, "StartName"),
+                "path": path,
+                "service_type": service_type,
+            }
+            if identity:
+                payload.update(
+                    {
+                        "per_user_service": True,
+                        "service_base_name": base_name,
+                        "service_instance_suffix": identity[1],
+                    }
+                )
+            items.append(
+                SnapshotItem(
+                    source="services",
+                    # Per-user service suffixes identify a user session, not a
+                    # new logical service. Keep the stable base as the state key
+                    # so logon/session refreshes remain quiet.
+                    key=base_name,
+                    subsystem=_subsystem_for_service(row),
+                    display_name=f"Service {display_name}",
+                    payload=payload,
+                    severity="low" if identity else "medium",
+                    entity=base_name,
+                    action_on_add="added",
+                    action_on_update="updated",
+                )
+            )
+        return items
 
     def _tasks(self, rows: list[dict[str, Any]]) -> list[SnapshotItem]:
         return [

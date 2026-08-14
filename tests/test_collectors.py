@@ -72,6 +72,27 @@ class CollectorTests(unittest.TestCase):
         )
         self.assertEqual(items[0].subsystem, "graphics")
 
+    def test_per_user_service_suffix_is_normalized_to_stable_identity(self) -> None:
+        collector = WindowsCollector()
+        items = collector._services(
+            [
+                {
+                    "Name": "OneSyncSvc_c837b",
+                    "DisplayName": "OneSyncSvc_c837b",
+                    "PathName": r"C:\Windows\System32\svchost.exe -k UnistackSvcGroup",
+                    "ServiceType": "Share Process",
+                    "State": "Stopped",
+                    "StartMode": "Manual",
+                    "StartName": "",
+                }
+            ]
+        )
+        self.assertEqual(items[0].key, "OneSyncSvc")
+        self.assertEqual(items[0].entity, "OneSyncSvc")
+        self.assertEqual(items[0].display_name, "Service OneSyncSvc")
+        self.assertTrue(items[0].payload["per_user_service"])
+        self.assertEqual(items[0].payload["service_instance_suffix"], "c837b")
+
     def test_nvidia_high_definition_audio_is_audio_not_graphics(self) -> None:
         collector = WindowsCollector()
         items = collector._devices(

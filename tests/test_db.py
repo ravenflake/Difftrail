@@ -574,6 +574,46 @@ class DatabaseTests(unittest.TestCase):
                 self.assertEqual(events[0].action, "updated")
                 self.assertEqual(database.count_events("change"), 1)
 
+    def test_per_user_service_suffix_rotation_keeps_a_stable_baseline(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            with Database(Path(folder) / "journal.db") as database:
+                now = utc_now()
+                before = SnapshotItem(
+                    "services",
+                    "OneSyncSvc_c837b",
+                    "startup",
+                    "Service OneSyncSvc_c837b",
+                    {
+                        "name": "OneSyncSvc_c837b",
+                        "display_name": "OneSyncSvc_c837b",
+                        "state": "Stopped",
+                        "start_mode": "Manual",
+                        "start_name": "",
+                        "path": r"C:\Windows\System32\svchost.exe -k UnistackSvcGroup",
+                    },
+                )
+                database.apply_snapshot("services", [before], occurred_at=now)
+                after = SnapshotItem(
+                    "services",
+                    "OneSyncSvc",
+                    "startup",
+                    "Service OneSyncSvc",
+                    {
+                        "name": "OneSyncSvc_c1a2e",
+                        "display_name": "OneSyncSvc_c1a2e",
+                        "state": "Stopped",
+                        "start_mode": "Manual",
+                        "start_name": "",
+                        "path": r"C:\Windows\System32\svchost.exe -k UnistackSvcGroup",
+                        "per_user_service": True,
+                        "service_base_name": "OneSyncSvc",
+                        "service_instance_suffix": "c1a2e",
+                        "service_type": "Share Process",
+                    },
+                )
+                self.assertEqual(database.apply_snapshot("services", [after], occurred_at=now + timedelta(minutes=5)), [])
+                self.assertEqual(database.count_events("change"), 0)
+
     def test_snapshot_state_rolls_back_when_event_write_fails(self) -> None:
         with Database(":memory:") as database:
             now = utc_now()
@@ -711,6 +751,31 @@ class DatabaseTests(unittest.TestCase):
             database.update_incident_results(incident.id, [{"confidence": "High"}])
             self.assertEqual(database.count_events(), 1)
             self.assertEqual(database.recent_incidents()[0]["results"][0]["confidence"], "High")
+
+    def test_delete_incident_removes_record_and_unlinks_automation_references(self) -> None:
+        with Database(":memory:") as database:
+            now = utc_now()
+            incident = database.create_incident(
+                IncidentRequest("graphics are crashing", now - timedelta(hours=1), now, "graphics", 7)
+            )
+            database.record_automation_action(
+                "event-for-deletion",
+                "draft_investigation",
+                incident_id=incident.id,
+            )
+            database.create_automation_notification(
+                kind="crash",
+                title="High-severity signal detected",
+                body="Review the evidence.",
+                event_id="event-for-deletion",
+                incident_id=incident.id,
+            )
+
+            self.assertTrue(database.delete_incident(incident.id))
+            self.assertIsNone(database.get_incident(incident.id))
+            self.assertIsNone(database.automation_action_incident_id("event-for-deletion", "draft_investigation"))
+            self.assertIsNone(database.list_automation_notifications()[0]["incident_id"])
+            self.assertFalse(database.delete_incident(incident.id))
 
     def test_duplicate_events_report_only_inserted_rows(self) -> None:
         with Database(":memory:") as database:

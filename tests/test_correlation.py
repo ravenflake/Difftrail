@@ -78,6 +78,90 @@ class CorrelationTests(unittest.TestCase):
         self.assertTrue({"temporal proximity", "subsystem relevance", "baseline break"}.issubset(signals))
         self.assertEqual(hypotheses[0].safe_diagnostic["target"], "devmgmt.msc")
 
+    def test_equal_top_scores_are_marked_ambiguous_and_not_a_conclusion(self) -> None:
+        now = utc_now()
+        changes = [
+            Event(
+                now - timedelta(hours=2),
+                "change",
+                "graphics",
+                "updated",
+                f"Display driver {label} updated",
+                source="drivers",
+                event_id=label,
+            )
+            for label in ("a", "b", "c")
+        ]
+        symptom = Event(now - timedelta(minutes=30), "symptom", "graphics", "crash", "Game crash", source="eventlog")
+        request = IncidentRequest("the graphics started crashing", now - timedelta(hours=1), now, "graphics", 7)
+
+        hypotheses = rank_candidates([*changes, symptom], request)
+        self.assertEqual(hypotheses[0].tie_count, 3)
+        self.assertEqual(hypotheses[0].confidence, "Medium")
+        assessment = assess_investigation(request, hypotheses, [*changes, symptom])
+        self.assertEqual(assessment.state, "insufficient_evidence")
+        self.assertIn("tied at the same score", " ".join(assessment.reasons))
+
+    def test_per_user_service_batch_is_excluded_from_causal_ranking(self) -> None:
+        now = utc_now()
+        service_events = [
+            Event(
+                now - timedelta(minutes=2),
+                "change",
+                "startup",
+                "added",
+                f"Service {name}_c837b added",
+                entity=f"{name}_c837b",
+                source="services",
+                event_id=name,
+                details={
+                    "key": f"{name}_c837b",
+                    "before": None,
+                    "after": {
+                        "name": f"{name}_c837b",
+                        "display_name": f"{name}_c837b",
+                        "path": r"C:\Windows\System32\svchost.exe -k UnistackSvcGroup",
+                    },
+                },
+            )
+            for name in ("OneSyncSvc", "MessagingService", "UserDataSvc")
+        ]
+        symptom = Event(now - timedelta(minutes=1), "symptom", "application", "crash", "Application crash", source="eventlog")
+        request = IncidentRequest("the application crashed", now, now, "application", 7)
+
+        hypotheses = rank_candidates([*service_events, symptom], request)
+        self.assertEqual(hypotheses, [])
+        assessment = assess_investigation(request, hypotheses, [*service_events, symptom])
+        self.assertEqual(assessment.state, "insufficient_evidence")
+        self.assertIn("bulk Windows per-user service refresh", " ".join(assessment.reasons))
+        self.assertNotIn("none matched the reported subsystem", " ".join(assessment.reasons))
+
+    def test_per_user_service_candidate_uses_safe_review_language(self) -> None:
+        now = utc_now()
+        service = Event(
+            now - timedelta(hours=1),
+            "change",
+            "startup",
+            "added",
+            "Service OneSyncSvc_c837b added",
+            entity="OneSyncSvc_c837b",
+            source="services",
+            event_id="per-user-service",
+            details={
+                "after": {
+                    "name": "OneSyncSvc_c837b",
+                    "path": r"C:\Windows\System32\svchost.exe -k UnistackSvcGroup",
+                }
+            },
+        )
+        symptom = Event(now - timedelta(minutes=30), "symptom", "application", "crash", "Application crash", source="eventlog")
+        request = IncidentRequest("the application crashed", now, now, "application", 7)
+
+        hypothesis = rank_candidates([service, symptom], request)[0]
+        self.assertIn("per-user service", hypothesis.next_action)
+        self.assertNotIn("persistence entry", hypothesis.next_action)
+        self.assertEqual(hypothesis.confidence, "Medium")
+
     def test_prior_symptoms_are_visible_as_counter_evidence(self) -> None:
         now = utc_now()
         events = [
