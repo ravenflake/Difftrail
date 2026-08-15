@@ -181,6 +181,10 @@ export function recordFeedback(
   });
 }
 
+export function deleteInvestigation(incidentId: string): Promise<{ deleted: boolean; incident_id: string }> {
+  return request(`/incidents/${encodeURIComponent(incidentId)}`, { method: "DELETE" });
+}
+
 export function exportBundle(options: { days?: number; incident_id?: string }): Promise<BundleResponse> {
   return request<BundleResponse>("/export-bundle", {
     method: "POST",

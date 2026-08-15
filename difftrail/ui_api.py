@@ -138,6 +138,7 @@ def _public_hypothesis(hypothesis: dict[str, Any]) -> dict[str, Any]:
     counter_evidence = raw.get("counter_evidence") if isinstance(raw.get("counter_evidence"), list) else []
     result: dict[str, Any] = {
         "score": score,
+        "tie_count": _safe_count(raw.get("tie_count", 1)),
         "confidence": confidence if confidence in VALID_CONFIDENCES else "Low",
         "next_action": redact_public_text(str(raw.get("next_action", ""))),
         "safe_diagnostic": {
@@ -387,7 +388,7 @@ class UiRequestHandler(BaseHTTPRequestHandler):
         if origin in ALLOWED_ORIGINS:
             self.send_header("Access-Control-Allow-Origin", origin)
             self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Difftrail-Token")
-            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
             self.send_header("Vary", "Origin")
         self.end_headers()
         self.wfile.write(encoded)
@@ -494,7 +495,7 @@ class UiRequestHandler(BaseHTTPRequestHandler):
         if origin in ALLOWED_ORIGINS:
             self.send_header("Access-Control-Allow-Origin", origin)
             self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Difftrail-Token")
-            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
             self.send_header("Vary", "Origin")
         self.end_headers()
 
@@ -636,6 +637,20 @@ class UiRequestHandler(BaseHTTPRequestHandler):
             self._send(200, payload)
         except (RuntimeError, ValueError, OSError) as exc:
             self._error(400, str(exc))
+
+    def do_DELETE(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        if not self._request_allowed():
+            return
+        path = urlparse(self.path).path.rstrip("/") or "/"
+        if not path.startswith("/api/incidents/") or "/feedback" in path:
+            self._error(404, "Difftrail UI endpoint not found")
+            return
+        incident_id = path.rsplit("/", 1)[-1]
+        deleted = self._with_database(lambda db: db.delete_incident(incident_id))
+        if not deleted:
+            self._error(404, "Investigation not found")
+            return
+        self._send(200, {"deleted": True, "incident_id": redact_public_text(incident_id)})
 
 
 class UiServer(ThreadingHTTPServer):

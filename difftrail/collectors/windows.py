@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import platform
+import re
+from collections import Counter
 from datetime import datetime, timedelta
 from typing import Any, Callable
 
@@ -9,6 +11,9 @@ from ..correlation import infer_subsystem
 from ..models import Event, SnapshotItem, iso_datetime, parse_datetime
 from ..privacy import extract_safe_application_name, redact_text
 from .powershell import PowerShellError, run_json
+
+
+_PER_USER_SERVICE_SUFFIX = re.compile(r"^(?P<base>.+)_[0-9a-f]{4,}$", re.IGNORECASE)
 
 
 def _text(row: dict[str, Any], key: str, default: str = "") -> str:
@@ -19,6 +24,19 @@ def _text(row: dict[str, Any], key: str, default: str = "") -> str:
     # bytes. Treat them consistently so a provider representation glitch does
     # not look like a service or application change on the next scan.
     return str(value).replace("\x00", "").replace("\ufffd", "").replace("\ufffe", "").replace("\uffff", "")
+
+
+def _service_text(row: dict[str, Any], key: str, default: str = "") -> str:
+    """Normalize provider representation noise without hiding configuration."""
+
+    return _text(row, key, default).strip()
+
+
+def _service_key(name: str) -> str:
+    """Use the stable family identity for Windows per-user service instances."""
+
+    match = _PER_USER_SERVICE_SUFFIX.fullmatch(name)
+    return match.group("base") if match else name
 
 
 def _subsystem_for_device(row: dict[str, Any]) -> str:
@@ -252,28 +270,34 @@ $rows | ConvertTo-Json -Depth 5 -Compress
         ]
 
     def _services(self, rows: list[dict[str, Any]]) -> list[SnapshotItem]:
-        return [
-            SnapshotItem(
+        named_rows = [(row, _service_text(row, "Name")) for row in rows if _service_text(row, "Name")]
+        family_counts = Counter(_service_key(name).casefold() for _, name in named_rows)
+        items: list[SnapshotItem] = []
+        for row, name in named_rows:
+            logical_key = _service_key(name)
+            # Multiple concurrently active users can have instances from the
+            # same family. Preserve their distinct identities rather than
+            # allowing a dictionary snapshot to overwrite evidence.
+            key = logical_key if family_counts[logical_key.casefold()] == 1 else name
+            items.append(SnapshotItem(
                 source="services",
-                key=_text(row, "Name"),
+                key=key,
                 subsystem=_subsystem_for_service(row),
-                display_name=f"Service {_text(row, 'DisplayName', _text(row, 'Name'))}",
+                display_name=f"Service {_service_text(row, 'DisplayName', name)}",
                 payload={
-                    "name": _text(row, "Name"),
-                    "display_name": _text(row, "DisplayName"),
-                    "state": _text(row, "State"),
-                    "start_mode": _text(row, "StartMode"),
-                    "start_name": _text(row, "StartName"),
-                    "path": _text(row, "PathName"),
+                    "name": name,
+                    "display_name": _service_text(row, "DisplayName"),
+                    "state": _service_text(row, "State"),
+                    "start_mode": _service_text(row, "StartMode"),
+                    "start_name": _service_text(row, "StartName"),
+                    "path": _service_text(row, "PathName").rstrip("?").rstrip(),
                 },
                 severity="medium",
-                entity=_text(row, "Name"),
+                entity=name,
                 action_on_add="added",
                 action_on_update="updated",
-            )
-            for row in rows
-            if _text(row, "Name")
-        ]
+            ))
+        return items
 
     def _tasks(self, rows: list[dict[str, Any]]) -> list[SnapshotItem]:
         return [

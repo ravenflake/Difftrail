@@ -8,11 +8,12 @@ interface Props {
   incident: Incident;
   onFeedback: (incidentId: string, outcome: "correct" | "incorrect" | "unknown", eventId?: string) => Promise<void>;
   onExport: (incidentId: string) => Promise<void>;
+  onDelete: (incidentId: string) => Promise<void>;
   exportBusy: boolean;
   exportError: string | null;
 }
 
-export function InvestigationDetail({ incident, onFeedback, onExport, exportBusy, exportError }: Props) {
+export function InvestigationDetail({ incident, onFeedback, onExport, onDelete, exportBusy, exportError }: Props) {
   const [feedbackBusy, setFeedbackBusy] = useState(false);
   const [feedbackError, setFeedbackError] = useState<string | null>(null);
   const lead = incident.results[0];
@@ -27,7 +28,7 @@ export function InvestigationDetail({ incident, onFeedback, onExport, exportBusy
     <div className="incident-detail-page">
       <section className="incident-heading">
         <div><span className="eyebrow">Investigation</span><h2>{incident.description}</h2><div className="heading-meta"><span>{subsystemLabel(incident.subsystem)}</span><span>·</span><span>Started {formatDateTime(incident.onset_start)}</span><span>·</span><span>{incident.lookback_days}-day lookback</span></div></div>
-        <button type="button" className="button button-secondary button-small" onClick={() => void onExport(incident.id)} disabled={exportBusy}>{exportBusy ? "Preparing…" : "Export investigation"}</button>
+        <div><button type="button" className="button button-secondary button-small" onClick={() => void onExport(incident.id)} disabled={exportBusy}>{exportBusy ? "Preparing…" : "Export investigation"}</button><button type="button" className="quiet-link" onClick={() => { if (window.confirm("Delete this saved investigation? Journal evidence will be kept.")) void onDelete(incident.id); }}>Delete</button></div>
       </section>
       <AssessmentBanner state={assessment} reasons={incident.assessment_reasons || []} />
       {exportError && <div className="form-error" role="alert"><Icon name="alert" size={14} /> {exportError}</div>}

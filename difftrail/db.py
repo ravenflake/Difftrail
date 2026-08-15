@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 import threading
 import uuid
@@ -35,7 +36,7 @@ _DATABASE_INITIALIZATION_LOCK = threading.RLock()
 IGNORED_SNAPSHOT_FIELDS: dict[str, frozenset[str]] = {
     "apps": frozenset({"name", "publisher"}),
     "drivers": frozenset({"device_name", "manufacturer"}),
-    "services": frozenset({"display_name", "state"}),
+    "services": frozenset({"name", "display_name", "state"}),
     "tasks": frozenset({"state"}),
     "devices": frozenset({"name", "manufacturer", "status"}),
 }
@@ -45,6 +46,8 @@ IGNORED_SNAPSHOT_FIELDS: dict[str, frozenset[str]] = {
 # service configuration changed. Keep the raw values in event details, but do
 # not turn this known oscillation into a journal event.
 TRIGGER_START_SERVICES = frozenset({"bits"})
+PER_USER_SERVICE_SUFFIX = re.compile(r"^(?P<base>.+)_(?P<suffix>[0-9a-f]{4,})$", re.IGNORECASE)
+MIN_PER_USER_SERVICE_REFRESH_PAIRS = 4
 
 
 REMOVED_SUBSYSTEMS = {
@@ -238,7 +241,72 @@ def _comparison_value(source: str, key: str, value: Any) -> Any:
     # contain a literal question mark, and version/date padding is not data.
     if (source == "apps" and key in {"install_date", "version"}) or (source == "services" and key == "path"):
         normalized = normalized.rstrip("?").rstrip()
+    if source == "services":
+        normalized = normalized.strip()
     return normalized
+
+
+def _per_user_service_base(name: str) -> tuple[str, bool]:
+    match = PER_USER_SERVICE_SUFFIX.fullmatch(name.strip())
+    return ((match.group("base") if match else name.strip()).casefold(), bool(match))
+
+
+def _per_user_service_refresh_event(
+    previous: dict[str, dict[str, Any]],
+    current: dict[str, SnapshotItem],
+    occurred_at: datetime,
+) -> Event | None:
+    """Describe a bulk stable-key instance rotation without per-row churn."""
+
+    evidence: list[dict[str, Any]] = []
+    for key in sorted(current):
+        previous_key = key if key in previous else next(
+            (
+                candidate
+                for candidate in previous
+                if _per_user_service_base(candidate)[0] == key.casefold()
+            ),
+            None,
+        )
+        if previous_key is None:
+            continue
+        old_payload = previous[previous_key]
+        new_payload = redact_value(current[key].payload)
+        old_name = str(old_payload.get("name", key)).strip()
+        new_name = str(new_payload.get("name", key)).strip()
+        old_base, old_suffixed = _per_user_service_base(old_name)
+        new_base, new_suffixed = _per_user_service_base(new_name)
+        if old_name.casefold() == new_name.casefold() or old_base != new_base:
+            continue
+        if not (old_suffixed or new_suffixed):
+            continue
+        evidence.append(
+            {
+                "service_family": key,
+                "removed": old_name,
+                "added": new_name,
+                "before": old_payload,
+                "after": new_payload,
+            }
+        )
+    if len(evidence) < MIN_PER_USER_SERVICE_REFRESH_PAIRS:
+        return None
+    aggregate = Event(
+        occurred_at=occurred_at,
+        kind="change",
+        subsystem="startup",
+        action="refreshed",
+        title=f"Windows per-user services refreshed ({len(evidence)} instances)",
+        entity="Windows per-user services",
+        severity="info",
+        source="services",
+        details={
+            "refresh_kind": "per_user_service_instances",
+            "instance_count": len(evidence),
+            "evidence": evidence,
+        },
+    )
+    return aggregate
 
 
 def _comparison_payload(source: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1115,7 +1183,9 @@ class Database:
             return generated
 
         for key, item in current.items():
-            previous_key = key if key in previous else self._legacy_app_key(key, previous, matched_previous_keys, source)
+            previous_key = key if key in previous else self._legacy_snapshot_key(
+                key, previous, matched_previous_keys, source
+            )
             old_payload = previous.get(previous_key) if previous_key is not None else None
             safe_payload = redact_value(item.payload)
             comparison_payload = _comparison_payload(source, item.payload)
@@ -1172,6 +1242,11 @@ class Database:
                     )
                 )
 
+        if source == "services":
+            refresh = _per_user_service_refresh_event(previous, current, now)
+            if refresh is not None:
+                generated.append(refresh)
+
         # State replacement, its source marker, and the generated evidence
         # are one durable unit. If the event insert fails (for example, from
         # disk pressure), a retry must still see the previous state and emit
@@ -1186,21 +1261,29 @@ class Database:
         return generated
 
     @staticmethod
-    def _legacy_app_key(
+    def _legacy_snapshot_key(
         current_key: str,
         previous: dict[str, dict[str, Any]],
         matched_previous_keys: set[str],
         source: str,
     ) -> str | None:
-        """Match app state written before app keys were made registry-stable."""
+        """Match state written before app/service keys were made stable."""
 
-        if source != "apps":
+        if source == "apps":
+            candidates = [
+                key
+                for key in previous
+                if key not in matched_previous_keys and key.split("|", 1)[0] == current_key
+            ]
+        elif source == "services":
+            candidates = [
+                key
+                for key in previous
+                if key not in matched_previous_keys
+                and _per_user_service_base(key)[0] == current_key.casefold()
+            ]
+        else:
             return None
-        candidates = [
-            key
-            for key in previous
-            if key not in matched_previous_keys and key.split("|", 1)[0] == current_key
-        ]
         return candidates[0] if len(candidates) == 1 else None
 
     def _replace_state(self, source: str, current: dict[str, SnapshotItem], now: datetime) -> None:
@@ -1484,6 +1567,21 @@ class Database:
             raise ValueError(f"Unknown incident: {incident_id}")
         if commit:
             self.connection.commit()
+
+    def delete_incident(self, incident_id: str) -> bool:
+        """Delete one saved investigation without deleting its evidence events."""
+
+        with self.connection:
+            self.connection.execute(
+                "UPDATE automation_actions SET incident_id = NULL WHERE incident_id = ?",
+                (incident_id,),
+            )
+            self.connection.execute(
+                "UPDATE automation_notifications SET incident_id = NULL WHERE incident_id = ?",
+                (incident_id,),
+            )
+            cursor = self.connection.execute("DELETE FROM incidents WHERE id = ?", (incident_id,))
+        return cursor.rowcount == 1
 
     def record_incident_feedback(
         self,

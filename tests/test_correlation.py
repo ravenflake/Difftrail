@@ -6,6 +6,43 @@ from difftrail.models import Event, IncidentRequest, utc_now
 
 
 class CorrelationTests(unittest.TestCase):
+    def test_bulk_per_user_service_refresh_is_excluded_with_an_honest_reason(self) -> None:
+        now = utc_now()
+        refresh = Event(
+            now - timedelta(hours=1), "change", "startup", "refreshed",
+            "Windows per-user services refreshed (12 instances)", source="services",
+            details={"refresh_kind": "per_user_service_instances", "instance_count": 12},
+        )
+        request = IncidentRequest("Startup problem", now, now, "startup", 1)
+
+        hypotheses = rank_candidates([refresh], request)
+        assessment = assess_investigation(request, hypotheses, [refresh])
+
+        self.assertEqual(hypotheses, [])
+        self.assertEqual(assessment.state, "insufficient_evidence")
+        self.assertTrue(any("per-user service refresh" in reason for reason in assessment.reasons))
+
+    def test_broad_equal_score_tie_is_counted_and_downgrades_high_confidence(self) -> None:
+        now = utc_now()
+        changes = [
+            Event(now - timedelta(hours=1), "change", "graphics", "updated", f"Display driver {index}", source="drivers", event_id=f"tie-{index}")
+            for index in range(3)
+        ]
+        symptom = Event(now, "symptom", "graphics", "failure", "Display failure", source="eventlog")
+        request = IncidentRequest("Display failure", now, now, "graphics", 1)
+
+        hypotheses = rank_candidates([*changes, symptom], request)
+
+        self.assertEqual({item.tie_count for item in hypotheses}, {3})
+        self.assertEqual({item.confidence for item in hypotheses}, {"Medium"})
+
+    def test_service_diagnostic_does_not_suggest_configuration_changes(self) -> None:
+        now = utc_now()
+        service = Event(now - timedelta(hours=1), "change", "startup", "added", "Service added", source="services")
+        request = IncidentRequest("Startup problem", now, now, "startup", 1)
+        hypothesis = rank_candidates([service], request)[0]
+        self.assertNotIn("disable", hypothesis.safe_diagnostic["note"].casefold())
+        self.assertIn("do not change", hypothesis.safe_diagnostic["note"].casefold())
     def test_investigation_summary_defaults_to_neutral_assessment(self) -> None:
         now = utc_now()
         request = IncidentRequest("graphics are broken", now, now, "graphics", 7)

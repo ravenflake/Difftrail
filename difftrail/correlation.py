@@ -73,6 +73,7 @@ class Hypothesis:
     counter_evidence: tuple[Evidence, ...]
     next_action: str
     safe_diagnostic: dict[str, str]
+    tie_count: int = 1
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -83,6 +84,7 @@ class Hypothesis:
             "counter_evidence": [item.as_dict() for item in self.counter_evidence],
             "next_action": self.next_action,
             "safe_diagnostic": self.safe_diagnostic,
+            "tie_count": self.tie_count,
         }
 
 
@@ -172,7 +174,11 @@ def _safe_diagnostic(event: Event) -> dict[str, str]:
     if event.source == "tasks":
         return {"label": "Task Scheduler", "target": "taskschd.msc", "note": "Opening this surface does not change system state."}
     if event.source in {"services", "startup"} or event.subsystem == "startup":
-        return {"label": "Services", "target": "services.msc", "note": "Opening this surface does not change system state."}
+        return {
+            "label": "Services",
+            "target": "services.msc",
+            "note": "Review configuration only; do not change a service based on timing alone.",
+        }
     if event.subsystem == "application" or event.source == "apps":
         return {"label": "Installed apps", "target": "ms-settings:appsfeatures", "note": "Opening this surface does not change system state."}
     return {"label": "Event Viewer", "target": "eventvwr.msc", "note": "Opening this surface does not change system state."}
@@ -200,6 +206,7 @@ def rank_candidates(
         for event in all_events
         if event.kind == "change"
         and lookback_start <= ensure_utc(event.occurred_at) <= onset_start
+        and event.details.get("refresh_kind") != "per_user_service_instances"
     ]
     symptoms = [event for event in all_events if event.kind == "symptom"]
     source_counts = Counter(event.source for event in changes)
@@ -307,6 +314,20 @@ def rank_candidates(
         ),
         reverse=False,
     )
+    score_counts = Counter(round(item.score, 12) for item in results)
+    results = [
+        Hypothesis(
+            item.event,
+            item.score,
+            "Medium" if item.confidence == "High" and score_counts[round(item.score, 12)] >= 3 else item.confidence,
+            item.evidence,
+            item.counter_evidence,
+            item.next_action,
+            item.safe_diagnostic,
+            score_counts[round(item.score, 12)],
+        )
+        for item in results
+    ]
     return results[: max(1, min(limit, 50))]
 
 
@@ -343,6 +364,14 @@ def assess_investigation(
         for reason in coverage_reasons
         if str(reason).strip()
     ]
+    bulk_refreshes = [
+        event for event in changes
+        if event.details.get("refresh_kind") == "per_user_service_instances"
+    ]
+    if bulk_refreshes:
+        reasons.append(
+            "A bulk Windows per-user service refresh was excluded from causal ranking because its suffixed instances changed together."
+        )
 
     if not changes:
         reasons.append("No journaled changes occurred during the selected lookback window before onset.")

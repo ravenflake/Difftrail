@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { createInvestigation, exportBundle, loadBootstrap, loadTimeline, markAutomationNotificationsRead, recordFeedback, recordOverhead, runScan, updateAutomationConfig, updateAutomationWatcher, waitForApi } from "./api";
+import { createInvestigation, deleteInvestigation, exportBundle, loadBootstrap, loadTimeline, markAutomationNotificationsRead, recordFeedback, recordOverhead, runScan, updateAutomationConfig, updateAutomationWatcher, waitForApi } from "./api";
 import { makePreviewBootstrap } from "./mock";
 import type { AutomationConfig, Bootstrap, Incident, TimelineFilters, View } from "./types";
 import { AppShell } from "./components/AppShell";
@@ -165,6 +165,17 @@ export default function App() {
     setData((current) => current ? { ...current, incidents: current.incidents.map((incident) => incident.id === incidentId ? response.incident : incident) } : current);
   }, [connection]);
 
+  const handleDeleteInvestigation = useCallback(async (incidentId: string) => {
+    if (connection === "preview") throw new Error("Investigations can only be deleted from the local journal.");
+    await deleteInvestigation(incidentId);
+    setData((current) => current ? {
+      ...current,
+      incidents: current.incidents.filter((incident) => incident.id !== incidentId),
+      status: { ...current.status, incidents: Math.max(0, current.status.incidents - 1) },
+    } : current);
+    setSelectedIncidentId(null);
+  }, [connection]);
+
   const handleAutomationConfig = useCallback(async (config: AutomationConfig) => {
     if (connection === "preview") {
       setAutomationError("Connect the local journal to save automation settings.");
@@ -234,7 +245,7 @@ export default function App() {
       {view === "home" && <HomeView data={data} onNavigate={navigate} onOpenIncident={(incident) => { setSelectedIncidentId(incident.id); navigate("incidents"); }} />}
       {view === "timeline" && <TimelineView events={data.events} onLoad={handleLoadTimeline} />}
       {view === "investigate" && <InvestigateView busy={false} onInvestigate={handleInvestigate} />}
-      {view === "incidents" && <IncidentsView incidents={data.incidents} selected={selectedIncident} onSelect={(incident) => setSelectedIncidentId(incident.id)} onNavigate={() => navigate("investigate")} onFeedback={handleFeedback} onExport={handleExportBundle} exportBusy={exportBusy} exportError={exportError} />}
+      {view === "incidents" && <IncidentsView incidents={data.incidents} selected={selectedIncident} onSelect={(incident) => setSelectedIncidentId(incident.id)} onNavigate={() => navigate("investigate")} onFeedback={handleFeedback} onExport={handleExportBundle} onDelete={handleDeleteInvestigation} exportBusy={exportBusy} exportError={exportError} />}
       {view === "health" && <HealthView data={data} onRecordOverhead={handleRecordOverhead} recording={recordingOverhead} error={overheadError} onExport={() => handleExportBundle()} exportBusy={exportBusy} exportError={exportError} />}
       {view === "automation" && <AutomationView automation={data.automation} connection={connection} busy={automationBusy} error={automationError} notice={automationNotice} onConfigSave={handleAutomationConfig} onWatcherAction={handleAutomationWatcher} onMarkRead={handleMarkAutomationRead} onNavigate={navigate} />}
     </AppShell>

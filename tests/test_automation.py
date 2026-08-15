@@ -148,6 +148,39 @@ class AutomationTests(unittest.TestCase):
             self.assertEqual(database.unread_automation_notification_count(), 1)
             self.assertEqual(database.list_automation_notifications()[0]["kind"], "change")
 
+    def test_hardware_refresh_burst_retains_events_without_notification_storm(self) -> None:
+        with Database(":memory:") as database:
+            events = [
+                Event(utc_now(), "change", "driver", "updated", f"Driver {index} updated", severity="high", source="drivers", event_id=f"driver-{index}")
+                for index in range(12)
+            ]
+            database.save_events(events)
+            stored = database.list_events(limit=20)
+
+            result = process_scan_events(database, SimpleNamespace(scan_id="hardware-wave", errors=()), stored)
+
+            self.assertEqual(result, {"notifications": 0, "drafts": 0})
+            self.assertEqual(database.count_events("change"), 12)
+            self.assertEqual(database.unread_automation_notification_count(), 0)
+
+    def test_automatic_crash_draft_includes_safe_entity_identity(self) -> None:
+        with Database(":memory:") as database:
+            event = Event(utc_now(), "symptom", "application", "crash", "Application crash detected", entity="Example.exe", severity="high", source="eventlog", event_id="named-crash")
+            process_scan_events(database, SimpleNamespace(scan_id="named", errors=()), [event])
+            self.assertIn("Example.exe", database.recent_incidents()[0]["description"])
+
+    def test_legacy_null_draft_link_is_repaired_atomically(self) -> None:
+        with Database(":memory:") as database:
+            event = Event(utc_now(), "symptom", "application", "crash", "Application crash", entity="Example.exe", severity="high", source="eventlog", event_id="legacy-null-link")
+            database.record_automation_action(event.event_id, "draft_investigation")
+
+            result = process_scan_events(database, SimpleNamespace(scan_id="repair", errors=()), [event])
+
+            self.assertEqual(result["drafts"], 1)
+            incident_id = database.automation_action_incident_id(event.event_id, "draft_investigation")
+            self.assertIsNotNone(incident_id)
+            self.assertIsNotNone(database.get_incident(incident_id))
+
     def test_failed_notification_does_not_commit_its_idempotency_marker(self) -> None:
         with Database(":memory:") as database:
             event = Event(

@@ -622,7 +622,10 @@ def _queue_event_notification(
 def _create_investigation_draft(database: Database, event: Event) -> tuple[str | None, bool]:
     if not event.event_id:
         return None, False
-    description = f"Automatic draft: {event.title}"
+    identity = redact_public_text(event.entity).strip()
+    description = f"Automatic draft: {event.title}" + (
+        f" · {identity}" if identity and identity not in event.title else ""
+    )
     subsystem = event.subsystem if event.subsystem in KNOWN_SUBSYSTEMS else "general"
     request = IncidentRequest(
         description=description,
@@ -634,8 +637,13 @@ def _create_investigation_draft(database: Database, event: Event) -> tuple[str |
     # Keep the idempotency marker together with both incident writes. If
     # ranking/persistence fails, a later watcher pass can create the draft.
     with database.connection:
-        if not database.record_automation_action(event.event_id, "draft_investigation", commit=False):
-            return database.automation_action_incident_id(event.event_id, "draft_investigation"), False
+        marked = database.record_automation_action(event.event_id, "draft_investigation", commit=False)
+        if not marked:
+            existing_id = database.automation_action_incident_id(event.event_id, "draft_investigation")
+            if existing_id:
+                return existing_id, False
+            # Older builds could commit the idempotency row before linking its
+            # incident. Rebuild and link that incomplete action atomically.
         run = run_investigation(database, request, status="draft", commit=False)
         database.link_automation_action_to_incident(
             event.event_id, "draft_investigation", run.incident.id, commit=False
@@ -654,7 +662,12 @@ def process_scan_events(
     notifications = 0
     drafts = 0
     draft_failed = False
-    for event in events:
+    scan_events = list(events)
+    hardware_burst = sum(
+        event.kind == "change" and event.source in {"drivers", "devices"}
+        for event in scan_events
+    ) >= 8
+    for event in scan_events:
         if not event.event_id:
             continue
         crash_signal = _is_crash_signal(event)
@@ -682,7 +695,13 @@ def process_scan_events(
                 incident_id=incident_id,
             ):
                 notifications += 1
-        elif event.kind == "change" and event.severity in {"high", "critical"} and config["notify_on_changes"]:
+        elif (
+            event.kind == "change"
+            and event.severity in {"high", "critical"}
+            and config["notify_on_changes"]
+            and not (hardware_burst and event.source in {"drivers", "devices"})
+            and event.details.get("refresh_kind") != "per_user_service_instances"
+        ):
             if _queue_event_notification(
                 database,
                 event,

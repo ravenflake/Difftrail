@@ -393,3 +393,11 @@ class UiHttpTests(unittest.TestCase):
         )
         self.assertEqual(status, 400)
         self.assertEqual(payload["error"], "event_id must be a string")
+
+        status, deleted = self.request("DELETE", f"/api/incidents/{incident_id}")
+        self.assertEqual(status, 200)
+        self.assertTrue(deleted["deleted"])
+        status, _ = self.request("GET", f"/api/incidents/{incident_id}")
+        self.assertEqual(status, 404)
+        status, _ = self.request("DELETE", f"/api/incidents/{incident_id}")
+        self.assertEqual(status, 404)

@@ -9,6 +9,20 @@ from difftrail.privacy import extract_safe_application_name
 
 
 class CollectorTests(unittest.TestCase):
+    def test_per_user_service_suffix_uses_stable_logical_key(self) -> None:
+        collector = WindowsCollector()
+        first = collector._services([{"Name": "WpnUserService_a1234", "DisplayName": "Push notifications"}])[0]
+        second = collector._services([{"Name": "WpnUserService_d7351", "DisplayName": "Push notifications"}])[0]
+        self.assertEqual(first.key, "WpnUserService")
+        self.assertEqual(second.key, first.key)
+        self.assertNotEqual(first.payload["name"], second.payload["name"])
+
+    def test_concurrent_per_user_instances_keep_distinct_keys(self) -> None:
+        items = WindowsCollector()._services([
+            {"Name": "WpnUserService_a1234"},
+            {"Name": "WpnUserService_d7351"},
+        ])
+        self.assertEqual({item.key for item in items}, {"WpnUserService_a1234", "WpnUserService_d7351"})
     def test_powershell_collection_is_windowless_on_windows(self) -> None:
         completed = subprocess.CompletedProcess(["powershell.exe"], 0, "[]", "")
         windowless_flag = 0x08000000
