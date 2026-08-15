@@ -58,6 +58,9 @@ class InvestigationTests(unittest.TestCase):
             ["recent-change", "recent-symptom"],
         )
         self.assertEqual(run.hypotheses[0].event.event_id, "recent-change")
+        self.assertFalse(run.assessment.coverage["known"])
+        self.assertEqual(run.hypotheses[0].confidence, "Low")
+        self.assertEqual(run.assessment.state, "insufficient_evidence")
 
 
 if __name__ == "__main__":

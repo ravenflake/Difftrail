@@ -294,3 +294,36 @@ class BundleTests(unittest.TestCase):
             bundle = export_bundle(database, incident_id=incident.id, as_of=exported_at)
             self.assertEqual(bundle["exported_at"], exported_at.isoformat(timespec="seconds").replace("+00:00", "Z"))
             self.assertEqual(bundle["period"]["end"], now.isoformat(timespec="seconds").replace("+00:00", "Z"))
+
+    def test_incident_bundle_preserves_candidate_tie_count(self) -> None:
+        with Database(":memory:") as database:
+            now = utc_now()
+            incident = database.create_incident(
+                IncidentRequest("graphics failed", now - timedelta(hours=2), now, "graphics", 7)
+            )
+            database.update_incident_results(
+                incident.id,
+                [
+                    {
+                        "score": 0.8,
+                        "tie_count": 3,
+                        "confidence": "Medium",
+                        "event": Event(
+                            now - timedelta(hours=1),
+                            "change",
+                            "graphics",
+                            "updated",
+                            "Display driver updated",
+                            source="drivers",
+                        ).as_dict(),
+                        "evidence": [],
+                        "counter_evidence": [],
+                        "next_action": "Review the evidence.",
+                        "safe_diagnostic": {},
+                    }
+                ],
+            )
+
+            bundle = export_bundle(database, incident_id=incident.id, as_of=now)
+
+            self.assertEqual(bundle["investigations"][0]["results"][0]["tie_count"], 3)

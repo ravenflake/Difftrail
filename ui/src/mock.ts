@@ -45,6 +45,7 @@ const previewIncident: Incident = {
     {
       event: graphicsChange,
       score: 0.86,
+      tie_count: 1,
       confidence: "High",
       evidence: [
         { signal: "temporal proximity", strength: "strong", explanation: "This change occurred 13.0 hours before the selected onset.", event_id: graphicsChange.id },

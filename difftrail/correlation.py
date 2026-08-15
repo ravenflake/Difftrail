@@ -179,7 +179,11 @@ def _safe_diagnostic(event: Event) -> dict[str, str]:
     if event.source == "tasks":
         return {"label": "Task Scheduler", "target": "taskschd.msc", "note": "Opening this surface does not change system state."}
     if event.source in {"services", "startup"} or event.subsystem == "startup":
-        return {"label": "Services", "target": "services.msc", "note": "Opening this surface does not change system state."}
+        return {
+            "label": "Services",
+            "target": "services.msc",
+            "note": "Review configuration only; do not change a service based on timing alone.",
+        }
     if event.subsystem == "application" or event.source == "apps":
         return {"label": "Installed apps", "target": "ms-settings:appsfeatures", "note": "Opening this surface does not change system state."}
     return {"label": "Event Viewer", "target": "eventvwr.msc", "note": "Opening this surface does not change system state."}
@@ -192,19 +196,6 @@ def _is_per_user_service_event(event: Event) -> bool:
         is_per_user_service_payload(event.details.get(label))
         for label in ("before", "after")
     )
-
-
-def _per_user_service_batch_timestamps(events: Iterable[Event]) -> dict[Any, int]:
-    counts: Counter[Any] = Counter(
-        ensure_utc(event.occurred_at)
-        for event in events
-        if _is_per_user_service_event(event)
-    )
-    return {
-        timestamp: count
-        for timestamp, count in counts.items()
-        if count >= 3
-    }
 
 
 def rank_candidates(
@@ -229,15 +220,7 @@ def rank_candidates(
         for event in all_events
         if event.kind == "change"
         and lookback_start <= ensure_utc(event.occurred_at) <= onset_start
-    ]
-    per_user_batches = _per_user_service_batch_timestamps(changes)
-    changes = [
-        event
-        for event in changes
-        if not (
-            event.source == "services"
-            and ensure_utc(event.occurred_at) in per_user_batches
-        )
+        and event.details.get("refresh_kind") != "per_user_service_instances"
     ]
     symptoms = [event for event in all_events if event.kind == "symptom"]
     source_counts = Counter(event.source for event in changes)
@@ -397,8 +380,11 @@ def assess_investigation(
         for reason in coverage_reasons
         if str(reason).strip()
     ]
-    per_user_batches = _per_user_service_batch_timestamps(changes)
-    if per_user_batches:
+    bulk_refreshes = [
+        event for event in changes
+        if event.details.get("refresh_kind") == "per_user_service_instances"
+    ]
+    if bulk_refreshes:
         reasons.append(
             "A bulk Windows per-user service refresh was excluded from causal ranking because its suffixed instances changed together."
         )
@@ -407,7 +393,7 @@ def assess_investigation(
         reasons.append("No journaled changes occurred during the selected lookback window before onset.")
         state = "limited_coverage" if coverage_limited else "no_recent_changes"
     elif not ranked:
-        if not per_user_batches:
+        if not bulk_refreshes:
             reasons.append("Changes were recorded, but none matched the reported subsystem closely enough to rank.")
         state = "limited_coverage" if coverage_limited else "insufficient_evidence"
     else:
@@ -420,7 +406,7 @@ def assess_investigation(
             reasons.append(
                 f"The strongest candidates are tied at the same score ({lead.tie_count} candidates), so no single change is uniquely supported."
             )
-        weak = lead.confidence == "Low" or bool(lead.counter_evidence) or lead.tie_count >= 3 or bool(per_user_batches)
+        weak = lead.confidence == "Low" or bool(lead.counter_evidence) or lead.tie_count >= 3
         state = "limited_coverage" if coverage_limited else "insufficient_evidence" if weak else "candidate_found"
 
     # Preserve deterministic order while avoiding duplicate explanations.

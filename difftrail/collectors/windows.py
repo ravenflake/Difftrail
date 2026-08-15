@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import platform
+from collections import Counter
 from datetime import datetime, timedelta
 from typing import Any, Callable
 
@@ -20,6 +21,12 @@ def _text(row: dict[str, Any], key: str, default: str = "") -> str:
     # bytes. Treat them consistently so a provider representation glitch does
     # not look like a service or application change on the next scan.
     return str(value).replace("\x00", "").replace("\ufffd", "").replace("\ufffe", "").replace("\uffff", "")
+
+
+def _service_text(row: dict[str, Any], key: str, default: str = "") -> str:
+    """Normalize provider representation noise without hiding configuration."""
+
+    return _text(row, key, default).strip()
 
 
 def _subsystem_for_device(row: dict[str, Any]) -> str:
@@ -254,33 +261,51 @@ $rows | ConvertTo-Json -Depth 5 -Compress
         ]
 
     def _services(self, rows: list[dict[str, Any]]) -> list[SnapshotItem]:
-        items: list[SnapshotItem] = []
+        named_rows: list[tuple[dict[str, Any], str, str, str, tuple[str, str] | None]] = []
         for row in rows:
-            name = _text(row, "Name")
+            name = _service_text(row, "Name")
             if not name:
                 continue
-            display_name = _text(row, "DisplayName", name)
-            path = _text(row, "PathName")
-            service_type = _text(row, "ServiceType")
+            path = _service_text(row, "PathName").rstrip("?").rstrip()
+            service_type = _service_text(row, "ServiceType")
             identity = per_user_service_identity(name, path=path, service_type=service_type)
+            named_rows.append((row, name, path, service_type, identity))
+
+        family_counts = Counter(
+            identity[0].casefold()
+            for _, _, _, _, identity in named_rows
+            if identity is not None
+        )
+        items: list[SnapshotItem] = []
+        for row, name, path, service_type, identity in named_rows:
             base_name = identity[0] if identity else name
-            display_base_name = per_user_service_identity(
-                display_name,
-                path=path,
-                service_type=service_type,
+            # Multiple concurrently active users can have instances from the
+            # same family. Preserve their distinct identities rather than
+            # allowing a dictionary snapshot to overwrite evidence.
+            key = (
+                base_name
+                if identity is not None and family_counts[base_name.casefold()] == 1
+                else name
             )
-            if display_base_name:
-                display_name = display_base_name[0]
-            payload = {
+            display_name = _service_text(row, "DisplayName", name)
+            if identity is not None:
+                display_identity = per_user_service_identity(
+                    display_name,
+                    path=path,
+                    service_type=service_type,
+                )
+                if display_identity is not None:
+                    display_name = display_identity[0]
+            payload: dict[str, Any] = {
                 "name": name,
-                "display_name": _text(row, "DisplayName"),
-                "state": _text(row, "State"),
-                "start_mode": _text(row, "StartMode"),
-                "start_name": _text(row, "StartName"),
+                "display_name": _service_text(row, "DisplayName"),
+                "state": _service_text(row, "State"),
+                "start_mode": _service_text(row, "StartMode"),
+                "start_name": _service_text(row, "StartName"),
                 "path": path,
                 "service_type": service_type,
             }
-            if identity:
+            if identity is not None:
                 payload.update(
                     {
                         "per_user_service": True,
@@ -288,22 +313,17 @@ $rows | ConvertTo-Json -Depth 5 -Compress
                         "service_instance_suffix": identity[1],
                     }
                 )
-            items.append(
-                SnapshotItem(
-                    source="services",
-                    # Per-user service suffixes identify a user session, not a
-                    # new logical service. Keep the stable base as the state key
-                    # so logon/session refreshes remain quiet.
-                    key=base_name,
-                    subsystem=_subsystem_for_service(row),
-                    display_name=f"Service {display_name}",
-                    payload=payload,
-                    severity="low" if identity else "medium",
-                    entity=base_name,
-                    action_on_add="added",
-                    action_on_update="updated",
-                )
-            )
+            items.append(SnapshotItem(
+                source="services",
+                key=key,
+                subsystem=_subsystem_for_service(row),
+                display_name=f"Service {display_name}",
+                payload=payload,
+                severity="low" if identity is not None else "medium",
+                entity=base_name,
+                action_on_add="added",
+                action_on_update="updated",
+            ))
         return items
 
     def _tasks(self, rows: list[dict[str, Any]]) -> list[SnapshotItem]:

@@ -40,8 +40,8 @@ export interface Evidence {
 export interface Hypothesis {
   event: EventRecord;
   score: number;
+  tie_count: number;
   confidence: Confidence;
-  tie_count?: number;
   evidence: Evidence[];
   counter_evidence: Evidence[];
   next_action: string;

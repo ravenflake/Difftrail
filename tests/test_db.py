@@ -663,6 +663,234 @@ class DatabaseTests(unittest.TestCase):
             )
             self.assertEqual(database.apply_snapshot("services", [stable], occurred_at=now + timedelta(minutes=1)), [])
 
+    def test_field_service_burst_is_quiet_when_meaningful_state_is_identical(self) -> None:
+        with Database(":memory:") as database:
+            now = utc_now()
+            baseline = [
+                SnapshotItem(
+                    "services", f"service-{index}", "startup", f"Service {index}",
+                    {"name": f"service-{index}", "display_name": f"Service {index}", "state": "Stopped", "start_mode": "Manual", "start_name": "LocalSystem", "path": rf"C:\\Windows\\service{index}.exe"},
+                )
+                for index in range(24)
+            ]
+            database.apply_snapshot("services", baseline, occurred_at=now)
+            observed_again = [
+                SnapshotItem(
+                    item.source,
+                    item.key,
+                    item.subsystem,
+                    item.display_name,
+                    {**item.payload, "start_name": f" {item.payload['start_name']} ", "path": f"{item.payload['path']}???   "},
+                )
+                for item in baseline
+            ]
+
+            self.assertEqual(database.apply_snapshot("services", observed_again, occurred_at=now + timedelta(minutes=1)), [])
+            self.assertEqual(database.count_events("change"), 0)
+
+            changed = list(observed_again)
+            changed[0] = SnapshotItem(
+                "services", changed[0].key, "startup", changed[0].display_name,
+                {**changed[0].payload, "start_mode": "Disabled"},
+            )
+            events = database.apply_snapshot("services", changed, occurred_at=now + timedelta(minutes=2))
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0].details["before"]["start_mode"], "Manual")
+            self.assertEqual(events[0].details["after"]["start_mode"], "Disabled")
+
+    def test_bulk_per_user_service_suffix_rotation_becomes_one_evidence_event(self) -> None:
+        with Database(":memory:") as database:
+            now = utc_now()
+            families = ["cbdhsvc", "WpnUserService", "UserDataSvc", "UnistoreSvc"]
+            old = [
+                SnapshotItem(
+                    "services",
+                    base,
+                    "startup",
+                    f"Service {base}",
+                    {
+                        "name": f"{base}_a1234",
+                        "start_mode": "Manual",
+                        "path": "svchost.exe",
+                        "service_type": "Share Process",
+                        "per_user_service": True,
+                        "service_base_name": base,
+                        "service_instance_suffix": "a1234",
+                    },
+                )
+                for base in families
+            ]
+            new = [
+                SnapshotItem(
+                    "services",
+                    base,
+                    "startup",
+                    f"Service {base}",
+                    {
+                        **item.payload,
+                        "name": f"{base}_d7351",
+                        "service_instance_suffix": "d7351",
+                    },
+                )
+                for base, item in zip(families, old)
+            ]
+            database.apply_snapshot("services", old, occurred_at=now)
+            events = database.apply_snapshot("services", new, occurred_at=now + timedelta(minutes=1))
+
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0].action, "refreshed")
+            self.assertEqual(events[0].details["instance_count"], 4)
+            self.assertEqual(len(events[0].details["evidence"]), 4)
+            self.assertEqual(database.count_events("change"), 1)
+
+    def test_concurrent_per_user_service_rotations_preserve_instances_and_config_changes(self) -> None:
+        def instance(suffix: str, start_mode: str = "Manual") -> SnapshotItem:
+            name = f"WpnUserService_{suffix}"
+            return SnapshotItem(
+                "services",
+                name,
+                "startup",
+                "Service WpnUserService",
+                {
+                    "name": name,
+                    "start_mode": start_mode,
+                    "path": "svchost.exe",
+                    "service_type": "Share Process",
+                    "per_user_service": True,
+                    "service_base_name": "WpnUserService",
+                    "service_instance_suffix": suffix,
+                },
+            )
+
+        with Database(":memory:") as database:
+            now = utc_now()
+            database.apply_snapshot(
+                "services",
+                [instance("a1234"), instance("b1234")],
+                occurred_at=now,
+            )
+            self.assertEqual(
+                database.apply_snapshot(
+                    "services",
+                    [instance("c1234"), instance("d1234")],
+                    occurred_at=now + timedelta(minutes=1),
+                ),
+                [],
+            )
+            self.assertEqual(
+                database.connection.execute(
+                    "SELECT COUNT(*) FROM state_items WHERE source = 'services'"
+                ).fetchone()[0],
+                2,
+            )
+
+            changed = database.apply_snapshot(
+                "services",
+                [instance("e1234", "Auto"), instance("f1234")],
+                occurred_at=now + timedelta(minutes=2),
+            )
+            self.assertEqual([event.action for event in changed], ["updated"])
+            self.assertEqual(changed[0].details["after"]["start_mode"], "Auto")
+
+            removed = database.apply_snapshot(
+                "services",
+                [instance("e1234", "Auto")],
+                occurred_at=now + timedelta(minutes=3),
+            )
+            self.assertEqual([event.action for event in removed], ["removed"])
+
+    def test_third_party_hex_suffix_rotation_remains_an_add_and_remove(self) -> None:
+        with Database(":memory:") as database:
+            now = utc_now()
+            old = SnapshotItem(
+                "services",
+                "Example_abcd",
+                "startup",
+                "Service Example",
+                {"name": "Example_abcd", "path": r"C:\Program Files\Example\service.exe"},
+            )
+            new = SnapshotItem(
+                "services",
+                "Example_dead",
+                "startup",
+                "Service Example",
+                {"name": "Example_dead", "path": r"C:\Program Files\Example\service.exe"},
+            )
+            database.apply_snapshot("services", [old], occurred_at=now)
+
+            events = database.apply_snapshot(
+                "services", [new], occurred_at=now + timedelta(minutes=1)
+            )
+
+            self.assertEqual(sorted(event.action for event in events), ["added", "removed"])
+            self.assertFalse(
+                any(event.details.get("refresh_kind") for event in events)
+            )
+
+    def test_single_suffixed_service_install_and_persistent_change_remain_visible(self) -> None:
+        with Database(":memory:") as database:
+            now = utc_now()
+            database.apply_snapshot("services", [], occurred_at=now)
+            installed = SnapshotItem("services", "ExampleSvc_a1234", "startup", "Service Example", {"name": "ExampleSvc_a1234", "start_mode": "Manual"})
+            install_events = database.apply_snapshot("services", [installed], occurred_at=now + timedelta(minutes=1))
+            self.assertEqual([event.action for event in install_events], ["added"])
+            configured = SnapshotItem("services", installed.key, "startup", installed.display_name, {**installed.payload, "start_mode": "Auto"})
+            update_events = database.apply_snapshot("services", [configured], occurred_at=now + timedelta(minutes=2))
+            self.assertEqual([event.action for event in update_events], ["updated"])
+
+    def test_legacy_suffixed_service_key_migrates_quietly_to_logical_key(self) -> None:
+        with Database(":memory:") as database:
+            now = utc_now()
+            old = SnapshotItem(
+                "services",
+                "WpnUserService_a1234",
+                "startup",
+                "Service Push",
+                {
+                    "name": "WpnUserService_a1234",
+                    "start_mode": "Manual",
+                    "path": "svchost.exe",
+                    "service_type": "Share Process",
+                },
+            )
+            database.apply_snapshot("services", [old], occurred_at=now)
+            current = SnapshotItem(
+                "services",
+                "WpnUserService",
+                "startup",
+                "Service Push",
+                {
+                    "name": "WpnUserService_d7351",
+                    "start_mode": "Manual",
+                    "path": "svchost.exe",
+                    "service_type": "Share Process",
+                    "per_user_service": True,
+                    "service_base_name": "WpnUserService",
+                    "service_instance_suffix": "d7351",
+                },
+            )
+
+            self.assertEqual(database.apply_snapshot("services", [current], occurred_at=now + timedelta(minutes=1)), [])
+            row = database.connection.execute("SELECT item_key FROM state_items WHERE source = 'services'").fetchone()
+            self.assertEqual(row["item_key"], "WpnUserService")
+
+    def test_deleting_investigation_preserves_events_and_unlinks_automation(self) -> None:
+        with Database(":memory:") as database:
+            now = utc_now()
+            event = Event(now, "symptom", "application", "crash", "Application crash", event_id="kept-event")
+            database.save_events([event])
+            request = IncidentRequest("Example crash", now, now, "application", 1)
+            incident = database.create_incident(request)
+            database.record_automation_action("kept-event", "draft_investigation", incident_id=incident.id)
+            database.create_automation_notification(kind="crash", title="Crash", body="Review", event_id="kept-event", incident_id=incident.id)
+
+            self.assertTrue(database.delete_incident(incident.id))
+            self.assertIsNone(database.get_incident(incident.id))
+            self.assertEqual(database.count_events(), 1)
+            self.assertIsNone(database.automation_action_incident_id("kept-event", "draft_investigation"))
+            self.assertIsNone(database.list_automation_notifications()[0]["incident_id"])
+            self.assertFalse(database.delete_incident(incident.id))
+
     def test_bits_trigger_oscillation_is_quiet_but_real_config_change_is_recorded(self) -> None:
         with Database(":memory:") as database:
             now = utc_now()

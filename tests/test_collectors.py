@@ -9,6 +9,38 @@ from difftrail.privacy import extract_safe_application_name
 
 
 class CollectorTests(unittest.TestCase):
+    def test_per_user_service_suffix_uses_stable_logical_key(self) -> None:
+        collector = WindowsCollector()
+        metadata = {
+            "DisplayName": "Push notifications",
+            "PathName": r"C:\Windows\System32\svchost.exe -k UnistackSvcGroup",
+            "ServiceType": "Share Process",
+        }
+        first = collector._services([{"Name": "WpnUserService_a1234", **metadata}])[0]
+        second = collector._services([{"Name": "WpnUserService_d7351", **metadata}])[0]
+        self.assertEqual(first.key, "WpnUserService")
+        self.assertEqual(second.key, first.key)
+        self.assertNotEqual(first.payload["name"], second.payload["name"])
+
+    def test_concurrent_per_user_instances_keep_distinct_keys(self) -> None:
+        items = WindowsCollector()._services([
+            {"Name": "WpnUserService_a1234", "PathName": "svchost.exe", "ServiceType": "Share Process"},
+            {"Name": "WpnUserService_d7351", "PathName": "svchost.exe", "ServiceType": "Share Process"},
+        ])
+        self.assertEqual({item.key for item in items}, {"WpnUserService_a1234", "WpnUserService_d7351"})
+
+    def test_hex_suffix_alone_does_not_create_a_per_user_service_identity(self) -> None:
+        item = WindowsCollector()._services([
+            {
+                "Name": "Example_abcd",
+                "PathName": r"C:\Program Files\Example\service.exe",
+                "ServiceType": "Own Process",
+            }
+        ])[0]
+
+        self.assertEqual(item.key, "Example_abcd")
+        self.assertNotIn("per_user_service", item.payload)
+
     def test_powershell_collection_is_windowless_on_windows(self) -> None:
         completed = subprocess.CompletedProcess(["powershell.exe"], 0, "[]", "")
         windowless_flag = 0x08000000

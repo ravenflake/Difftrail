@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """Shared deterministic investigation orchestration."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from typing import Any
 
@@ -44,12 +44,14 @@ def run_investigation(
         since=window_start,
         until=request.onset_end,
     )
-    hypotheses = tuple(rank_candidates(events, request))
     coverage = database.investigation_coverage(
         request.subsystem,
         since=window_start,
         until=request.onset_end,
     )
+    hypotheses = tuple(rank_candidates(events, request))
+    if not coverage.get("known") or int(coverage.get("scan_count", 0)) == 0:
+        hypotheses = tuple(replace(item, confidence="Low") for item in hypotheses)
     assessment = assess_investigation(request, hypotheses, events, coverage=coverage)
     summary = investigation_summary(request, hypotheses, assessment=assessment)
     database.update_incident_results(
