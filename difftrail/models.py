@@ -125,9 +125,10 @@ def automatic_draft_request(
 ) -> IncidentRequest:
     """Build the canonical request used for an automatic investigation draft."""
 
+    safe_title = redact_public_text(title).strip()
     identity = redact_public_text(entity).strip()
-    description = f"Automatic draft: {title}" + (
-        f" · {identity}" if identity and identity not in title else ""
+    description = f"Automatic draft: {safe_title}" + (
+        f" · {identity}" if identity and identity not in safe_title else ""
     )
     normalized_subsystem = subsystem if subsystem in KNOWN_SUBSYSTEMS else "general"
     return IncidentRequest(

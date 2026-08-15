@@ -177,6 +177,23 @@ class AutomationTests(unittest.TestCase):
             process_scan_events(database, SimpleNamespace(scan_id="named", errors=()), [event])
             self.assertIn("Example.exe", database.recent_incidents()[0]["description"])
 
+    def test_automatic_crash_draft_redacts_title_paths(self) -> None:
+        with Database(":memory:") as database:
+            event = Event(
+                utc_now(),
+                "symptom",
+                "application",
+                "crash",
+                r"Crash in C:\Program Files\Secret\tool.exe",
+                severity="high",
+                source="eventlog",
+                event_id="path-title-crash",
+            )
+            process_scan_events(database, SimpleNamespace(scan_id="path-title", errors=()), [event])
+            description = database.recent_incidents()[0]["description"]
+            self.assertIn("Automatic draft: Crash in <path>", description)
+            self.assertNotIn(r"C:\Program Files\Secret\tool.exe", description)
+
     def test_legacy_null_draft_link_is_repaired_atomically(self) -> None:
         with Database(":memory:") as database:
             event = Event(utc_now(), "symptom", "application", "crash", "Application crash", entity="Example.exe", severity="high", source="eventlog", event_id="legacy-null-link")
