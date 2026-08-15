@@ -3,12 +3,13 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from typing import Any, Iterable
 
 from .assessment import ASSESSMENT_STATES, NEUTRAL_ASSESSMENT
 from .models import Event, IncidentRequest, ensure_utc, iso_datetime
+from .service_identity import is_per_user_service_payload
 
 
 SUBSYSTEM_KEYWORDS: dict[str, tuple[str, ...]] = {
@@ -73,6 +74,7 @@ class Hypothesis:
     counter_evidence: tuple[Evidence, ...]
     next_action: str
     safe_diagnostic: dict[str, str]
+    tie_count: int = 1
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -83,6 +85,7 @@ class Hypothesis:
             "counter_evidence": [item.as_dict() for item in self.counter_evidence],
             "next_action": self.next_action,
             "safe_diagnostic": self.safe_diagnostic,
+            "tie_count": self.tie_count,
         }
 
 
@@ -153,7 +156,11 @@ def _next_action(event: Event) -> str:
         return "Review the device in Device Manager; use Windows' built-in rollback option only after checking the evidence."
     if event.subsystem == "windows-update" or event.source == "updates":
         return "Review Windows Update history and use its standard uninstall or recovery option only if appropriate."
-    if event.source in {"services", "tasks", "startup"} or event.subsystem == "startup":
+    if event.source == "services":
+        if _is_per_user_service_event(event):
+            return "Review the Windows per-user service instance only if it is unexpected; do not disable it solely because its session suffix changed."
+        return "Review the service in Services; disable it only if you recognize it and can restore it."
+    if event.source in {"tasks", "startup"} or event.subsystem == "startup":
         return "Review the new persistence entry; disable it only if you recognize it and can restore it."
     if event.subsystem == "application" or event.source == "apps":
         return "Open the application's normal update or repair flow; Difftrail will not remove software automatically."
@@ -172,10 +179,23 @@ def _safe_diagnostic(event: Event) -> dict[str, str]:
     if event.source == "tasks":
         return {"label": "Task Scheduler", "target": "taskschd.msc", "note": "Opening this surface does not change system state."}
     if event.source in {"services", "startup"} or event.subsystem == "startup":
-        return {"label": "Services", "target": "services.msc", "note": "Opening this surface does not change system state."}
+        return {
+            "label": "Services",
+            "target": "services.msc",
+            "note": "Review configuration only; do not change a service based on timing alone.",
+        }
     if event.subsystem == "application" or event.source == "apps":
         return {"label": "Installed apps", "target": "ms-settings:appsfeatures", "note": "Opening this surface does not change system state."}
     return {"label": "Event Viewer", "target": "eventvwr.msc", "note": "Opening this surface does not change system state."}
+
+
+def _is_per_user_service_event(event: Event) -> bool:
+    if event.source != "services" or not isinstance(event.details, dict):
+        return False
+    return any(
+        is_per_user_service_payload(event.details.get(label))
+        for label in ("before", "after")
+    )
 
 
 def rank_candidates(
@@ -200,6 +220,7 @@ def rank_candidates(
         for event in all_events
         if event.kind == "change"
         and lookback_start <= ensure_utc(event.occurred_at) <= onset_start
+        and event.details.get("refresh_kind") != "per_user_service_instances"
     ]
     symptoms = [event for event in all_events if event.kind == "symptom"]
     source_counts = Counter(event.source for event in changes)
@@ -267,6 +288,16 @@ def rank_candidates(
             )
 
         counter: list[Evidence] = []
+        if _is_per_user_service_event(event):
+            counter.append(
+                Evidence(
+                    "per-user service identity",
+                    "moderate",
+                    "The suffixed service name identifies a Windows per-user instance; its session identity can change without a new persistence installation.",
+                    event.event_id,
+                )
+            )
+            score -= 0.2
         if prior_symptoms:
             counter.append(
                 Evidence(
@@ -307,7 +338,13 @@ def rank_candidates(
         ),
         reverse=False,
     )
-    return results[: max(1, min(limit, 50))]
+    tie_counts = Counter(round(item.score, 3) for item in results)
+    normalized: list[Hypothesis] = []
+    for item in results:
+        tie_count = tie_counts[round(item.score, 3)]
+        confidence = "Medium" if tie_count >= 3 and item.confidence == "High" else item.confidence
+        normalized.append(replace(item, confidence=confidence, tie_count=tie_count))
+    return normalized[: max(1, min(limit, 50))]
 
 
 def assess_investigation(
@@ -343,12 +380,21 @@ def assess_investigation(
         for reason in coverage_reasons
         if str(reason).strip()
     ]
+    bulk_refreshes = [
+        event for event in changes
+        if event.details.get("refresh_kind") == "per_user_service_instances"
+    ]
+    if bulk_refreshes:
+        reasons.append(
+            "A bulk Windows per-user service refresh was excluded from causal ranking because its suffixed instances changed together."
+        )
 
     if not changes:
         reasons.append("No journaled changes occurred during the selected lookback window before onset.")
         state = "limited_coverage" if coverage_limited else "no_recent_changes"
     elif not ranked:
-        reasons.append("Changes were recorded, but none matched the reported subsystem closely enough to rank.")
+        if not bulk_refreshes:
+            reasons.append("Changes were recorded, but none matched the reported subsystem closely enough to rank.")
         state = "limited_coverage" if coverage_limited else "insufficient_evidence"
     else:
         lead = ranked[0]
@@ -356,7 +402,11 @@ def assess_investigation(
             reasons.append("The strongest candidate has only weak supporting evidence.")
         if lead.counter_evidence:
             reasons.append("Related symptoms or signals existed before the strongest candidate change.")
-        weak = lead.confidence == "Low" or bool(lead.counter_evidence)
+        if lead.tie_count >= 3:
+            reasons.append(
+                f"The strongest candidates are tied at the same score ({lead.tie_count} candidates), so no single change is uniquely supported."
+            )
+        weak = lead.confidence == "Low" or bool(lead.counter_evidence) or lead.tie_count >= 3
         state = "limited_coverage" if coverage_limited else "insufficient_evidence" if weak else "candidate_found"
 
     # Preserve deterministic order while avoiding duplicate explanations.

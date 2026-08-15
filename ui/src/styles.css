@@ -95,6 +95,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .button-primary:hover:not(:disabled) { background: var(--teal-dark); }
 .button-secondary { color: var(--ink); border-color: var(--line-strong); background: var(--surface); }
 .button-secondary:hover:not(:disabled) { border-color: var(--teal); color: var(--teal-dark); background: #fbfaf6; }
+.button-danger { color: var(--red); border-color: #e5beb7; background: var(--surface); }
+.button-danger:hover:not(:disabled) { color: #fff; border-color: var(--red); background: var(--red); }
 .button-tertiary { color: var(--teal-dark); border-color: transparent; background: var(--teal-wash); }
 .button-tertiary:hover:not(:disabled) { background: #d5e9e5; }
 .button-small { min-height: 31px; padding: 0 10px; font-size: 11px; }
@@ -246,6 +248,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .incident-detail-page { display: flex; flex-direction: column; gap: 20px; }
 .incident-heading { display: flex; align-items: start; justify-content: space-between; gap: 25px; }
 .incident-heading h2 { max-width: 720px; margin: 7px 0 10px; color: var(--ink); font-size: clamp(25px, 3vw, 35px); letter-spacing: -0.045em; line-height: 1.08; }
+.incident-heading-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.incident-heading-actions > .button { flex: 0 0 auto; }
+.incident-remove-confirm { display: flex; align-items: center; justify-content: flex-end; gap: 7px; flex-wrap: wrap; color: var(--red); font-size: 10px; }
 .heading-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: var(--ink-faint); font-size: 11px; }
 .lead-card { overflow: hidden; padding: 25px; border: 1px solid var(--line); border-top: 3px solid var(--teal); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow); }
 .confidence-border-medium { border-top-color: var(--amber); }.confidence-border-low { border-top-color: var(--red); }
@@ -257,6 +262,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .lead-icon { display: grid; place-items: center; width: 52px; height: 52px; flex: 0 0 52px; color: var(--teal); border: 1px solid #c3ded8; border-radius: 12px; background: var(--teal-wash); }
 .lead-card-body h3 { margin: 5px 0 4px; color: var(--ink); font-size: 21px; letter-spacing: -0.035em; }
 .lead-subtitle { margin: 0; color: var(--ink-soft); font-size: 11px; }
+.candidate-ambiguity { display: block; margin-top: 6px; color: var(--amber); font-size: 10px; line-height: 1.35; }
 .lead-divider { height: 1px; background: var(--line); }
 .why-grid { display: grid; grid-template-columns: 1.4fr 0.8fr; gap: 30px; padding-top: 23px; }
 .next-step { padding-left: 24px; border-left: 1px solid var(--line); }
