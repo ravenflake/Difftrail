@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from .privacy import redact_public_text
+
 
 UTC = timezone.utc
 KNOWN_SUBSYSTEMS = frozenset(
@@ -112,6 +114,29 @@ class IncidentRequest:
             raise ValueError("lookback_days must be between 1 and 365")
         if self.subsystem not in KNOWN_SUBSYSTEMS:
             raise ValueError(f"Unsupported incident subsystem: {self.subsystem}")
+
+
+def automatic_draft_request(
+    *,
+    title: str,
+    entity: str,
+    occurred_at: datetime,
+    subsystem: str,
+) -> IncidentRequest:
+    """Build the canonical request used for an automatic investigation draft."""
+
+    identity = redact_public_text(entity).strip()
+    description = f"Automatic draft: {title}" + (
+        f" · {identity}" if identity and identity not in title else ""
+    )
+    normalized_subsystem = subsystem if subsystem in KNOWN_SUBSYSTEMS else "general"
+    return IncidentRequest(
+        description=description,
+        onset_start=occurred_at,
+        onset_end=occurred_at,
+        subsystem=normalized_subsystem,
+        lookback_days=7,
+    )
 
 
 @dataclass(frozen=True)

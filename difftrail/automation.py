@@ -20,7 +20,7 @@ from typing import Any, Iterable
 
 from .db import Database
 from .investigation import run_investigation
-from .models import KNOWN_SUBSYSTEMS, Event, IncidentRequest
+from .models import Event, automatic_draft_request
 from .privacy import redact_public_text
 from ._process import _hidden_process_kwargs
 
@@ -623,17 +623,11 @@ def _queue_event_notification(
 def _create_investigation_draft(database: Database, event: Event) -> tuple[str | None, bool]:
     if not event.event_id:
         return None, False
-    identity = redact_public_text(event.entity).strip()
-    description = f"Automatic draft: {event.title}" + (
-        f" · {identity}" if identity and identity not in event.title else ""
-    )
-    subsystem = event.subsystem if event.subsystem in KNOWN_SUBSYSTEMS else "general"
-    request = IncidentRequest(
-        description=description,
-        onset_start=event.occurred_at,
-        onset_end=event.occurred_at,
-        subsystem=subsystem,
-        lookback_days=7,
+    request = automatic_draft_request(
+        title=event.title,
+        entity=event.entity,
+        occurred_at=event.occurred_at,
+        subsystem=event.subsystem,
     )
     # Allocate the incident id before recording the marker. The marker and
     # incident then carry the same id inside one transaction, so a concurrent

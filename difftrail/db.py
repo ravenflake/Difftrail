@@ -10,7 +10,17 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .assessment import ASSESSMENT_STATES, NEUTRAL_ASSESSMENT
-from .models import Event, Incident, IncidentRequest, SnapshotItem, ensure_utc, iso_datetime, parse_datetime, utc_now
+from .models import (
+    Event,
+    Incident,
+    IncidentRequest,
+    SnapshotItem,
+    automatic_draft_request,
+    ensure_utc,
+    iso_datetime,
+    parse_datetime,
+    utc_now,
+)
 from .privacy import (
     extract_safe_application_name,
     redact_legacy_text,
@@ -29,6 +39,7 @@ VALID_SCAN_STATUSES = frozenset({"running", "ok", "partial", "failed", "interrup
 VALID_INVESTIGATION_ASSESSMENTS = ASSESSMENT_STATES
 _DATABASE_INITIALIZATION_LOCK = threading.RLock()
 _AUTOMATION_LINK_REPAIR_CURSOR = "automation:link-repair-cursor"
+_AUTOMATION_LINK_REPAIR_BATCH = 200
 
 
 # These fields describe runtime state or localized display metadata rather
@@ -709,8 +720,9 @@ class Database:
                       AND incident_id IS NULL
                       AND (created_at > ? OR (created_at = ? AND id > ?))
                     ORDER BY created_at ASC, id ASC
+                    LIMIT ?
                     """,
-                    (cursor_created_at, cursor_created_at, cursor_id),
+                    (cursor_created_at, cursor_created_at, cursor_id, _AUTOMATION_LINK_REPAIR_BATCH),
                 ).fetchall()
             else:
                 rows = self.connection.execute(
@@ -719,39 +731,29 @@ class Database:
                     FROM automation_actions
                     WHERE action = 'draft_investigation' AND incident_id IS NULL
                     ORDER BY created_at ASC, id ASC
-                    """
+                    LIMIT ?
+                    """,
+                    (_AUTOMATION_LINK_REPAIR_BATCH,),
                 ).fetchall()
 
             action_updates: list[tuple[str, str, str]] = []
             for row in rows:
                 event = self.connection.execute(
-                    "SELECT title, subsystem, occurred_at FROM events WHERE id = ?",
+                    "SELECT title, entity, subsystem, occurred_at FROM events WHERE id = ?",
                     (row["event_id"],),
                 ).fetchone()
                 if event is None:
                     continue
-                candidates = self.connection.execute(
-                    """
-                    SELECT id
-                    FROM incidents
-                    WHERE description = ?
-                      AND subsystem = ?
-                      AND onset_start = ?
-                      AND onset_end = ?
-                      AND lookback_days = 7
-                      AND status = 'draft'
-                    ORDER BY created_at DESC
-                    """,
-                    (
-                        f"Automatic draft: {event['title']}",
-                        event["subsystem"],
-                        event["occurred_at"],
-                        event["occurred_at"],
-                    ),
-                ).fetchall()
-                if len(candidates) == 1:
+                request = automatic_draft_request(
+                    title=str(event["title"]),
+                    entity=str(event["entity"]),
+                    occurred_at=parse_datetime(str(event["occurred_at"])),
+                    subsystem=str(event["subsystem"]),
+                )
+                incident_id = self.find_incident_id(request, status="draft")
+                if incident_id is not None:
                     action_updates.append(
-                        (str(candidates[0]["id"]), str(row["event_id"]), str(row["id"]))
+                        (incident_id, str(row["event_id"]), str(row["id"]))
                     )
             for incident_id, event_id, action_id in action_updates:
                 self.connection.execute(

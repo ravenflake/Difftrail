@@ -23,8 +23,8 @@ from difftrail.automation import (
     _watcher_status_message,
     update_automation_config,
 )
-from difftrail.db import Database
-from difftrail.models import Event, IncidentRequest, utc_now
+from difftrail.db import Database, _AUTOMATION_LINK_REPAIR_BATCH
+from difftrail.models import Event, IncidentRequest, iso_datetime, utc_now
 
 
 class AutomationTests(unittest.TestCase):
@@ -247,7 +247,6 @@ class AutomationTests(unittest.TestCase):
                     "application",
                     "crash",
                     "Application crash detected",
-                    entity="Example.exe",
                     severity="high",
                     source="eventlog",
                     event_id="legacy-unlinked-draft",
@@ -273,6 +272,68 @@ class AutomationTests(unittest.TestCase):
                 notification = reopened.list_automation_notifications()[0]
                 self.assertEqual(action[0], incident.id)
                 self.assertEqual(notification["incident_id"], incident.id)
+
+    def test_unlinked_draft_repair_uses_complete_automatic_request(self) -> None:
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / "journal.db"
+            now = utc_now()
+            with Database(path) as database:
+                event = Event(
+                    now,
+                    "symptom",
+                    "legacy-area",
+                    "crash",
+                    "Application crash detected",
+                    entity="Example.exe",
+                    severity="high",
+                    source="eventlog",
+                    event_id="complete-automatic-draft",
+                )
+                database.save_events([event])
+                incident = database.create_incident(
+                    IncidentRequest(
+                        "Automatic draft: Application crash detected · Example.exe",
+                        now,
+                        now,
+                        "general",
+                        7,
+                    ),
+                    status="draft",
+                )
+                database.record_automation_action(event.event_id, "draft_investigation")
+
+            with Database(path) as reopened:
+                action = reopened.connection.execute(
+                    "SELECT incident_id FROM automation_actions WHERE event_id = ?",
+                    ("complete-automatic-draft",),
+                ).fetchone()
+                self.assertEqual(action[0], incident.id)
+
+    def test_automation_link_repair_processes_bounded_batches(self) -> None:
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / "journal.db"
+            start = utc_now()
+            with Database(path) as database:
+                for index in range(_AUTOMATION_LINK_REPAIR_BATCH + 1):
+                    database.record_automation_action(
+                        f"batch-marker-{index}",
+                        "draft_investigation",
+                        created_at=start + timedelta(seconds=index),
+                    )
+
+                database._repair_automation_links()
+                first_cursor = json.loads(database.get_meta("automation:link-repair-cursor") or "{}")
+                self.assertEqual(
+                    first_cursor["created_at"],
+                    iso_datetime(start + timedelta(seconds=_AUTOMATION_LINK_REPAIR_BATCH - 1)),
+                )
+
+                database._repair_automation_links()
+                second_cursor = json.loads(database.get_meta("automation:link-repair-cursor") or "{}")
+                self.assertEqual(
+                    second_cursor["created_at"],
+                    iso_datetime(start + timedelta(seconds=_AUTOMATION_LINK_REPAIR_BATCH)),
+                )
 
     def test_automation_link_repair_advances_past_unmatched_markers(self) -> None:
         with TemporaryDirectory() as folder:
