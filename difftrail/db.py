@@ -28,6 +28,7 @@ MAX_PERSISTED_JSON_NESTING = 64
 VALID_SCAN_STATUSES = frozenset({"running", "ok", "partial", "failed", "interrupted"})
 VALID_INVESTIGATION_ASSESSMENTS = ASSESSMENT_STATES
 _DATABASE_INITIALIZATION_LOCK = threading.RLock()
+_AUTOMATION_LINK_REPAIR_CURSOR = "automation:link-repair-cursor"
 
 
 # These fields describe runtime state or localized display metadata rather
@@ -270,7 +271,15 @@ def _per_user_service_family(payload: dict[str, Any], key: str) -> str | None:
         return None
     explicit = str(payload.get("service_base_name", "")).strip()
     name = str(payload.get("name", key)).strip()
-    return (explicit or service_base_name(name)).casefold()
+    return (
+        explicit
+        or service_base_name(
+            name,
+            path=str(payload.get("path", "")),
+            service_type=str(payload.get("service_type", "")),
+            trusted=payload.get("per_user_service") is True,
+        )
+    ).casefold()
 
 
 def _paired_per_user_service_family(
@@ -291,7 +300,13 @@ def _paired_per_user_service_family(
     other_payload = after if before_family else before
     other_key = after_key if before_family else before_key
     other_name = str(other_payload.get("name", other_key)).strip()
-    return trusted_family if service_base_name(other_name).casefold() == trusted_family else None
+    other_family = service_base_name(
+        other_name,
+        path=str(other_payload.get("path", "")),
+        service_type=str(other_payload.get("service_type", "")),
+        trusted=other_payload.get("per_user_service") is True,
+    ).casefold()
+    return trusted_family if other_family == trusted_family else None
 
 
 def _normalize_per_user_service_pair(
@@ -659,68 +674,118 @@ class Database:
             self.connection.commit()
 
     def _repair_automation_links(self, *, commit: bool = True) -> None:
-        """Repair unlinked automatic drafts when their exact incident exists.
+        """Repair unlinked automatic drafts in one bounded write transaction.
 
         Older watcher races could persist the idempotency marker and draft but
-        lose the association between them. Only an exact event/title/time
-        match is repaired, so this is safe to rerun whenever the journal opens.
+        lose the association between them. A durable ``created_at``/``id``
+        cursor prevents unmatched legacy markers from being rescanned on every
+        database open. Candidate validation and both link updates share an
+        immediate transaction so incident deletion cannot interleave and leave
+        a dangling link.
         """
 
-        rows = self.connection.execute(
-            """
-            SELECT event_id
-            FROM automation_actions
-            WHERE action = 'draft_investigation' AND incident_id IS NULL
-            """
-        ).fetchall()
-        action_updates: list[tuple[str, str]] = []
-        for row in rows:
-            event = self.connection.execute(
-                "SELECT title, subsystem, occurred_at FROM events WHERE id = ?",
-                (row["event_id"],),
-            ).fetchone()
-            if event is None:
-                continue
-            candidates = self.connection.execute(
-                """
-                SELECT id
-                FROM incidents
-                WHERE description = ?
-                  AND subsystem = ?
-                  AND onset_start = ?
-                  AND onset_end = ?
-                  AND lookback_days = 7
-                  AND status = 'draft'
-                ORDER BY created_at DESC
-                """,
-                (
-                    f"Automatic draft: {event['title']}",
-                    event["subsystem"],
-                    event["occurred_at"],
-                    event["occurred_at"],
-                ),
-            ).fetchall()
-            if len(candidates) == 1:
-                action_updates.append((str(candidates[0]["id"]), str(row["event_id"])))
-        if action_updates:
-            self.connection.executemany(
-                """
-                UPDATE automation_actions
-                SET incident_id = ?
-                WHERE event_id = ? AND action = 'draft_investigation' AND incident_id IS NULL
-                """,
-                action_updates,
-            )
-            self.connection.executemany(
-                """
-                UPDATE automation_notifications
-                SET incident_id = ?
-                WHERE event_id = ? AND kind = 'crash' AND incident_id IS NULL
-                """,
-                action_updates,
-            )
-        if commit:
-            self.connection.commit()
+        had_transaction = self.connection.in_transaction
+        if not had_transaction:
+            self.connection.execute("BEGIN IMMEDIATE")
+        try:
+            cursor_value = self.get_meta(_AUTOMATION_LINK_REPAIR_CURSOR)
+            cursor_created_at = ""
+            cursor_id = ""
+            if cursor_value:
+                try:
+                    parsed_cursor = json.loads(cursor_value)
+                except (json.JSONDecodeError, TypeError):
+                    parsed_cursor = None
+                if isinstance(parsed_cursor, dict):
+                    cursor_created_at = str(parsed_cursor.get("created_at", ""))
+                    cursor_id = str(parsed_cursor.get("id", ""))
+
+            if cursor_created_at and cursor_id:
+                rows = self.connection.execute(
+                    """
+                    SELECT id, event_id, created_at
+                    FROM automation_actions
+                    WHERE action = 'draft_investigation'
+                      AND incident_id IS NULL
+                      AND (created_at > ? OR (created_at = ? AND id > ?))
+                    ORDER BY created_at ASC, id ASC
+                    """,
+                    (cursor_created_at, cursor_created_at, cursor_id),
+                ).fetchall()
+            else:
+                rows = self.connection.execute(
+                    """
+                    SELECT id, event_id, created_at
+                    FROM automation_actions
+                    WHERE action = 'draft_investigation' AND incident_id IS NULL
+                    ORDER BY created_at ASC, id ASC
+                    """
+                ).fetchall()
+
+            action_updates: list[tuple[str, str, str]] = []
+            for row in rows:
+                event = self.connection.execute(
+                    "SELECT title, subsystem, occurred_at FROM events WHERE id = ?",
+                    (row["event_id"],),
+                ).fetchone()
+                if event is None:
+                    continue
+                candidates = self.connection.execute(
+                    """
+                    SELECT id
+                    FROM incidents
+                    WHERE description = ?
+                      AND subsystem = ?
+                      AND onset_start = ?
+                      AND onset_end = ?
+                      AND lookback_days = 7
+                      AND status = 'draft'
+                    ORDER BY created_at DESC
+                    """,
+                    (
+                        f"Automatic draft: {event['title']}",
+                        event["subsystem"],
+                        event["occurred_at"],
+                        event["occurred_at"],
+                    ),
+                ).fetchall()
+                if len(candidates) == 1:
+                    action_updates.append(
+                        (str(candidates[0]["id"]), str(row["event_id"]), str(row["id"]))
+                    )
+            for incident_id, event_id, action_id in action_updates:
+                self.connection.execute(
+                    """
+                    UPDATE automation_actions
+                    SET incident_id = ?
+                    WHERE id = ? AND event_id = ? AND action = 'draft_investigation'
+                      AND incident_id IS NULL
+                      AND EXISTS (SELECT 1 FROM incidents WHERE id = ?)
+                    """,
+                    (incident_id, action_id, event_id, incident_id),
+                )
+                self.connection.execute(
+                    """
+                    UPDATE automation_notifications
+                    SET incident_id = ?
+                    WHERE event_id = ? AND kind = 'crash' AND incident_id IS NULL
+                      AND EXISTS (SELECT 1 FROM incidents WHERE id = ?)
+                    """,
+                    (incident_id, event_id, incident_id),
+                )
+
+            if rows:
+                last = rows[-1]
+                self._set_meta_without_commit(
+                    _AUTOMATION_LINK_REPAIR_CURSOR,
+                    _canonical_json({"created_at": str(last["created_at"]), "id": str(last["id"])}),
+                )
+            if commit:
+                self.connection.commit()
+        except Exception:
+            if not had_transaction:
+                self.connection.rollback()
+            raise
 
     def close(self) -> None:
         self.connection.close()
@@ -1707,21 +1772,6 @@ class Database:
         if commit:
             self.connection.commit()
 
-    def delete_incident(self, incident_id: str) -> bool:
-        """Delete one saved investigation without deleting its evidence events."""
-
-        with self.connection:
-            self.connection.execute(
-                "UPDATE automation_actions SET incident_id = NULL WHERE incident_id = ?",
-                (incident_id,),
-            )
-            self.connection.execute(
-                "UPDATE automation_notifications SET incident_id = NULL WHERE incident_id = ?",
-                (incident_id,),
-            )
-            cursor = self.connection.execute("DELETE FROM incidents WHERE id = ?", (incident_id,))
-        return cursor.rowcount == 1
-
     def record_incident_feedback(
         self,
         incident_id: str,
@@ -1762,12 +1812,8 @@ class Database:
         """Remove an investigation and clear automation links to it."""
 
         with self.connection:
-            exists = self.connection.execute(
-                "SELECT 1 FROM incidents WHERE id = ?",
-                (incident_id,),
-            ).fetchone()
-            if exists is None:
-                return False
+            if not self.connection.in_transaction:
+                self.connection.execute("BEGIN IMMEDIATE")
             self.connection.execute(
                 "UPDATE automation_actions SET incident_id = NULL WHERE incident_id = ?",
                 (incident_id,),
@@ -1776,8 +1822,8 @@ class Database:
                 "UPDATE automation_notifications SET incident_id = NULL WHERE incident_id = ?",
                 (incident_id,),
             )
-            self.connection.execute("DELETE FROM incidents WHERE id = ?", (incident_id,))
-        return True
+            cursor = self.connection.execute("DELETE FROM incidents WHERE id = ?", (incident_id,))
+        return cursor.rowcount == 1
 
     @staticmethod
     def _incident_row(row: sqlite3.Row) -> dict[str, Any]:

@@ -614,6 +614,40 @@ class DatabaseTests(unittest.TestCase):
                 self.assertEqual(database.apply_snapshot("services", [after], occurred_at=now + timedelta(minutes=5)), [])
                 self.assertEqual(database.count_events("change"), 0)
 
+    def test_unrelated_suffixed_service_does_not_match_a_per_user_family(self) -> None:
+        with Database(":memory:") as database:
+            now = utc_now()
+            before = SnapshotItem(
+                "services",
+                "Vendor_abcd",
+                "startup",
+                "Service Vendor",
+                {
+                    "name": "Vendor_abcd",
+                    "start_mode": "Manual",
+                    "per_user_service": True,
+                    "service_base_name": "Vendor",
+                    "service_instance_suffix": "abcd",
+                },
+            )
+            database.apply_snapshot("services", [before], occurred_at=now)
+
+            unrelated = SnapshotItem(
+                "services",
+                "Vendor_abcd",
+                "startup",
+                "Service Vendor",
+                {"name": "Vendor_abcd", "start_mode": "Manual"},
+            )
+            events = database.apply_snapshot(
+                "services",
+                [unrelated],
+                occurred_at=now + timedelta(minutes=1),
+            )
+
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0].action, "updated")
+
     def test_snapshot_state_rolls_back_when_event_write_fails(self) -> None:
         with Database(":memory:") as database:
             now = utc_now()
@@ -874,23 +908,6 @@ class DatabaseTests(unittest.TestCase):
             row = database.connection.execute("SELECT item_key FROM state_items WHERE source = 'services'").fetchone()
             self.assertEqual(row["item_key"], "WpnUserService")
 
-    def test_deleting_investigation_preserves_events_and_unlinks_automation(self) -> None:
-        with Database(":memory:") as database:
-            now = utc_now()
-            event = Event(now, "symptom", "application", "crash", "Application crash", event_id="kept-event")
-            database.save_events([event])
-            request = IncidentRequest("Example crash", now, now, "application", 1)
-            incident = database.create_incident(request)
-            database.record_automation_action("kept-event", "draft_investigation", incident_id=incident.id)
-            database.create_automation_notification(kind="crash", title="Crash", body="Review", event_id="kept-event", incident_id=incident.id)
-
-            self.assertTrue(database.delete_incident(incident.id))
-            self.assertIsNone(database.get_incident(incident.id))
-            self.assertEqual(database.count_events(), 1)
-            self.assertIsNone(database.automation_action_incident_id("kept-event", "draft_investigation"))
-            self.assertIsNone(database.list_automation_notifications()[0]["incident_id"])
-            self.assertFalse(database.delete_incident(incident.id))
-
     def test_bits_trigger_oscillation_is_quiet_but_real_config_change_is_recorded(self) -> None:
         with Database(":memory:") as database:
             now = utc_now()
@@ -980,9 +997,11 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(database.count_events(), 1)
             self.assertEqual(database.recent_incidents()[0]["results"][0]["confidence"], "High")
 
-    def test_delete_incident_removes_record_and_unlinks_automation_references(self) -> None:
+    def test_delete_incident_preserves_events_and_unlinks_automation_references(self) -> None:
         with Database(":memory:") as database:
             now = utc_now()
+            event = Event(now, "symptom", "application", "crash", "Application crash", event_id="event-for-deletion")
+            database.save_events([event])
             incident = database.create_incident(
                 IncidentRequest("graphics are crashing", now - timedelta(hours=1), now, "graphics", 7)
             )
@@ -1001,6 +1020,7 @@ class DatabaseTests(unittest.TestCase):
 
             self.assertTrue(database.delete_incident(incident.id))
             self.assertIsNone(database.get_incident(incident.id))
+            self.assertEqual(database.count_events(), 1)
             self.assertIsNone(database.automation_action_incident_id("event-for-deletion", "draft_investigation"))
             self.assertIsNone(database.list_automation_notifications()[0]["incident_id"])
             self.assertFalse(database.delete_incident(incident.id))

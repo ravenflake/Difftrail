@@ -55,8 +55,22 @@ def is_per_user_service_payload(payload: Any) -> bool:
     ) is not None
 
 
-def service_base_name(name: str) -> str:
-    """Return the stable logical service name for state matching."""
+def service_base_name(
+    name: str,
+    *,
+    path: str = "",
+    service_type: str = "",
+    trusted: bool = False,
+) -> str:
+    """Return a base name only when the service has per-user evidence.
+
+    A hexadecimal-looking suffix is not sufficient evidence by itself because
+    unrelated services can use the same naming shape.
+    """
 
     parts = split_per_user_service_name(name)
-    return parts[0] if parts else str(name)
+    if parts is None:
+        return str(name)
+    if not trusted and per_user_service_identity(name, path=path, service_type=service_type) is None:
+        return str(name)
+    return parts[0]

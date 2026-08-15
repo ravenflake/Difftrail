@@ -274,6 +274,36 @@ class AutomationTests(unittest.TestCase):
                 self.assertEqual(action[0], incident.id)
                 self.assertEqual(notification["incident_id"], incident.id)
 
+    def test_automation_link_repair_advances_past_unmatched_markers(self) -> None:
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / "journal.db"
+            with Database(path) as database:
+                event = Event(
+                    utc_now(),
+                    "symptom",
+                    "application",
+                    "crash",
+                    "Unmatched application crash",
+                    severity="high",
+                    source="eventlog",
+                    event_id="unmatched-repair-marker",
+                )
+                database.save_events([event])
+                database.record_automation_action(event.event_id, "draft_investigation")
+
+                trace: list[str] = []
+                database._repair_automation_links()
+                cursor = json.loads(database.get_meta("automation:link-repair-cursor") or "{}")
+                database.connection.set_trace_callback(trace.append)
+                database._repair_automation_links()
+                database.connection.set_trace_callback(None)
+
+                self.assertEqual(cursor["id"], database.connection.execute(
+                    "SELECT id FROM automation_actions WHERE event_id = ?",
+                    (event.event_id,),
+                ).fetchone()[0])
+                self.assertFalse(any("SELECT title, subsystem, occurred_at" in statement for statement in trace))
+
     def test_failed_notification_retry_links_existing_draft(self) -> None:
         with Database(":memory:") as database:
             event = Event(

@@ -13,6 +13,9 @@ from ..service_identity import per_user_service_identity
 from .powershell import PowerShellError, run_json
 
 
+_PER_USER_SERVICE_KEY_PREFIX = "per-user:"
+
+
 def _text(row: dict[str, Any], key: str, default: str = "") -> str:
     value = row.get(key, default)
     if value is None:
@@ -282,11 +285,12 @@ $rows | ConvertTo-Json -Depth 5 -Compress
             # Multiple concurrently active users can have instances from the
             # same family. Preserve their distinct identities rather than
             # allowing a dictionary snapshot to overwrite evidence.
-            key = (
-                base_name
-                if identity is not None and family_counts[base_name.casefold()] == 1
-                else name
-            )
+            if identity is None:
+                key = name
+            elif family_counts[base_name.casefold()] == 1:
+                key = f"{_PER_USER_SERVICE_KEY_PREFIX}{base_name}"
+            else:
+                key = f"{_PER_USER_SERVICE_KEY_PREFIX}{name}"
             display_name = _service_text(row, "DisplayName", name)
             if identity is not None:
                 display_identity = per_user_service_identity(
