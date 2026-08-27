@@ -247,6 +247,147 @@ class CorrelationTests(unittest.TestCase):
         entity_signal = next(item for item in hypotheses[0].evidence if item.signal == "entity relevance")
         self.assertEqual(entity_signal.strength, "strong")
 
+    def test_unrelated_application_updates_do_not_inherit_affected_app_symptoms(self) -> None:
+        now = utc_now()
+        onset = now - timedelta(minutes=30)
+        changes = [
+            Event(
+                onset - timedelta(hours=2),
+                "change",
+                "application",
+                "updated",
+                f"Application {name} updated",
+                entity=name,
+                source="apps",
+                event_id=name.casefold(),
+            )
+            for name in ("Brave", "Discord", "Chrome")
+        ]
+        symptom = Event(
+            onset,
+            "symptom",
+            "application",
+            "crash",
+            "Application crash detected",
+            entity="Minecraft.exe",
+            source="eventlog",
+            event_id="minecraft-crash",
+        )
+        request = IncidentRequest(
+            "Minecraft.exe crashed",
+            onset,
+            now,
+            "application",
+            7,
+            affected_entity="Minecraft.exe",
+        )
+
+        hypotheses = rank_candidates([*changes, symptom], request)
+        assessment = assess_investigation(request, hypotheses, [*changes, symptom])
+
+        self.assertEqual({item.confidence for item in hypotheses}, {"Low"})
+        for hypothesis in hypotheses:
+            baseline = next(item for item in hypothesis.evidence if item.signal == "baseline break")
+            self.assertEqual(baseline.strength, "weak")
+            self.assertIn("No related symptom event", baseline.explanation)
+            self.assertTrue(any(item.signal == "entity mismatch" for item in hypothesis.counter_evidence))
+        self.assertEqual(assessment.state, "insufficient_evidence")
+        self.assertIn(
+            "No recent installed-application change matching Minecraft.exe was recorded.",
+            assessment.reasons,
+        )
+
+    def test_matching_application_update_still_uses_affected_app_symptom(self) -> None:
+        now = utc_now()
+        onset = now - timedelta(minutes=30)
+        minecraft = Event(
+            onset - timedelta(hours=3),
+            "change",
+            "application",
+            "updated",
+            "Application Minecraft updated",
+            entity="Minecraft",
+            source="apps",
+            event_id="minecraft-update",
+        )
+        brave = Event(
+            onset - timedelta(hours=1),
+            "change",
+            "application",
+            "updated",
+            "Application Brave updated",
+            entity="Brave",
+            source="apps",
+            event_id="brave-update",
+        )
+        symptom = Event(
+            onset,
+            "symptom",
+            "application",
+            "crash",
+            "Application crash detected",
+            entity="Minecraft.exe",
+            source="eventlog",
+            event_id="minecraft-crash",
+        )
+        request = IncidentRequest(
+            "Minecraft.exe crashed",
+            onset,
+            now,
+            "application",
+            7,
+            affected_entity="Minecraft.exe",
+        )
+
+        hypotheses = rank_candidates([minecraft, brave, symptom], request)
+
+        self.assertEqual(hypotheses[0].event.event_id, "minecraft-update")
+        matching_baseline = next(
+            item for item in hypotheses[0].evidence if item.signal == "baseline break"
+        )
+        self.assertNotEqual(matching_baseline.strength, "weak")
+        brave_hypothesis = next(
+            item for item in hypotheses if item.event.event_id == "brave-update"
+        )
+        self.assertEqual(brave_hypothesis.confidence, "Low")
+
+    def test_cross_application_system_changes_remain_eligible(self) -> None:
+        now = utc_now()
+        onset = now - timedelta(minutes=30)
+        driver = Event(
+            onset - timedelta(hours=2),
+            "change",
+            "driver",
+            "updated",
+            "NVIDIA display driver updated",
+            entity="NVIDIA display driver",
+            source="drivers",
+            event_id="display-driver",
+        )
+        symptom = Event(
+            onset,
+            "symptom",
+            "application",
+            "crash",
+            "Application crash detected",
+            entity="Minecraft.exe",
+            source="eventlog",
+            event_id="minecraft-crash",
+        )
+        request = IncidentRequest(
+            "Minecraft.exe crashed",
+            onset,
+            now,
+            "application",
+            7,
+            affected_entity="Minecraft.exe",
+        )
+
+        hypothesis = rank_candidates([driver, symptom], request)[0]
+
+        self.assertEqual(hypothesis.event.event_id, "display-driver")
+        self.assertFalse(any(item.signal == "entity mismatch" for item in hypothesis.counter_evidence))
+
     def test_timing_still_orders_two_matching_entity_changes(self) -> None:
         now = utc_now()
         events = [
@@ -259,7 +400,7 @@ class CorrelationTests(unittest.TestCase):
 
         self.assertEqual(hypotheses[0].event.event_id, "newer")
 
-    def test_entity_match_does_not_defeat_substantially_stronger_counter_evidence(self) -> None:
+    def test_known_application_mismatch_does_not_beat_matching_change_with_counter_evidence(self) -> None:
         now = utc_now()
         onset = now - timedelta(minutes=30)
         matched = Event(onset - timedelta(hours=72), "change", "application", "updated", "Application Difftrail updated", entity="Difftrail", source="apps", event_id="matched-old")
@@ -270,9 +411,12 @@ class CorrelationTests(unittest.TestCase):
 
         hypotheses = rank_candidates([prior, matched, unrelated, unidentified_support], request)
 
-        self.assertEqual(hypotheses[0].event.event_id, "unrelated-recent")
+        self.assertEqual(hypotheses[0].event.event_id, "matched-old")
         matched_hypothesis = next(item for item in hypotheses if item.event.event_id == "matched-old")
         self.assertTrue(matched_hypothesis.counter_evidence)
+        unrelated_hypothesis = next(item for item in hypotheses if item.event.event_id == "unrelated-recent")
+        self.assertEqual(unrelated_hypothesis.confidence, "Low")
+        self.assertTrue(any(item.signal == "entity mismatch" for item in unrelated_hypothesis.counter_evidence))
 
     def test_entity_normalization_handles_case_executable_and_associated_service_names(self) -> None:
         now = utc_now()

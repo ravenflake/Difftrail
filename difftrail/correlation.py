@@ -55,6 +55,7 @@ SOURCE_PRIORITY: dict[str, int] = {
 # a causal conclusion by itself.
 ENTITY_RELEVANCE_BOOST = 0.12
 SUSPECTED_CHANGE_BOOST = 0.06
+APPLICATION_ENTITY_MISMATCH_PENALTY = 0.12
 _GENERIC_IDENTITY_WORDS = frozenset(
     {
         "app",
@@ -226,6 +227,22 @@ def _context_matches_event(value: str | None, event: Event) -> bool:
     return bool(key and key in _event_identity_keys(event))
 
 
+def _context_identity_relation(value: str | None, event: Event) -> str:
+    """Classify explicit identity evidence without treating missing data as a mismatch."""
+
+    context_key = _identity_key(value)
+    event_keys = _event_identity_keys(event)
+    if not context_key or not event_keys:
+        return "unknown"
+    return "match" if context_key in event_keys else "mismatch"
+
+
+def _is_direct_application_change(event: Event) -> bool:
+    """Return whether an event represents an installed-application change."""
+
+    return event.source == "apps"
+
+
 def _symptom_matches_context(value: str | None, symptom: Event) -> bool:
     """Exclude a known different entity, while retaining unidentified evidence."""
 
@@ -324,12 +341,17 @@ def rank_candidates(
         gap_hours = max(0.0, (onset_start - event_time).total_seconds() / 3600)
         temporal = _temporal_score(gap_hours)
         relevance, relevance_text = _relevance(request.subsystem, event.subsystem)
-        entity_match = _context_matches_event(request.affected_entity, event)
+        entity_relation = _context_identity_relation(request.affected_entity, event)
+        entity_match = entity_relation == "match"
+        application_entity_mismatch = (
+            _is_direct_application_change(event) and entity_relation == "mismatch"
+        )
         suspected_change_match = _context_matches_event(request.suspected_change, event)
         supporting = [
             symptom
             for symptom in symptoms
-            if event_time <= ensure_utc(symptom.occurred_at) <= onset_end
+            if not application_entity_mismatch
+            and event_time <= ensure_utc(symptom.occurred_at) <= onset_end
             and _subsystem_matches(request.subsystem, symptom.subsystem)
             and _symptom_matches_context(request.affected_entity, symptom)
             and (
@@ -415,6 +437,16 @@ def rank_candidates(
             )
 
         counter: list[Evidence] = []
+        if application_entity_mismatch:
+            counter.append(
+                Evidence(
+                    "entity mismatch",
+                    "strong",
+                    "This installed-application change belongs to a different known application than the affected entity, so the reported symptom does not support it as a baseline break.",
+                    event.event_id,
+                )
+            )
+            score -= APPLICATION_ENTITY_MISMATCH_PENALTY
         if _is_per_user_service_event(event):
             counter.append(
                 Evidence(
@@ -525,10 +557,26 @@ def assess_investigation(
         state = "limited_coverage" if coverage_limited else "insufficient_evidence"
     else:
         lead = ranked[0]
+        application_changes = [event for event in changes if _is_direct_application_change(event)]
+        if (
+            request.affected_entity
+            and application_changes
+            and not any(
+                _context_identity_relation(request.affected_entity, event) == "match"
+                for event in application_changes
+            )
+            and any(
+                _context_identity_relation(request.affected_entity, event) == "mismatch"
+                for event in application_changes
+            )
+        ):
+            reasons.append(
+                f"No recent installed-application change matching {request.affected_entity} was recorded."
+            )
         if lead.confidence == "Low":
             reasons.append("The strongest candidate has only weak supporting evidence.")
         if lead.counter_evidence:
-            reasons.append("Related symptoms or signals existed before the strongest candidate change.")
+            reasons.append("The strongest candidate has material counter-evidence that limits causal support.")
         if lead.tie_count >= 3:
             reasons.append(
                 f"The strongest candidates are tied at the same score ({lead.tie_count} candidates), so no single change is uniquely supported."
