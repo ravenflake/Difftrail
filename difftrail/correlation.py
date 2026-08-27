@@ -49,6 +49,51 @@ SOURCE_PRIORITY: dict[str, int] = {
     "apps": 1,
 }
 
+# Explicit context is a bounded bonus on top of the established evidence
+# model. It is deliberately smaller than any two of temporal proximity,
+# subsystem relevance, and baseline evidence, so a name match cannot become
+# a causal conclusion by itself.
+ENTITY_RELEVANCE_BOOST = 0.12
+SUSPECTED_CHANGE_BOOST = 0.06
+_GENERIC_IDENTITY_WORDS = frozenset(
+    {
+        "app",
+        "application",
+        "changed",
+        "change",
+        "crash",
+        "crashed",
+        "detected",
+        "executable",
+        "hang",
+        "helper",
+        "install",
+        "installed",
+        "installer",
+        "process",
+        "removed",
+        "service",
+        "setup",
+        "stopped",
+        "update",
+        "updated",
+        "updater",
+    }
+)
+_IDENTITY_DETAIL_FIELDS = frozenset(
+    {
+        "application_name",
+        "device_name",
+        "display_name",
+        "executable",
+        "key",
+        "name",
+        "package_id",
+        "process_name",
+        "service_name",
+    }
+)
+
 @dataclass(frozen=True)
 class Evidence:
     signal: str
@@ -143,6 +188,54 @@ def _temporal_score(gap_hours: float) -> float:
     return math.exp(-gap_hours / 72.0)
 
 
+def _identity_key(value: object) -> str | None:
+    """Return a conservative identity key; never use broad fuzzy matching."""
+
+    text = str(value or "").strip().strip("\"'")
+    if not text:
+        return None
+    # Paths are identities only through their basename. Splitting camel case
+    # lets DiffTrailUpdater.exe normalize like "Difftrail update service".
+    text = re.split(r"[\\/]", text)[-1]
+    text = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", text)
+    text = re.sub(r"\.(?:exe|com|bat|cmd|msi)$", "", text, flags=re.IGNORECASE)
+    tokens = [
+        token
+        for token in re.findall(r"[a-z0-9]+", text.casefold())
+        if token not in _GENERIC_IDENTITY_WORDS
+    ]
+    return "".join(tokens) or None
+
+
+def _event_identity_keys(event: Event) -> set[str]:
+    values: list[object] = [event.entity, event.title]
+    for key, value in event.details.items():
+        if key in _IDENTITY_DETAIL_FIELDS:
+            values.append(value)
+        elif key in {"before", "after"} and isinstance(value, dict):
+            values.extend(
+                nested_value
+                for nested_key, nested_value in value.items()
+                if nested_key in _IDENTITY_DETAIL_FIELDS
+            )
+    return {key for value in values if (key := _identity_key(value))}
+
+
+def _context_matches_event(value: str | None, event: Event) -> bool:
+    key = _identity_key(value)
+    return bool(key and key in _event_identity_keys(event))
+
+
+def _symptom_matches_context(value: str | None, symptom: Event) -> bool:
+    """Exclude a known different entity, while retaining unidentified evidence."""
+
+    context_key = _identity_key(value)
+    if not context_key:
+        return True
+    symptom_keys = _event_identity_keys(symptom)
+    return not symptom_keys or context_key in symptom_keys
+
+
 def _strength(value: float) -> str:
     if value >= 0.78:
         return "strong"
@@ -231,11 +324,14 @@ def rank_candidates(
         gap_hours = max(0.0, (onset_start - event_time).total_seconds() / 3600)
         temporal = _temporal_score(gap_hours)
         relevance, relevance_text = _relevance(request.subsystem, event.subsystem)
+        entity_match = _context_matches_event(request.affected_entity, event)
+        suspected_change_match = _context_matches_event(request.suspected_change, event)
         supporting = [
             symptom
             for symptom in symptoms
             if event_time <= ensure_utc(symptom.occurred_at) <= onset_end
             and _subsystem_matches(request.subsystem, symptom.subsystem)
+            and _symptom_matches_context(request.affected_entity, symptom)
             and (
                 symptom.subsystem == event.subsystem
                 or symptom.subsystem in COMPATIBLE_SUBSYSTEMS.get(event.subsystem, set())
@@ -245,6 +341,7 @@ def rank_candidates(
             symptom
             for symptom in symptoms
             if lookback_start <= ensure_utc(symptom.occurred_at) < event_time
+            and _symptom_matches_context(request.affected_entity, symptom)
             and (
                 symptom.subsystem == request.subsystem
                 or request.subsystem == "general"
@@ -254,6 +351,10 @@ def rank_candidates(
         baseline = 0.9 if supporting and not prior_symptoms else 0.65 if supporting else 0.25
         rarity = 1.0 if source_counts[event.source] == 1 else max(0.35, 1.0 / source_counts[event.source])
         score = 0.35 * temporal + 0.35 * relevance + 0.2 * baseline + 0.1 * rarity
+        if entity_match:
+            score += ENTITY_RELEVANCE_BOOST
+        if suspected_change_match:
+            score += SUSPECTED_CHANGE_BOOST
 
         evidence: list[Evidence] = [
             Evidence(
@@ -264,6 +365,32 @@ def rank_candidates(
             ),
             Evidence("subsystem relevance", _strength(relevance), relevance_text, event.event_id),
         ]
+        if request.affected_entity:
+            evidence.append(
+                Evidence(
+                    "entity relevance",
+                    "strong" if entity_match else "weak",
+                    (
+                        "This change directly matches the affected entity supplied for the investigation."
+                        if entity_match
+                        else "This change does not directly match the affected entity supplied for the investigation."
+                    ),
+                    event.event_id,
+                )
+            )
+        if request.suspected_change:
+            evidence.append(
+                Evidence(
+                    "suspected change",
+                    "moderate" if suspected_change_match else "weak",
+                    (
+                        "This event matches the optional recent change suspected by the user."
+                        if suspected_change_match
+                        else "This event does not directly match the optional recent change suspected by the user."
+                    ),
+                    event.event_id,
+                )
+            )
         if supporting:
             evidence.append(
                 Evidence(
@@ -427,6 +554,8 @@ def investigation_summary(
         "onset_start": iso_datetime(request.onset_start),
         "onset_end": iso_datetime(request.onset_end),
         "lookback_days": request.lookback_days,
+        "affected_entity": request.affected_entity,
+        "suspected_change": request.suspected_change,
         "method": "deterministic evidence signals; no AI causal inference",
         "assessment": (
             assessment.as_dict()

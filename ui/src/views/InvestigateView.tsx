@@ -1,11 +1,11 @@
 import { FormEvent, useState } from "react";
-import type { InvestigationResponse } from "../types";
+import type { InvestigationInput, InvestigationResponse } from "../types";
 import { Icon } from "../components/Icon";
 import { subsystemLabel, subsystemOptions } from "../subsystems";
 
 interface Props {
   busy: boolean;
-  onInvestigate: (input: { description: string; subsystem?: string; onset?: string; lookback_days: number }) => Promise<InvestigationResponse>;
+  onInvestigate: (input: InvestigationInput) => Promise<InvestigationResponse>;
 }
 
 export function InvestigateView({ busy, onInvestigate }: Props) {
@@ -13,6 +13,8 @@ export function InvestigateView({ busy, onInvestigate }: Props) {
   const [subsystem, setSubsystem] = useState("general");
   const [lookback, setLookback] = useState("7");
   const [onset, setOnset] = useState("");
+  const [affectedEntity, setAffectedEntity] = useState("");
+  const [suspectedChange, setSuspectedChange] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -22,7 +24,14 @@ export function InvestigateView({ busy, onInvestigate }: Props) {
     setError(null);
     setSubmitting(true);
     try {
-      await onInvestigate({ description: description.trim(), subsystem: subsystem === "general" ? undefined : subsystem, onset: localDateTimeToUtcIso(onset), lookback_days: Number(lookback) });
+      await onInvestigate({
+        description: description.trim(),
+        subsystem: subsystem === "general" ? undefined : subsystem,
+        onset: localDateTimeToUtcIso(onset),
+        lookback_days: Number(lookback),
+        affected_entity: affectedEntity.trim() || undefined,
+        suspected_change: suspectedChange.trim() || undefined,
+      });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "The investigation could not be completed.");
     } finally {
@@ -43,6 +52,10 @@ export function InvestigateView({ busy, onInvestigate }: Props) {
           <div className="form-grid">
             <label className="field-label"><span>Area <em>optional</em></span><select value={subsystem} onChange={(event) => setSubsystem(event.target.value)}>{subsystemOptions.map((option) => <option key={option} value={option}>{option === "general" ? "Let Difftrail infer it" : subsystemLabel(option)}</option>)}</select></label>
             <label className="field-label"><span>Look back</span><select value={lookback} onChange={(event) => setLookback(event.target.value)}><option value="1">24 hours</option><option value="3">3 days</option><option value="7">7 days</option><option value="14">14 days</option><option value="30">30 days</option></select></label>
+          </div>
+          <div className="form-grid context-grid">
+            <label className="field-label"><span>Affected app, process, or device <em>optional</em></span><input value={affectedEntity} maxLength={200} onChange={(event) => setAffectedEntity(event.target.value)} placeholder="e.g. Difftrail.exe" /></label>
+            <label className="field-label"><span>Suspected recent change <em>optional</em></span><input value={suspectedChange} maxLength={200} onChange={(event) => setSuspectedChange(event.target.value)} placeholder="e.g. Difftrail update" /></label>
           </div>
           <label className="field-label onset-field"><span>When did it begin? <em>optional</em></span><input type="datetime-local" value={onset} onChange={(event) => setOnset(event.target.value)} /><small>Leave blank if it is happening now.</small></label>
           {error && <div className="form-error" role="alert"><Icon name="alert" size={15} /> {error}</div>}

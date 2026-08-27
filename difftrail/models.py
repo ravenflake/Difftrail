@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import re
 from typing import Any
 
 from .privacy import redact_public_text
@@ -104,6 +105,8 @@ class IncidentRequest:
     onset_end: datetime
     subsystem: str = "general"
     lookback_days: int = 7
+    affected_entity: str | None = None
+    suspected_change: str | None = None
 
     def __post_init__(self) -> None:
         if not self.description.strip():
@@ -114,6 +117,14 @@ class IncidentRequest:
             raise ValueError("lookback_days must be between 1 and 365")
         if self.subsystem not in KNOWN_SUBSYSTEMS:
             raise ValueError(f"Unsupported incident subsystem: {self.subsystem}")
+        for name, value in (
+            ("affected_entity", self.affected_entity),
+            ("suspected_change", self.suspected_change),
+        ):
+            if value is not None and not isinstance(value, str):
+                raise ValueError(f"{name} must be a string or None")
+            if value is not None and len(value.strip()) > 200:
+                raise ValueError(f"{name} must be 200 characters or fewer")
 
 
 def automatic_draft_request(
@@ -122,8 +133,42 @@ def automatic_draft_request(
     entity: str,
     occurred_at: datetime,
     subsystem: str,
+    action: str = "",
 ) -> IncidentRequest:
     """Build the canonical request used for an automatic investigation draft."""
+
+    identity = _safe_draft_identity(entity)
+    if action == "crash":
+        description = f"{identity} crashed" if identity else "Application crashed"
+    elif action == "hang":
+        description = f"{identity} stopped responding" if identity else "Application stopped responding"
+    else:
+        fallbacks = {
+            "driver_reset": "Display driver reset detected",
+            "unexpected_restart": "Unexpected restart detected",
+            "unexpected_shutdown": "Unexpected shutdown detected",
+            "failure": "Application failure detected" if subsystem == "application" else "System failure detected",
+        }
+        description = fallbacks.get(action, "System symptom detected")
+    normalized_subsystem = subsystem if subsystem in KNOWN_SUBSYSTEMS else "general"
+    return IncidentRequest(
+        description=description,
+        onset_start=occurred_at,
+        onset_end=occurred_at,
+        subsystem=normalized_subsystem,
+        lookback_days=7,
+        affected_entity=identity,
+    )
+
+
+def legacy_automatic_draft_request(
+    *,
+    title: str,
+    entity: str,
+    occurred_at: datetime,
+    subsystem: str,
+) -> IncidentRequest:
+    """Reconstruct a pre-v7 request when repairing older unlinked drafts."""
 
     safe_title = redact_public_text(title).strip()
     identity = redact_public_text(entity).strip()
@@ -138,6 +183,27 @@ def automatic_draft_request(
         subsystem=normalized_subsystem,
         lookback_days=7,
     )
+
+
+def _safe_draft_identity(raw: str) -> str | None:
+    value = str(raw or "").strip().strip("\"'")
+    generic = {"", "application error", "application hang", "unknown", "unknown app"}
+    if not value or value.casefold() in generic:
+        return None
+    contained_path = "\\" in value or "/" in value
+    value = re.split(r"[\\/]", value)[-1]
+    executable = re.match(
+        r'^"?(.+?\.(?:exe|com|bat|cmd|msi|msix|appx))(?=["\s]|$)',
+        value,
+        flags=re.IGNORECASE,
+    )
+    if executable:
+        value = executable.group(1)
+    elif contained_path:
+        return None
+    value = redact_public_text(value)
+    value = re.sub(r"[^A-Za-z0-9._() +\-]", "", value)[:80].strip()
+    return value if value and value.casefold() not in generic and "<path>" not in value.casefold() else None
 
 
 @dataclass(frozen=True)
