@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { createInvestigation, exportBundle, loadBootstrap, loadTimeline, markAutomationNotificationsRead, recordFeedback, recordOverhead, runScan, updateAutomationConfig, updateAutomationWatcher, waitForApi } from "./api";
+import { createInvestigation, deleteInvestigation, exportBundle, loadBootstrap, loadTimeline, markAutomationNotificationsRead, recordFeedback, recordOverhead, runScan, updateAutomationConfig, updateAutomationWatcher, waitForApi } from "./api";
 import { makePreviewBootstrap } from "./mock";
 import type { AutomationConfig, Bootstrap, Incident, InvestigationInput, TimelineFilters, View } from "./types";
 import { AppShell } from "./components/AppShell";
@@ -31,6 +31,34 @@ async function loadBootstrapWithRetry() {
   throw lastError instanceof Error ? lastError : new Error("The local journal is not available.");
 }
 
+function removeIncidentFromBootstrap(current: Bootstrap, incidentId: string): Bootstrap {
+  const removed = current.incidents.find((incident) => incident.id === incidentId);
+  if (!removed) return current;
+  return {
+    ...current,
+    incidents: current.incidents.filter((incident) => incident.id !== incidentId),
+    status: {
+      ...current.status,
+      incidents: Math.max(0, current.status.incidents - 1),
+      journal: {
+        ...current.status.journal,
+        journal: {
+          ...current.status.journal.journal,
+          incidents: Math.max(0, current.status.journal.journal.incidents - 1),
+        },
+      },
+    },
+    automation: {
+      ...current.automation,
+      drafts: removed.status === "draft" ? Math.max(0, current.automation.drafts - 1) : current.automation.drafts,
+      notifications: {
+        ...current.automation.notifications,
+        recent: current.automation.notifications.recent.map((notification) => notification.incident_id === incidentId ? { ...notification, incident_id: null } : notification),
+      },
+    },
+  };
+}
+
 export default function App() {
   const [view, setView] = useState<View>(routeFromHash);
   const [data, setData] = useState<Bootstrap | null>(null);
@@ -41,6 +69,8 @@ export default function App() {
   const [overheadError, setOverheadError] = useState<string | null>(null);
   const [exportBusy, setExportBusy] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedIncidentId, setSelectedIncidentId] = useState<string | null>(null);
   const [automationBusy, setAutomationBusy] = useState<"config" | "enable" | "disable" | "run" | "read" | null>(null);
@@ -165,6 +195,34 @@ export default function App() {
     setData((current) => current ? { ...current, incidents: current.incidents.map((incident) => incident.id === incidentId ? response.incident : incident) } : current);
   }, [connection]);
 
+  const handleDeleteInvestigation = useCallback(async (incidentId: string) => {
+    if (connection === "preview") {
+      const error = new Error("Connect the local journal to remove an investigation.");
+      setDeleteError(error.message);
+      throw error;
+    }
+    setDeleteBusy(true);
+    setDeleteError(null);
+    try {
+      await deleteInvestigation(incidentId);
+      try {
+        const next = await loadBootstrap();
+        setData(next);
+        setSelectedIncidentId(next.incidents[0]?.id ?? null);
+      } catch {
+        setData((current) => current ? removeIncidentFromBootstrap(current, incidentId) : current);
+        setSelectedIncidentId(null);
+        setDeleteError("Investigation removed, but the dashboard could not refresh.");
+      }
+    } catch (reason) {
+      const error = reason instanceof Error ? reason : new Error("The investigation could not be removed.");
+      setDeleteError(error.message);
+      throw error;
+    } finally {
+      setDeleteBusy(false);
+    }
+  }, [connection]);
+
   const handleAutomationConfig = useCallback(async (config: AutomationConfig) => {
     if (connection === "preview") {
       setAutomationError("Connect the local journal to save automation settings.");
@@ -234,7 +292,7 @@ export default function App() {
       {view === "home" && <HomeView data={data} onNavigate={navigate} onOpenIncident={(incident) => { setSelectedIncidentId(incident.id); navigate("incidents"); }} />}
       {view === "timeline" && <TimelineView events={data.events} onLoad={handleLoadTimeline} />}
       {view === "investigate" && <InvestigateView busy={false} onInvestigate={handleInvestigate} />}
-      {view === "incidents" && <IncidentsView incidents={data.incidents} selected={selectedIncident} onSelect={(incident) => setSelectedIncidentId(incident.id)} onNavigate={() => navigate("investigate")} onFeedback={handleFeedback} onExport={handleExportBundle} exportBusy={exportBusy} exportError={exportError} />}
+      {view === "incidents" && <IncidentsView incidents={data.incidents} selected={selectedIncident} onSelect={(incident) => { setDeleteError(null); setSelectedIncidentId(incident.id); }} onNavigate={() => navigate("investigate")} onFeedback={handleFeedback} onDelete={handleDeleteInvestigation} onExport={handleExportBundle} exportBusy={exportBusy} exportError={exportError} deleteBusy={deleteBusy} deleteError={deleteError} />}
       {view === "health" && <HealthView data={data} onRecordOverhead={handleRecordOverhead} recording={recordingOverhead} error={overheadError} onExport={() => handleExportBundle()} exportBusy={exportBusy} exportError={exportError} />}
       {view === "automation" && <AutomationView automation={data.automation} connection={connection} busy={automationBusy} error={automationError} notice={automationNotice} onConfigSave={handleAutomationConfig} onWatcherAction={handleAutomationWatcher} onMarkRead={handleMarkAutomationRead} onNavigate={navigate} />}
     </AppShell>

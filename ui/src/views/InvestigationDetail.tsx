@@ -7,20 +7,37 @@ import { EvidenceList } from "../components/EvidenceList";
 interface Props {
   incident: Incident;
   onFeedback: (incidentId: string, outcome: "correct" | "incorrect" | "unknown", eventId?: string) => Promise<void>;
+  onDelete: (incidentId: string) => Promise<void>;
   onExport: (incidentId: string) => Promise<void>;
   exportBusy: boolean;
   exportError: string | null;
+  deleteBusy: boolean;
+  deleteError: string | null;
 }
 
-export function InvestigationDetail({ incident, onFeedback, onExport, exportBusy, exportError }: Props) {
+export function InvestigationDetail({ incident, onFeedback, onDelete, onExport, exportBusy, exportError, deleteBusy, deleteError }: Props) {
   const [feedbackBusy, setFeedbackBusy] = useState(false);
   const [feedbackError, setFeedbackError] = useState<string | null>(null);
+  const [removeConfirming, setRemoveConfirming] = useState(false);
   const lead = incident.results[0];
   const assessment = incident.assessment || "insufficient_evidence";
+  const leadTieCount = lead
+    ? Math.max(lead.tie_count || 1, incident.results.filter((item) => item.score === lead.score).length)
+    : 1;
+  const leadConfidence = lead && leadTieCount >= 3 && lead.confidence === "High" ? "Medium" : lead?.confidence;
 
   async function giveFeedback(outcome: "correct" | "incorrect" | "unknown", eventId?: string) {
     setFeedbackBusy(true); setFeedbackError(null);
     try { await onFeedback(incident.id, outcome, eventId); } catch (reason) { setFeedbackError(reason instanceof Error ? reason.message : "Feedback could not be saved."); } finally { setFeedbackBusy(false); }
+  }
+
+  async function removeInvestigation() {
+    try {
+      await onDelete(incident.id);
+      setRemoveConfirming(false);
+    } catch {
+      // The parent owns the error message so it can also report refresh failures.
+    }
   }
 
   return (
@@ -29,13 +46,17 @@ export function InvestigationDetail({ incident, onFeedback, onExport, exportBusy
         <div><span className="eyebrow">Investigation</span><h2>{incident.description}</h2><div className="heading-meta"><span>{subsystemLabel(incident.subsystem)}</span><span>·</span><span>Started {formatDateTime(incident.onset_start)}</span><span>·</span><span>{incident.lookback_days}-day lookback</span></div>{(incident.affected_entity || incident.suspected_change) && <div className="heading-context">{incident.affected_entity && <span><strong>Affected:</strong> {incident.affected_entity}</span>}{incident.suspected_change && <span><strong>Suspected change:</strong> {incident.suspected_change}</span>}</div>}</div>
         <button type="button" className="button button-secondary button-small" onClick={() => void onExport(incident.id)} disabled={exportBusy}>{exportBusy ? "Preparing…" : "Export investigation"}</button>
       </section>
+      <div className="incident-heading-actions">
+        {!removeConfirming ? <button type="button" className="button button-danger button-small" onClick={() => setRemoveConfirming(true)} disabled={deleteBusy}>Remove investigation</button> : <div className="incident-remove-confirm" role="group" aria-label="Confirm investigation removal"><span>Remove this investigation?</span><button type="button" className="button button-danger button-small" onClick={() => void removeInvestigation()} disabled={deleteBusy} aria-busy={deleteBusy}>{deleteBusy ? "Removing..." : "Confirm remove"}</button><button type="button" className="button button-secondary button-small" onClick={() => setRemoveConfirming(false)} disabled={deleteBusy}>Cancel</button></div>}
+      </div>
       <AssessmentBanner state={assessment} reasons={incident.assessment_reasons || []} />
       {exportError && <div className="form-error" role="alert"><Icon name="alert" size={14} /> {exportError}</div>}
+      {deleteError && <div className="form-error" role="alert"><Icon name="alert" size={14} /> {deleteError}</div>}
 
       {!lead ? <div className="large-empty"><h3>{emptyTitle(assessment)}</h3><p>{emptyBody(assessment)}</p></div> : <>
-        <section className={`lead-card confidence-border-${lead.confidence.toLowerCase()}`}>
-          <div className="lead-card-top"><span className={`confidence-badge confidence-${lead.confidence.toLowerCase()}`}><span className="confidence-dot" />{lead.confidence} confidence</span><span className="rank-label">Top candidate</span></div>
-          <div className="lead-card-body"><div className="lead-icon"><Icon name="spark" size={24} /></div><div><span className="eyebrow">{leadLabel(assessment)}</span><h3>{lead.event.title}</h3><p className="lead-subtitle">{lead.event.entity || subsystemLabel(lead.event.subsystem)} · {formatDateTime(lead.event.occurred_at)}</p></div></div>
+        <section className={`lead-card confidence-border-${leadConfidence?.toLowerCase() || "none"}`}>
+          <div className="lead-card-top"><span className={`confidence-badge confidence-${leadConfidence?.toLowerCase() || "none"}`}><span className="confidence-dot" />{leadConfidence} confidence</span><span className="rank-label">{leadTieCount > 1 ? `Top candidate · tied with ${leadTieCount - 1} others` : "Top candidate"}</span></div>
+          <div className="lead-card-body"><div className="lead-icon"><Icon name="spark" size={24} /></div><div><span className="eyebrow">{leadLabel(assessment, leadTieCount)}</span><h3>{lead.event.title}</h3><p className="lead-subtitle">{lead.event.entity || subsystemLabel(lead.event.subsystem)} · {formatDateTime(lead.event.occurred_at)}</p>{leadTieCount > 1 && <small className="candidate-ambiguity">These changes share the same ranking score; none is uniquely supported.</small>}</div></div>
           <div className="lead-divider" />
           <div className="why-grid"><div><span className="eyebrow">Why it is here</span><EvidenceList items={lead.evidence} /></div><div className="next-step"><span className="eyebrow">Next step</span><p>{lead.next_action}</p><button type="button" className="button button-tertiary button-small" onClick={() => copyText(lead.safe_diagnostic.target)}><Icon name="copy" size={14} /> Copy {lead.safe_diagnostic.label} target</button><small>{lead.safe_diagnostic.note}</small></div></div>
           {lead.counter_evidence.length > 0 && <div className="counter-block"><span className="eyebrow">Counter-evidence</span><EvidenceList items={lead.counter_evidence} counter /></div>}
@@ -60,7 +81,8 @@ function AssessmentBanner({ state, reasons }: { state: AssessmentState; reasons:
   return <section className={`assessment-banner assessment-${state}`} role="status"><div className="assessment-icon"><Icon name={state === "candidate_found" ? "spark" : "alert"} size={17} /></div><div><strong>{copy.title}</strong><p>{copy.body}</p>{reasons.length > 0 && <ul>{reasons.map((reason, index) => <li key={`${reason}-${index}`}>{reason}</li>)}</ul>}</div></section>;
 }
 
-function leadLabel(state: AssessmentState): string {
+function leadLabel(state: AssessmentState, tieCount: number): string {
+  if (tieCount > 1) return "Candidate, tied with other changes";
   if (state === "candidate_found") return "Most plausible recent change";
   if (state === "limited_coverage") return "Candidate, with limited coverage";
   return "Candidate, not a conclusion";

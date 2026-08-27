@@ -23,8 +23,8 @@ from difftrail.automation import (
     _watcher_status_message,
     update_automation_config,
 )
-from difftrail.db import Database
-from difftrail.models import Event, utc_now
+from difftrail.db import Database, _AUTOMATION_LINK_REPAIR_BATCH
+from difftrail.models import Event, IncidentRequest, iso_datetime, utc_now
 
 
 class AutomationTests(unittest.TestCase):
@@ -67,7 +67,15 @@ class AutomationTests(unittest.TestCase):
             self.assertEqual(database.automation_draft_count(), 1)
             self.assertEqual(database.unread_automation_notification_count(), 1)
             snapshot = automation_snapshot(database)
-            self.assertEqual(snapshot["notifications"]["recent"][0]["incident_id"], database.recent_incidents()[0]["id"])
+            incident_id = database.recent_incidents()[0]["id"]
+            self.assertEqual(snapshot["notifications"]["recent"][0]["incident_id"], incident_id)
+            self.assertEqual(
+                database.connection.execute(
+                    "SELECT incident_id FROM automation_actions WHERE event_id = ? AND action = 'draft_investigation'",
+                    (stored.event_id,),
+                ).fetchone()[0],
+                incident_id,
+            )
             draft = database.recent_incidents()[0]
             self.assertEqual(draft["description"], "Example.exe crashed")
             self.assertEqual(draft["affected_entity"], "Example.exe")
@@ -226,6 +234,57 @@ class AutomationTests(unittest.TestCase):
             self.assertEqual(database.unread_automation_notification_count(), 1)
             self.assertEqual(database.list_automation_notifications()[0]["kind"], "change")
 
+    def test_hardware_refresh_burst_retains_events_without_notification_storm(self) -> None:
+        with Database(":memory:") as database:
+            events = [
+                Event(utc_now(), "change", "driver", "updated", f"Driver {index} updated", severity="high", source="drivers", event_id=f"driver-{index}")
+                for index in range(12)
+            ]
+            database.save_events(events)
+            stored = database.list_events(limit=20)
+
+            result = process_scan_events(database, SimpleNamespace(scan_id="hardware-wave", errors=()), stored)
+
+            self.assertEqual(result, {"notifications": 0, "drafts": 0})
+            self.assertEqual(database.count_events("change"), 12)
+            self.assertEqual(database.unread_automation_notification_count(), 0)
+
+    def test_automatic_crash_draft_includes_safe_entity_identity(self) -> None:
+        with Database(":memory:") as database:
+            event = Event(utc_now(), "symptom", "application", "crash", "Application crash detected", entity="Example.exe", severity="high", source="eventlog", event_id="named-crash")
+            process_scan_events(database, SimpleNamespace(scan_id="named", errors=()), [event])
+            self.assertIn("Example.exe", database.recent_incidents()[0]["description"])
+
+    def test_automatic_crash_draft_redacts_title_paths(self) -> None:
+        with Database(":memory:") as database:
+            event = Event(
+                utc_now(),
+                "symptom",
+                "application",
+                "crash",
+                r"Crash in C:\Program Files\Secret\tool.exe",
+                severity="high",
+                source="eventlog",
+                event_id="path-title-crash",
+            )
+            process_scan_events(database, SimpleNamespace(scan_id="path-title", errors=()), [event])
+            description = database.recent_incidents()[0]["description"]
+            # With no entity, the description uses the generic fallback
+            self.assertEqual(description, "Application crashed")
+            self.assertNotIn(r"C:\Program Files\Secret\tool.exe", description)
+
+    def test_legacy_null_draft_link_is_repaired_atomically(self) -> None:
+        with Database(":memory:") as database:
+            event = Event(utc_now(), "symptom", "application", "crash", "Application crash", entity="Example.exe", severity="high", source="eventlog", event_id="legacy-null-link")
+            database.record_automation_action(event.event_id, "draft_investigation")
+
+            result = process_scan_events(database, SimpleNamespace(scan_id="repair", errors=()), [event])
+
+            self.assertEqual(result["drafts"], 1)
+            incident_id = database.automation_action_incident_id(event.event_id, "draft_investigation")
+            self.assertIsNotNone(incident_id)
+            self.assertIsNotNone(database.get_incident(incident_id))
+
     def test_failed_notification_does_not_commit_its_idempotency_marker(self) -> None:
         with Database(":memory:") as database:
             event = Event(
@@ -272,6 +331,135 @@ class AutomationTests(unittest.TestCase):
             self.assertEqual(process_scan_events(database, result, [event])["drafts"], 1)
             notification = database.list_automation_notifications()[0]
             self.assertEqual(notification["incident_id"], database.recent_incidents()[0]["id"])
+
+    def test_unlinked_automatic_draft_is_repaired_when_journal_reopens(self) -> None:
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / "journal.db"
+            now = utc_now()
+            with Database(path) as database:
+                event = Event(
+                    now,
+                    "symptom",
+                    "application",
+                    "crash",
+                    "Application crash detected",
+                    severity="high",
+                    source="eventlog",
+                    event_id="legacy-unlinked-draft",
+                )
+                database.save_events([event])
+                incident = database.create_incident(
+                    IncidentRequest("Automatic draft: Application crash detected", now, now, "application", 7),
+                    status="draft",
+                )
+                database.record_automation_action(event.event_id, "draft_investigation")
+                database.create_automation_notification(
+                    kind="crash",
+                    title="High-severity signal detected",
+                    body="Review the evidence.",
+                    event_id=event.event_id,
+                )
+
+            with Database(path) as reopened:
+                action = reopened.connection.execute(
+                    "SELECT incident_id FROM automation_actions WHERE event_id = ? AND action = 'draft_investigation'",
+                    ("legacy-unlinked-draft",),
+                ).fetchone()
+                notification = reopened.list_automation_notifications()[0]
+                self.assertEqual(action[0], incident.id)
+                self.assertEqual(notification["incident_id"], incident.id)
+
+    def test_unlinked_draft_repair_uses_complete_automatic_request(self) -> None:
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / "journal.db"
+            now = utc_now()
+            with Database(path) as database:
+                event = Event(
+                    now,
+                    "symptom",
+                    "legacy-area",
+                    "crash",
+                    "Application crash detected",
+                    entity="Example.exe",
+                    severity="high",
+                    source="eventlog",
+                    event_id="complete-automatic-draft",
+                )
+                database.save_events([event])
+                incident = database.create_incident(
+                    IncidentRequest(
+                        "Automatic draft: Application crash detected · Example.exe",
+                        now,
+                        now,
+                        "general",
+                        7,
+                    ),
+                    status="draft",
+                )
+                database.record_automation_action(event.event_id, "draft_investigation")
+
+            with Database(path) as reopened:
+                action = reopened.connection.execute(
+                    "SELECT incident_id FROM automation_actions WHERE event_id = ?",
+                    ("complete-automatic-draft",),
+                ).fetchone()
+                self.assertEqual(action[0], incident.id)
+
+    def test_automation_link_repair_processes_bounded_batches(self) -> None:
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / "journal.db"
+            start = utc_now()
+            with Database(path) as database:
+                for index in range(_AUTOMATION_LINK_REPAIR_BATCH + 1):
+                    database.record_automation_action(
+                        f"batch-marker-{index}",
+                        "draft_investigation",
+                        created_at=start + timedelta(seconds=index),
+                    )
+
+                database._repair_automation_links()
+                first_cursor = json.loads(database.get_meta("automation:link-repair-cursor") or "{}")
+                self.assertEqual(
+                    first_cursor["created_at"],
+                    iso_datetime(start + timedelta(seconds=_AUTOMATION_LINK_REPAIR_BATCH - 1)),
+                )
+
+                database._repair_automation_links()
+                second_cursor = json.loads(database.get_meta("automation:link-repair-cursor") or "{}")
+                self.assertEqual(
+                    second_cursor["created_at"],
+                    iso_datetime(start + timedelta(seconds=_AUTOMATION_LINK_REPAIR_BATCH)),
+                )
+
+    def test_automation_link_repair_advances_past_unmatched_markers(self) -> None:
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / "journal.db"
+            with Database(path) as database:
+                event = Event(
+                    utc_now(),
+                    "symptom",
+                    "application",
+                    "crash",
+                    "Unmatched application crash",
+                    severity="high",
+                    source="eventlog",
+                    event_id="unmatched-repair-marker",
+                )
+                database.save_events([event])
+                database.record_automation_action(event.event_id, "draft_investigation")
+
+                trace: list[str] = []
+                database._repair_automation_links()
+                cursor = json.loads(database.get_meta("automation:link-repair-cursor") or "{}")
+                database.connection.set_trace_callback(trace.append)
+                database._repair_automation_links()
+                database.connection.set_trace_callback(None)
+
+                self.assertEqual(cursor["id"], database.connection.execute(
+                    "SELECT id FROM automation_actions WHERE event_id = ?",
+                    (event.event_id,),
+                ).fetchone()[0])
+                self.assertFalse(any("SELECT title, subsystem, occurred_at" in statement for statement in trace))
 
     def test_failed_notification_retry_links_existing_draft(self) -> None:
         with Database(":memory:") as database:

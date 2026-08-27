@@ -122,6 +122,7 @@ def _safe_hypothesis(hypothesis: Any) -> dict[str, Any]:
         diagnostic = {}
     result = {
         "score": hypothesis.get("score"),
+        "tie_count": hypothesis.get("tie_count", 1),
         "confidence": hypothesis.get("confidence"),
         "next_action": _safe_text(hypothesis.get("next_action", "")),
         "safe_diagnostic": {

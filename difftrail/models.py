@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from .privacy import redact_public_text
+
 
 UTC = timezone.utc
 KNOWN_SUBSYSTEMS = frozenset(
@@ -122,6 +124,30 @@ class IncidentRequest:
                 raise ValueError(f"{name} must be a string or None")
             if value is not None and len(value.strip()) > 200:
                 raise ValueError(f"{name} must be 200 characters or fewer")
+
+
+def automatic_draft_request(
+    *,
+    title: str,
+    entity: str,
+    occurred_at: datetime,
+    subsystem: str,
+) -> IncidentRequest:
+    """Build the canonical request used for an automatic investigation draft."""
+
+    safe_title = redact_public_text(title).strip()
+    identity = redact_public_text(entity).strip()
+    description = f"Automatic draft: {safe_title}" + (
+        f" · {identity}" if identity and identity not in safe_title else ""
+    )
+    normalized_subsystem = subsystem if subsystem in KNOWN_SUBSYSTEMS else "general"
+    return IncidentRequest(
+        description=description,
+        onset_start=occurred_at,
+        onset_end=occurred_at,
+        subsystem=normalized_subsystem,
+        lookback_days=7,
+    )
 
 
 @dataclass(frozen=True)

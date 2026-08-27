@@ -2,13 +2,18 @@ from __future__ import annotations
 
 import hashlib
 import platform
+from collections import Counter
 from datetime import datetime, timedelta
 from typing import Any, Callable
 
 from ..correlation import infer_subsystem
 from ..models import Event, SnapshotItem, iso_datetime, parse_datetime
 from ..privacy import extract_safe_application_name, redact_text
+from ..service_identity import per_user_service_identity
 from .powershell import PowerShellError, run_json
+
+
+_PER_USER_SERVICE_KEY_PREFIX = "per-user:"
 
 
 def _text(row: dict[str, Any], key: str, default: str = "") -> str:
@@ -19,6 +24,12 @@ def _text(row: dict[str, Any], key: str, default: str = "") -> str:
     # bytes. Treat them consistently so a provider representation glitch does
     # not look like a service or application change on the next scan.
     return str(value).replace("\x00", "").replace("\ufffd", "").replace("\ufffe", "").replace("\uffff", "")
+
+
+def _service_text(row: dict[str, Any], key: str, default: str = "") -> str:
+    """Normalize provider representation noise without hiding configuration."""
+
+    return _text(row, key, default).strip()
 
 
 def _subsystem_for_device(row: dict[str, Any]) -> str:
@@ -115,6 +126,7 @@ $rows = @(Get-CimInstance Win32_Service | ForEach-Object {
         StartMode = [string]$_.StartMode
         StartName = [string]$_.StartName
         PathName = [string]$_.PathName
+        ServiceType = [string]$_.ServiceType
     }
 })
 if ($null -eq $rows) { $rows = @() }
@@ -252,28 +264,71 @@ $rows | ConvertTo-Json -Depth 5 -Compress
         ]
 
     def _services(self, rows: list[dict[str, Any]]) -> list[SnapshotItem]:
-        return [
-            SnapshotItem(
+        named_rows: list[tuple[dict[str, Any], str, str, str, tuple[str, str] | None]] = []
+        for row in rows:
+            name = _service_text(row, "Name")
+            if not name:
+                continue
+            path = _service_text(row, "PathName").rstrip("?").rstrip()
+            service_type = _service_text(row, "ServiceType")
+            identity = per_user_service_identity(name, path=path, service_type=service_type)
+            named_rows.append((row, name, path, service_type, identity))
+
+        family_counts = Counter(
+            identity[0].casefold()
+            for _, _, _, _, identity in named_rows
+            if identity is not None
+        )
+        items: list[SnapshotItem] = []
+        for row, name, path, service_type, identity in named_rows:
+            base_name = identity[0] if identity else name
+            # Multiple concurrently active users can have instances from the
+            # same family. Preserve their distinct identities rather than
+            # allowing a dictionary snapshot to overwrite evidence.
+            if identity is None:
+                key = name
+            elif family_counts[base_name.casefold()] == 1:
+                key = f"{_PER_USER_SERVICE_KEY_PREFIX}{base_name}"
+            else:
+                key = f"{_PER_USER_SERVICE_KEY_PREFIX}{name}"
+            display_name = _service_text(row, "DisplayName", name)
+            if identity is not None:
+                display_identity = per_user_service_identity(
+                    display_name,
+                    path=path,
+                    service_type=service_type,
+                )
+                if display_identity is not None:
+                    display_name = display_identity[0]
+            payload: dict[str, Any] = {
+                "name": name,
+                "display_name": _service_text(row, "DisplayName"),
+                "state": _service_text(row, "State"),
+                "start_mode": _service_text(row, "StartMode"),
+                "start_name": _service_text(row, "StartName"),
+                "path": path,
+                "service_type": service_type,
+            }
+            if identity is not None:
+                payload.update(
+                    {
+                        "per_user_service": True,
+                        "service_base_name": base_name,
+                        "service_instance_suffix": identity[1],
+                    }
+                )
+            items.append(SnapshotItem(
                 source="services",
-                key=_text(row, "Name"),
+                key=key,
                 subsystem=_subsystem_for_service(row),
-                display_name=f"Service {_text(row, 'DisplayName', _text(row, 'Name'))}",
-                payload={
-                    "name": _text(row, "Name"),
-                    "display_name": _text(row, "DisplayName"),
-                    "state": _text(row, "State"),
-                    "start_mode": _text(row, "StartMode"),
-                    "start_name": _text(row, "StartName"),
-                    "path": _text(row, "PathName"),
-                },
-                severity="medium",
-                entity=_text(row, "Name"),
+                display_name=f"Service {display_name}",
+                payload=payload,
+                severity="low" if identity is not None else "medium",
+                entity=base_name,
                 action_on_add="added",
                 action_on_update="updated",
-            )
-            for row in rows
-            if _text(row, "Name")
-        ]
+            ))
+        return items
 
     def _tasks(self, rows: list[dict[str, Any]]) -> list[SnapshotItem]:
         return [

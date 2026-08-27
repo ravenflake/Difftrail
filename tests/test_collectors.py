@@ -9,6 +9,73 @@ from difftrail.privacy import extract_safe_application_name
 
 
 class CollectorTests(unittest.TestCase):
+    def test_per_user_service_suffix_uses_stable_logical_key(self) -> None:
+        collector = WindowsCollector()
+        metadata = {
+            "DisplayName": "Push notifications",
+            "PathName": r"C:\Windows\System32\svchost.exe -k UnistackSvcGroup",
+            "ServiceType": "Share Process",
+        }
+        first = collector._services([{"Name": "WpnUserService_a1234", **metadata}])[0]
+        second = collector._services([{"Name": "WpnUserService_d7351", **metadata}])[0]
+        self.assertEqual(first.key, "per-user:WpnUserService")
+        self.assertEqual(second.key, first.key)
+        self.assertNotEqual(first.payload["name"], second.payload["name"])
+
+    def test_concurrent_per_user_instances_keep_distinct_keys(self) -> None:
+        items = WindowsCollector()._services([
+            {"Name": "WpnUserService_a1234", "PathName": "svchost.exe", "ServiceType": "Share Process"},
+            {"Name": "WpnUserService_d7351", "PathName": "svchost.exe", "ServiceType": "Share Process"},
+        ])
+        self.assertEqual(
+            {item.key for item in items},
+            {"per-user:WpnUserService_a1234", "per-user:WpnUserService_d7351"},
+        )
+
+    def test_hex_suffix_alone_does_not_create_a_per_user_service_identity(self) -> None:
+        item = WindowsCollector()._services([
+            {
+                "Name": "Example_abcd",
+                "PathName": r"C:\Program Files\Example\service.exe",
+                "ServiceType": "Own Process",
+            }
+        ])[0]
+
+        self.assertEqual(item.key, "Example_abcd")
+        self.assertNotIn("per_user_service", item.payload)
+
+    def test_service_template_and_per_user_instance_keep_distinct_keys(self) -> None:
+        rows = [
+            {
+                "Name": "OneSyncSvc",
+                "DisplayName": "OneSyncSvc",
+                "PathName": r"C:\Windows\System32\OneSyncSvc.dll",
+                "ServiceType": "Own Process",
+            },
+            {
+                "Name": "OneSyncSvc_c837b",
+                "DisplayName": "OneSyncSvc_c837b",
+                "PathName": r"C:\Windows\System32\svchost.exe -k UnistackSvcGroup",
+                "ServiceType": "Share Process",
+            },
+        ]
+
+        first = WindowsCollector()._services(rows)
+        second = WindowsCollector()._services(rows)
+
+        self.assertEqual(
+            {item.key for item in first},
+            {"OneSyncSvc", "per-user:OneSyncSvc"},
+        )
+        self.assertEqual(
+            {item.key: item.payload["name"] for item in first},
+            {"OneSyncSvc": "OneSyncSvc", "per-user:OneSyncSvc": "OneSyncSvc_c837b"},
+        )
+        self.assertEqual(
+            {item.key for item in second},
+            {item.key for item in first},
+        )
+
     def test_powershell_collection_is_windowless_on_windows(self) -> None:
         completed = subprocess.CompletedProcess(["powershell.exe"], 0, "[]", "")
         windowless_flag = 0x08000000
@@ -71,6 +138,27 @@ class CollectorTests(unittest.TestCase):
             ]
         )
         self.assertEqual(items[0].subsystem, "graphics")
+
+    def test_per_user_service_suffix_is_normalized_to_stable_identity(self) -> None:
+        collector = WindowsCollector()
+        items = collector._services(
+            [
+                {
+                    "Name": "OneSyncSvc_c837b",
+                    "DisplayName": "OneSyncSvc_c837b",
+                    "PathName": r"C:\Windows\System32\svchost.exe -k UnistackSvcGroup",
+                    "ServiceType": "Share Process",
+                    "State": "Stopped",
+                    "StartMode": "Manual",
+                    "StartName": "",
+                }
+            ]
+        )
+        self.assertEqual(items[0].key, "per-user:OneSyncSvc")
+        self.assertEqual(items[0].entity, "OneSyncSvc")
+        self.assertEqual(items[0].display_name, "Service OneSyncSvc")
+        self.assertTrue(items[0].payload["per_user_service"])
+        self.assertEqual(items[0].payload["service_instance_suffix"], "c837b")
 
     def test_nvidia_high_definition_audio_is_audio_not_graphics(self) -> None:
         collector = WindowsCollector()

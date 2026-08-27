@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import sys
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
@@ -674,14 +675,47 @@ def _create_investigation_draft(database: Database, event: Event) -> tuple[str |
         lookback_days=7,
         affected_entity=affected_entity,
     )
-    # Keep the idempotency marker together with both incident writes. If
-    # ranking/persistence fails, a later watcher pass can create the draft.
+    # Allocate the incident id before recording the marker. The marker and
+    # incident then carry the same id inside one transaction, so a concurrent
+    # watcher cannot leave a successful draft with a null association.
+    draft_id = str(uuid.uuid4())
     with database.connection:
-        if not database.record_automation_action(event.event_id, "draft_investigation", commit=False):
-            return database.automation_action_incident_id(event.event_id, "draft_investigation"), False
-        run = run_investigation(database, request, status="draft", commit=False)
-        database.link_automation_action_to_incident(
-            event.event_id, "draft_investigation", run.incident.id, commit=False
+        existing_id = database.automation_action_incident_id(event.event_id, "draft_investigation")
+        if existing_id and database.get_incident(existing_id) is not None:
+            return existing_id, False
+
+        marked = database.record_automation_action(
+            event.event_id,
+            "draft_investigation",
+            incident_id=draft_id,
+            commit=False,
+        )
+        if not marked:
+            # Repair a marker written by an older build or a retry that lost
+            # its link, but only when the complete automatic request matches
+            # one existing draft.
+            existing_id = database.automation_action_incident_id(event.event_id, "draft_investigation")
+            if existing_id:
+                return existing_id, False
+            matching_id = database.find_incident_id(request, status="draft")
+            if matching_id:
+                database.link_automation_action_to_incident(
+                    event.event_id, "draft_investigation", matching_id, commit=False
+                )
+                return matching_id, False
+            # A legacy null marker without its draft can be claimed in this
+            # transaction so the retry still remains idempotent.
+            if not database.link_automation_action_to_incident(
+                event.event_id, "draft_investigation", draft_id, commit=False
+            ):
+                return None, False
+
+        run = run_investigation(
+            database,
+            request,
+            status="draft",
+            incident_id=draft_id,
+            commit=False,
         )
     return run.incident.id, True
 
@@ -697,7 +731,12 @@ def process_scan_events(
     notifications = 0
     drafts = 0
     draft_failed = False
-    for event in events:
+    scan_events = list(events)
+    hardware_burst = sum(
+        event.kind == "change" and event.source in {"drivers", "devices"}
+        for event in scan_events
+    ) >= 8
+    for event in scan_events:
         if not event.event_id:
             continue
         crash_signal = _is_crash_signal(event)
@@ -725,7 +764,13 @@ def process_scan_events(
                 incident_id=incident_id,
             ):
                 notifications += 1
-        elif event.kind == "change" and event.severity in {"high", "critical"} and config["notify_on_changes"]:
+        elif (
+            event.kind == "change"
+            and event.severity in {"high", "critical"}
+            and config["notify_on_changes"]
+            and not (hardware_burst and event.source in {"drivers", "devices"})
+            and event.details.get("refresh_kind") != "per_user_service_instances"
+        ):
             if _queue_event_notification(
                 database,
                 event,

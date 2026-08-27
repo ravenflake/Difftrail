@@ -18,7 +18,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse, urlsplit
+from urllib.parse import parse_qs, unquote, urlparse, urlsplit
 
 from . import __version__
 from .automation import (
@@ -136,9 +136,17 @@ def _public_hypothesis(hypothesis: dict[str, Any]) -> dict[str, Any]:
     diagnostic = raw.get("safe_diagnostic") if isinstance(raw.get("safe_diagnostic"), dict) else {}
     evidence = raw.get("evidence") if isinstance(raw.get("evidence"), list) else []
     counter_evidence = raw.get("counter_evidence") if isinstance(raw.get("counter_evidence"), list) else []
+    tie_count = raw.get("tie_count", 1)
+    if isinstance(tie_count, bool):
+        tie_count = 1
+    try:
+        tie_count = max(1, int(tie_count))
+    except (TypeError, ValueError, OverflowError):
+        tie_count = 1
     result: dict[str, Any] = {
         "score": score,
         "confidence": confidence if confidence in VALID_CONFIDENCES else "Low",
+        "tie_count": tie_count,
         "next_action": redact_public_text(str(raw.get("next_action", ""))),
         "safe_diagnostic": {
             key: redact_public_text(str(diagnostic.get(key, "")))
@@ -359,6 +367,12 @@ def create_investigation(database: Database, body: dict[str, Any]) -> dict[str, 
     return {"summary": public_summary, "incident": public_incident(stored)}
 
 
+def delete_investigation(database: Database, incident_id: str) -> bool:
+    if not incident_id.strip():
+        raise ValueError("incident_id must not be empty")
+    return database.delete_incident(incident_id)
+
+
 def create_bundle(database: Database, body: dict[str, Any]) -> dict[str, Any]:
     raw_days = body.get("days", 30)
     if isinstance(raw_days, bool) or (isinstance(raw_days, float) and not raw_days.is_integer()):
@@ -406,7 +420,7 @@ class UiRequestHandler(BaseHTTPRequestHandler):
         if origin in ALLOWED_ORIGINS:
             self.send_header("Access-Control-Allow-Origin", origin)
             self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Difftrail-Token")
-            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Methods", "DELETE, GET, POST, OPTIONS")
             self.send_header("Vary", "Origin")
         self.end_headers()
         self.wfile.write(encoded)
@@ -513,7 +527,7 @@ class UiRequestHandler(BaseHTTPRequestHandler):
         if origin in ALLOWED_ORIGINS:
             self.send_header("Access-Control-Allow-Origin", origin)
             self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Difftrail-Token")
-            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Methods", "DELETE, GET, POST, OPTIONS")
             self.send_header("Vary", "Origin")
         self.end_headers()
 
@@ -578,6 +592,28 @@ class UiRequestHandler(BaseHTTPRequestHandler):
             self._send(200, payload)
         except (ValueError, OSError) as exc:
             self._error(400, str(exc))
+
+    def do_DELETE(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        if not self._request_allowed():
+            return
+        parsed = urlparse(self.path)
+        path = parsed.path.rstrip("/") or "/"
+        if not path.startswith("/api/incidents/") or path.endswith("/feedback"):
+            self._error(404, "Difftrail UI endpoint not found")
+            return
+        incident_id = unquote(path.removeprefix("/api/incidents/"))
+        if not incident_id or "/" in incident_id:
+            self._error(404, "Investigation not found")
+            return
+        try:
+            deleted = self._with_database(lambda db: delete_investigation(db, incident_id))
+        except (ValueError, OSError) as exc:
+            self._error(400, str(exc))
+            return
+        if not deleted:
+            self._error(404, "Investigation not found")
+            return
+        self._send(200, {"deleted": True, "incident_id": redact_public_text(incident_id)})
 
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         if not self._request_allowed():

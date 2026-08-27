@@ -10,7 +10,17 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .assessment import ASSESSMENT_STATES, NEUTRAL_ASSESSMENT
-from .models import Event, Incident, IncidentRequest, SnapshotItem, ensure_utc, iso_datetime, parse_datetime, utc_now
+from .models import (
+    Event,
+    Incident,
+    IncidentRequest,
+    SnapshotItem,
+    automatic_draft_request,
+    ensure_utc,
+    iso_datetime,
+    parse_datetime,
+    utc_now,
+)
 from .privacy import (
     extract_safe_application_name,
     redact_legacy_text,
@@ -18,6 +28,7 @@ from .privacy import (
     redact_text,
     redact_value,
 )
+from .service_identity import is_per_user_service_payload, service_base_name
 
 
 DEFAULT_RETENTION_DAYS = 30
@@ -27,6 +38,8 @@ MAX_PERSISTED_JSON_NESTING = 64
 VALID_SCAN_STATUSES = frozenset({"running", "ok", "partial", "failed", "interrupted"})
 VALID_INVESTIGATION_ASSESSMENTS = ASSESSMENT_STATES
 _DATABASE_INITIALIZATION_LOCK = threading.RLock()
+_AUTOMATION_LINK_REPAIR_CURSOR = "automation:link-repair-cursor"
+_AUTOMATION_LINK_REPAIR_BATCH = 200
 
 
 # These fields describe runtime state or localized display metadata rather
@@ -45,6 +58,7 @@ IGNORED_SNAPSHOT_FIELDS: dict[str, frozenset[str]] = {
 # service configuration changed. Keep the raw values in event details, but do
 # not turn this known oscillation into a journal event.
 TRIGGER_START_SERVICES = frozenset({"bits"})
+MIN_PER_USER_SERVICE_REFRESH_PAIRS = 4
 
 
 REMOVED_SUBSYSTEMS = {
@@ -240,13 +254,98 @@ def _comparison_value(source: str, key: str, value: Any) -> Any:
     # contain a literal question mark, and version/date padding is not data.
     if (source == "apps" and key in {"install_date", "version"}) or (source == "services" and key == "path"):
         normalized = normalized.rstrip("?").rstrip()
+    if source == "services":
+        normalized = normalized.strip()
     return normalized
 
 
 def _comparison_payload(source: str, payload: dict[str, Any]) -> dict[str, Any]:
     safe_payload = _comparison_value(source, "", redact_value(payload))
     ignored = IGNORED_SNAPSHOT_FIELDS.get(source, frozenset())
+    if source == "services" and is_per_user_service_payload(safe_payload):
+        # The suffixed name and LUID identify a user session. They are not a
+        # durable service configuration change and would otherwise turn every
+        # sign-in/session refresh into an add/remove storm.
+        ignored = ignored | frozenset(
+            {
+                "name",
+                "service_instance_suffix",
+                "per_user_service",
+                "service_base_name",
+            }
+        )
     return {key: value for key, value in safe_payload.items() if key not in ignored}
+
+
+def _per_user_service_family(payload: dict[str, Any], key: str) -> str | None:
+    """Return a trusted logical family only for metadata-qualified user services."""
+
+    if not is_per_user_service_payload(payload):
+        return None
+    explicit = str(payload.get("service_base_name", "")).strip()
+    name = str(payload.get("name", key)).strip()
+    return (
+        explicit
+        or service_base_name(
+            name,
+            path=str(payload.get("path", "")),
+            service_type=str(payload.get("service_type", "")),
+            trusted=payload.get("per_user_service") is True,
+        )
+    ).casefold()
+
+
+def _paired_per_user_service_family(
+    before: dict[str, Any],
+    after: dict[str, Any],
+    before_key: str,
+    after_key: str,
+) -> str | None:
+    """Return the shared family when at least one side has trusted metadata."""
+
+    before_family = _per_user_service_family(before, before_key)
+    after_family = _per_user_service_family(after, after_key)
+    if before_family and after_family:
+        return before_family if before_family == after_family else None
+    trusted_family = before_family or after_family
+    if trusted_family is None:
+        return None
+    other_payload = after if before_family else before
+    other_key = after_key if before_family else before_key
+    other_name = str(other_payload.get("name", other_key)).strip()
+    other_family = service_base_name(
+        other_name,
+        path=str(other_payload.get("path", "")),
+        service_type=str(other_payload.get("service_type", "")),
+        trusted=other_payload.get("per_user_service") is True,
+    ).casefold()
+    return trusted_family if other_family == trusted_family else None
+
+
+def _normalize_per_user_service_pair(
+    before: dict[str, Any],
+    after: dict[str, Any],
+    before_comparison: dict[str, Any],
+    after_comparison: dict[str, Any],
+    before_key: str,
+    after_key: str,
+) -> tuple[dict[str, Any], dict[str, Any], str | None]:
+    """Remove session identity symmetrically while retaining configuration."""
+
+    family = _paired_per_user_service_family(before, after, before_key, after_key)
+    if family is None:
+        return before_comparison, after_comparison, None
+    before_normalized = dict(before_comparison)
+    after_normalized = dict(after_comparison)
+    for field in ("name", "per_user_service", "service_base_name", "service_instance_suffix"):
+        before_normalized.pop(field, None)
+        after_normalized.pop(field, None)
+    # Historical snapshots predate ServiceType collection. Quiet that one-time
+    # schema migration, but compare ServiceType once both sides contain it.
+    if "service_type" not in before or "service_type" not in after:
+        before_normalized.pop("service_type", None)
+        after_normalized.pop("service_type", None)
+    return before_normalized, after_normalized, family
 
 
 def _is_bits_trigger_oscillation(source: str, before: dict[str, Any], after: dict[str, Any]) -> bool:
@@ -306,6 +405,7 @@ class Database:
                 # also repairs a journal where an older build's marker was lost without
                 # changing the schema version or deleting any evidence.
                 self._backfill_safe_application_entities()
+                self._repair_automation_links()
             except Exception:
                 connection = getattr(self, "connection", None)
                 if connection is not None:
@@ -593,6 +693,111 @@ class Database:
         # migration caller already owns the transaction and opts out.
         if commit:
             self.connection.commit()
+
+    def _repair_automation_links(self, *, commit: bool = True) -> None:
+        """Repair unlinked automatic drafts in one bounded write transaction.
+
+        Older watcher races could persist the idempotency marker and draft but
+        lose the association between them. A durable ``created_at``/``id``
+        cursor prevents unmatched legacy markers from being rescanned on every
+        database open. Candidate validation and both link updates share an
+        immediate transaction so incident deletion cannot interleave and leave
+        a dangling link.
+        """
+
+        had_transaction = self.connection.in_transaction
+        if not had_transaction:
+            self.connection.execute("BEGIN IMMEDIATE")
+        try:
+            cursor_value = self.get_meta(_AUTOMATION_LINK_REPAIR_CURSOR)
+            cursor_created_at = ""
+            cursor_id = ""
+            if cursor_value:
+                try:
+                    parsed_cursor = json.loads(cursor_value)
+                except (json.JSONDecodeError, TypeError):
+                    parsed_cursor = None
+                if isinstance(parsed_cursor, dict):
+                    cursor_created_at = str(parsed_cursor.get("created_at", ""))
+                    cursor_id = str(parsed_cursor.get("id", ""))
+
+            if cursor_created_at and cursor_id:
+                rows = self.connection.execute(
+                    """
+                    SELECT id, event_id, created_at
+                    FROM automation_actions
+                    WHERE action = 'draft_investigation'
+                      AND incident_id IS NULL
+                      AND (created_at > ? OR (created_at = ? AND id > ?))
+                    ORDER BY created_at ASC, id ASC
+                    LIMIT ?
+                    """,
+                    (cursor_created_at, cursor_created_at, cursor_id, _AUTOMATION_LINK_REPAIR_BATCH),
+                ).fetchall()
+            else:
+                rows = self.connection.execute(
+                    """
+                    SELECT id, event_id, created_at
+                    FROM automation_actions
+                    WHERE action = 'draft_investigation' AND incident_id IS NULL
+                    ORDER BY created_at ASC, id ASC
+                    LIMIT ?
+                    """,
+                    (_AUTOMATION_LINK_REPAIR_BATCH,),
+                ).fetchall()
+
+            action_updates: list[tuple[str, str, str]] = []
+            for row in rows:
+                event = self.connection.execute(
+                    "SELECT title, entity, subsystem, occurred_at FROM events WHERE id = ?",
+                    (row["event_id"],),
+                ).fetchone()
+                if event is None:
+                    continue
+                request = automatic_draft_request(
+                    title=str(event["title"]),
+                    entity=str(event["entity"]),
+                    occurred_at=parse_datetime(str(event["occurred_at"])),
+                    subsystem=str(event["subsystem"]),
+                )
+                incident_id = self.find_incident_id(request, status="draft")
+                if incident_id is not None:
+                    action_updates.append(
+                        (incident_id, str(row["event_id"]), str(row["id"]))
+                    )
+            for incident_id, event_id, action_id in action_updates:
+                self.connection.execute(
+                    """
+                    UPDATE automation_actions
+                    SET incident_id = ?
+                    WHERE id = ? AND event_id = ? AND action = 'draft_investigation'
+                      AND incident_id IS NULL
+                      AND EXISTS (SELECT 1 FROM incidents WHERE id = ?)
+                    """,
+                    (incident_id, action_id, event_id, incident_id),
+                )
+                self.connection.execute(
+                    """
+                    UPDATE automation_notifications
+                    SET incident_id = ?
+                    WHERE event_id = ? AND kind = 'crash' AND incident_id IS NULL
+                      AND EXISTS (SELECT 1 FROM incidents WHERE id = ?)
+                    """,
+                    (incident_id, event_id, incident_id),
+                )
+
+            if rows:
+                last = rows[-1]
+                self._set_meta_without_commit(
+                    _AUTOMATION_LINK_REPAIR_CURSOR,
+                    _canonical_json({"created_at": str(last["created_at"]), "id": str(last["id"])}),
+                )
+            if commit:
+                self.connection.commit()
+        except Exception:
+            if not had_transaction:
+                self.connection.rollback()
+            raise
 
     def close(self) -> None:
         self.connection.close()
@@ -1116,6 +1321,7 @@ class Database:
 
         generated: list[Event] = []
         matched_previous_keys: set[str] = set()
+        service_refresh_evidence: list[dict[str, Any]] = []
         if not initialized and baseline_if_empty:
             with self.connection:
                 if scan_id is not None:
@@ -1125,7 +1331,9 @@ class Database:
             return generated
 
         for key, item in current.items():
-            previous_key = key if key in previous else self._legacy_app_key(key, previous, matched_previous_keys, source)
+            previous_key = key if key in previous else self._legacy_snapshot_key(
+                item, previous, matched_previous_keys, source
+            )
             old_payload = previous.get(previous_key) if previous_key is not None else None
             safe_payload = redact_value(item.payload)
             comparison_payload = _comparison_payload(source, item.payload)
@@ -1133,6 +1341,18 @@ class Database:
                 action = item.action_on_add
             else:
                 old_comparison_payload = _comparison_payload(source, old_payload)
+                service_family: str | None = None
+                if source == "services":
+                    old_comparison_payload, comparison_payload, service_family = (
+                        _normalize_per_user_service_pair(
+                            old_payload,
+                            safe_payload,
+                            old_comparison_payload,
+                            comparison_payload,
+                            previous_key or key,
+                            key,
+                        )
+                    )
                 if _is_bits_trigger_oscillation(source, old_payload, safe_payload):
                     old_comparison_payload = dict(old_comparison_payload)
                     comparison_payload = dict(comparison_payload)
@@ -1142,6 +1362,21 @@ class Database:
                 if changed:
                     action = item.action_on_update
                 else:
+                    old_name = str(old_payload.get("name", previous_key or key)).strip()
+                    new_name = str(safe_payload.get("name", key)).strip()
+                    if (
+                        service_family is not None
+                        and old_name.casefold() != new_name.casefold()
+                    ):
+                        service_refresh_evidence.append(
+                            {
+                                "service_family": service_family,
+                                "removed": old_name,
+                                "added": new_name,
+                                "before": old_payload,
+                                "after": safe_payload,
+                            }
+                        )
                     matched_previous_keys.add(previous_key)
                     continue
             if previous_key is not None:
@@ -1182,6 +1417,28 @@ class Database:
                     )
                 )
 
+        if len(service_refresh_evidence) >= MIN_PER_USER_SERVICE_REFRESH_PAIRS:
+            generated.append(
+                Event(
+                    occurred_at=now,
+                    kind="change",
+                    subsystem="startup",
+                    action="refreshed",
+                    title=(
+                        "Windows per-user services refreshed "
+                        f"({len(service_refresh_evidence)} instances)"
+                    ),
+                    entity="Windows per-user services",
+                    severity="info",
+                    source="services",
+                    details={
+                        "refresh_kind": "per_user_service_instances",
+                        "instance_count": len(service_refresh_evidence),
+                        "evidence": service_refresh_evidence,
+                    },
+                )
+            )
+
         # State replacement, its source marker, and the generated evidence
         # are one durable unit. If the event insert fails (for example, from
         # disk pressure), a retry must still see the previous state and emit
@@ -1196,22 +1453,51 @@ class Database:
         return generated
 
     @staticmethod
-    def _legacy_app_key(
-        current_key: str,
+    def _legacy_snapshot_key(
+        item: SnapshotItem,
         previous: dict[str, dict[str, Any]],
         matched_previous_keys: set[str],
         source: str,
     ) -> str | None:
-        """Match app state written before app keys were made registry-stable."""
+        """Match state written before app/service keys were made stable."""
 
-        if source != "apps":
+        if source == "apps":
+            current_key = item.key
+            candidates = [
+                key
+                for key in previous
+                if key not in matched_previous_keys and key.split("|", 1)[0] == current_key
+            ]
+        elif source == "services":
+            current_family = _per_user_service_family(item.payload, item.key)
+            if current_family is None:
+                return None
+            candidates = [
+                key
+                for key, payload in previous.items()
+                if key not in matched_previous_keys
+                and _per_user_service_family(payload, key) == current_family
+            ]
+        else:
             return None
-        candidates = [
-            key
-            for key in previous
-            if key not in matched_previous_keys and key.split("|", 1)[0] == current_key
-        ]
-        return candidates[0] if len(candidates) == 1 else None
+        if source == "services" and candidates:
+            current_comparison = _comparison_payload(source, item.payload)
+            equivalent = []
+            for key in candidates:
+                old_comparison = _comparison_payload(source, previous[key])
+                old_comparison, normalized_current, _ = _normalize_per_user_service_pair(
+                    previous[key],
+                    item.payload,
+                    old_comparison,
+                    current_comparison,
+                    key,
+                    item.key,
+                )
+                if _hash(old_comparison) == _hash(normalized_current):
+                    equivalent.append(key)
+            if equivalent:
+                candidates = equivalent
+        return sorted(candidates, key=str.casefold)[0] if candidates else None
 
     def _replace_state(self, source: str, current: dict[str, SnapshotItem], now: datetime) -> None:
         timestamp = iso_datetime(now)
@@ -1429,11 +1715,14 @@ class Database:
         *,
         created_at: datetime | None = None,
         status: str = "investigating",
+        incident_id: str | None = None,
         commit: bool = True,
     ) -> Incident:
         if not status.strip():
             raise ValueError("Incident status must not be empty")
-        incident = Incident(id=str(uuid.uuid4()), created_at=created_at or utc_now(), request=request, status=status)
+        if incident_id is not None and not incident_id.strip():
+            raise ValueError("Incident id must not be empty")
+        incident = Incident(id=incident_id or str(uuid.uuid4()), created_at=created_at or utc_now(), request=request, status=status)
         self.connection.execute(
             """
             INSERT INTO incidents
@@ -1533,6 +1822,23 @@ class Database:
             raise ValueError(f"Unknown incident: {incident_id}")
         return updated
 
+    def delete_incident(self, incident_id: str) -> bool:
+        """Remove an investigation and clear automation links to it."""
+
+        with self.connection:
+            if not self.connection.in_transaction:
+                self.connection.execute("BEGIN IMMEDIATE")
+            self.connection.execute(
+                "UPDATE automation_actions SET incident_id = NULL WHERE incident_id = ?",
+                (incident_id,),
+            )
+            self.connection.execute(
+                "UPDATE automation_notifications SET incident_id = NULL WHERE incident_id = ?",
+                (incident_id,),
+            )
+            cursor = self.connection.execute("DELETE FROM incidents WHERE id = ?", (incident_id,))
+        return cursor.rowcount == 1
+
     @staticmethod
     def _incident_row(row: sqlite3.Row) -> dict[str, Any]:
         def parse_json(name: str, default: Any) -> Any:
@@ -1580,6 +1886,32 @@ class Database:
     def get_incident(self, incident_id: str) -> dict[str, Any] | None:
         row = self.connection.execute("SELECT * FROM incidents WHERE id = ?", (incident_id,)).fetchone()
         return self._incident_row(row) if row else None
+
+    def find_incident_id(self, request: IncidentRequest, *, status: str | None = None) -> str | None:
+        """Return an incident matching the complete request, if it is unique."""
+
+        clauses = [
+            "description = ?",
+            "subsystem = ?",
+            "onset_start = ?",
+            "onset_end = ?",
+            "lookback_days = ?",
+        ]
+        params: list[Any] = [
+            request.description,
+            request.subsystem,
+            iso_datetime(request.onset_start),
+            iso_datetime(request.onset_end),
+            request.lookback_days,
+        ]
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(status)
+        rows = self.connection.execute(
+            f"SELECT id FROM incidents WHERE {' AND '.join(clauses)} ORDER BY created_at DESC",
+            params,
+        ).fetchall()
+        return str(rows[0]["id"]) if len(rows) == 1 else None
 
     def list_incidents(
         self,
