@@ -65,6 +65,8 @@ export interface Incident {
   onset_start: string;
   onset_end: string;
   lookback_days: number;
+  affected_entity: string | null;
+  suspected_change: string | null;
   status: string;
   assessment: AssessmentState;
   assessment_reasons: string[];
@@ -260,6 +262,8 @@ export interface InvestigationResponse {
     onset_start: string;
     onset_end: string;
     lookback_days: number;
+    affected_entity: string | null;
+    suspected_change: string | null;
     method: string;
     incident_id: string;
     assessment: {
@@ -270,6 +274,15 @@ export interface InvestigationResponse {
     hypotheses: Hypothesis[];
   };
   incident: Incident;
+}
+
+export interface InvestigationInput {
+  description: string;
+  subsystem?: string;
+  onset?: string;
+  lookback_days: number;
+  affected_entity?: string;
+  suspected_change?: string;
 }
 
 export interface BundleResponse {

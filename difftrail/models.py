@@ -102,6 +102,8 @@ class IncidentRequest:
     onset_end: datetime
     subsystem: str = "general"
     lookback_days: int = 7
+    affected_entity: str | None = None
+    suspected_change: str | None = None
 
     def __post_init__(self) -> None:
         if not self.description.strip():
@@ -112,6 +114,14 @@ class IncidentRequest:
             raise ValueError("lookback_days must be between 1 and 365")
         if self.subsystem not in KNOWN_SUBSYSTEMS:
             raise ValueError(f"Unsupported incident subsystem: {self.subsystem}")
+        for name, value in (
+            ("affected_entity", self.affected_entity),
+            ("suspected_change", self.suspected_change),
+        ):
+            if value is not None and not isinstance(value, str):
+                raise ValueError(f"{name} must be a string or None")
+            if value is not None and len(value.strip()) > 200:
+                raise ValueError(f"{name} must be 200 characters or fewer")
 
 
 @dataclass(frozen=True)

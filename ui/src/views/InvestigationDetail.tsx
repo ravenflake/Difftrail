@@ -26,7 +26,7 @@ export function InvestigationDetail({ incident, onFeedback, onExport, exportBusy
   return (
     <div className="incident-detail-page">
       <section className="incident-heading">
-        <div><span className="eyebrow">Investigation</span><h2>{incident.description}</h2><div className="heading-meta"><span>{subsystemLabel(incident.subsystem)}</span><span>·</span><span>Started {formatDateTime(incident.onset_start)}</span><span>·</span><span>{incident.lookback_days}-day lookback</span></div></div>
+        <div><span className="eyebrow">Investigation</span><h2>{incident.description}</h2><div className="heading-meta"><span>{subsystemLabel(incident.subsystem)}</span><span>·</span><span>Started {formatDateTime(incident.onset_start)}</span><span>·</span><span>{incident.lookback_days}-day lookback</span></div>{(incident.affected_entity || incident.suspected_change) && <div className="heading-context">{incident.affected_entity && <span><strong>Affected:</strong> {incident.affected_entity}</span>}{incident.suspected_change && <span><strong>Suspected change:</strong> {incident.suspected_change}</span>}</div>}</div>
         <button type="button" className="button button-secondary button-small" onClick={() => void onExport(incident.id)} disabled={exportBusy}>{exportBusy ? "Preparing…" : "Export investigation"}</button>
       </section>
       <AssessmentBanner state={assessment} reasons={incident.assessment_reasons || []} />

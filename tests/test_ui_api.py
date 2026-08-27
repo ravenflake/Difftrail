@@ -52,7 +52,13 @@ class UiApiTests(unittest.TestCase):
             simulate_nvidia_driver_switch(database)
             result = create_investigation(
                 database,
-                {"description": "graphics started failing", "subsystem": "graphics", "lookback_days": 7},
+                {
+                    "description": "graphics started failing",
+                    "subsystem": "graphics",
+                    "lookback_days": 7,
+                    "affected_entity": "ExampleGame.exe",
+                    "suspected_change": "display driver update",
+                },
             )
 
             self.assertTrue(result["incident"]["id"])
@@ -62,6 +68,12 @@ class UiApiTests(unittest.TestCase):
             lead_event = result["summary"]["hypotheses"][0]["event"]
             self.assertIn("version", lead_event["detail_summary"]["changed_fields"])
             self.assertNotIn("path", json.dumps(lead_event))
+            self.assertEqual(result["incident"]["affected_entity"], "ExampleGame.exe")
+            self.assertEqual(result["incident"]["suspected_change"], "display driver update")
+            self.assertEqual(result["summary"]["affected_entity"], "ExampleGame.exe")
+            stored = database.get_incident(result["incident"]["id"])
+            self.assertEqual(stored["affected_entity"], "ExampleGame.exe")
+            self.assertEqual(stored["suspected_change"], "display driver update")
 
     def test_bootstrap_exposes_safe_event_detail_summary_without_raw_message(self) -> None:
         with Database(":memory:") as database:

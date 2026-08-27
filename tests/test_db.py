@@ -16,7 +16,7 @@ class DatabaseTests(unittest.TestCase):
         with Database(":memory:") as database:
             schema = database.schema_status()
             self.assertEqual(schema["current_version"], schema["supported_version"])
-            self.assertEqual([item["version"] for item in schema["migrations"]], [1, 2, 3, 4, 5, 6])
+            self.assertEqual([item["version"] for item in schema["migrations"]], [1, 2, 3, 4, 5, 6, 7])
 
     def test_stale_scan_is_detected_and_recovered_without_deleting_it(self) -> None:
         with Database(":memory:") as database:
@@ -214,7 +214,7 @@ class DatabaseTests(unittest.TestCase):
             connection.close()
 
             with Database(path) as database:
-                self.assertEqual(database.schema_status()["current_version"], 6)
+                self.assertEqual(database.schema_status()["current_version"], 7)
                 self.assertEqual(database.list_events(limit=1)[0].details, {})
 
     def test_ascending_event_limit_keeps_the_most_recent_evidence(self) -> None:
@@ -261,7 +261,15 @@ class DatabaseTests(unittest.TestCase):
                     row[1]
                     for row in database.connection.execute("PRAGMA table_info(incidents)").fetchall()
                 }
-                self.assertTrue({"feedback_outcome", "feedback_event_id", "feedback_at"}.issubset(columns))
+                self.assertTrue(
+                    {
+                        "feedback_outcome",
+                        "feedback_event_id",
+                        "feedback_at",
+                        "affected_entity",
+                        "suspected_change",
+                    }.issubset(columns)
+                )
 
     def test_current_legacy_journal_gets_assessment_migration(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
@@ -277,7 +285,7 @@ class DatabaseTests(unittest.TestCase):
 
             with Database(path) as database:
                 schema = database.schema_status()
-                self.assertEqual(schema["current_version"], 6)
+                self.assertEqual(schema["current_version"], 7)
                 columns = {
                     row[1]
                     for row in database.connection.execute("PRAGMA table_info(incidents)").fetchall()
@@ -293,6 +301,65 @@ class DatabaseTests(unittest.TestCase):
                 }
                 self.assertIn("idx_events_source_occurred_at", event_indexes)
                 self.assertIn("idx_scans_status_started_at", scan_indexes)
+
+    def test_v6_journal_adds_optional_context_without_rewriting_existing_drafts(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "v6-context.db"
+            legacy_schema = BASE_SCHEMA.replace(
+                "    feedback_at TEXT,\n    affected_entity TEXT,\n    suspected_change TEXT\n",
+                "    feedback_at TEXT\n",
+            )
+            connection = sqlite3.connect(path)
+            connection.executescript(legacy_schema)
+            connection.executescript(
+                """
+                ALTER TABLE incidents ADD COLUMN assessment TEXT NOT NULL DEFAULT 'insufficient_evidence';
+                ALTER TABLE incidents ADD COLUMN assessment_reasons_json TEXT NOT NULL DEFAULT '[]';
+                ALTER TABLE incidents ADD COLUMN coverage_json TEXT NOT NULL DEFAULT '{}';
+                """
+            )
+            connection.executemany(
+                "INSERT INTO meta(key, value) VALUES (?, ?)",
+                [("schema_version", "6"), ("migration:safe-application-entities", "1")],
+            )
+            connection.execute(
+                """
+                INSERT INTO incidents
+                (id, created_at, description, subsystem, onset_start, onset_end, lookback_days, status,
+                 result_json, assessment, assessment_reasons_json, coverage_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "old-draft",
+                    "2026-08-15T12:00:00Z",
+                    "Automatic draft: Application crash detected",
+                    "application",
+                    "2026-08-15T12:00:00Z",
+                    "2026-08-15T12:00:00Z",
+                    7,
+                    "draft",
+                    "[]",
+                    "insufficient_evidence",
+                    "[]",
+                    "{}",
+                ),
+            )
+            connection.commit()
+            connection.close()
+
+            with Database(path) as database:
+                incident = database.get_incident("old-draft")
+                current_version = database.schema_status()["current_version"]
+                columns = {
+                    row[1]
+                    for row in database.connection.execute("PRAGMA table_info(incidents)").fetchall()
+                }
+
+            self.assertEqual(current_version, 7)
+            self.assertTrue({"affected_entity", "suspected_change"}.issubset(columns))
+            self.assertEqual(incident["description"], "Automatic draft: Application crash detected")
+            self.assertIsNone(incident["affected_entity"])
+            self.assertIsNone(incident["suspected_change"])
 
     def test_v013_journal_is_re_sanitized_on_upgrade(self) -> None:
         legacy_path = r"C:\Users\<user> Doe\Games\Example Game.exe"
@@ -416,7 +483,7 @@ class DatabaseTests(unittest.TestCase):
             connection.close()
 
             with Database(path) as database:
-                self.assertEqual(database.schema_status()["current_version"], 6)
+                self.assertEqual(database.schema_status()["current_version"], 7)
                 events = {event.event_id: event for event in database.list_events(kind="symptom")}
                 self.assertEqual(set(events), {"legacy-event", "already-safe-event"})
                 event = events["legacy-event"]
@@ -473,7 +540,7 @@ class DatabaseTests(unittest.TestCase):
                 try:
                     barrier.wait(timeout=10)
                     with Database(path) as database:
-                        self.assertEqual(database.schema_status()["current_version"], 6)
+                        self.assertEqual(database.schema_status()["current_version"], 7)
                 except Exception as exc:  # capture thread failures for the test thread
                     errors.append(exc)
 
@@ -706,11 +773,21 @@ class DatabaseTests(unittest.TestCase):
             now = utc_now()
             event = Event(now, "change", "graphics", "updated", "Display driver updated", source="test")
             database.save_events([event])
-            request = IncidentRequest("graphics are crashing", now - timedelta(hours=1), now, "graphics", 7)
+            request = IncidentRequest(
+                "graphics are crashing",
+                now - timedelta(hours=1),
+                now,
+                "graphics",
+                7,
+                affected_entity="ExampleGame.exe",
+                suspected_change="graphics driver update",
+            )
             incident = database.create_incident(request)
             database.update_incident_results(incident.id, [{"confidence": "High"}])
             self.assertEqual(database.count_events(), 1)
             self.assertEqual(database.recent_incidents()[0]["results"][0]["confidence"], "High")
+            self.assertEqual(database.recent_incidents()[0]["affected_entity"], "ExampleGame.exe")
+            self.assertEqual(database.recent_incidents()[0]["suspected_change"], "graphics driver update")
 
     def test_duplicate_events_report_only_inserted_rows(self) -> None:
         with Database(":memory:") as database:

@@ -36,6 +36,8 @@ const previewIncident: Incident = {
   onset_start: ago(2),
   onset_end: ago(1),
   lookback_days: 7,
+  affected_entity: null,
+  suspected_change: null,
   status: "investigating",
   assessment: "candidate_found",
   assessment_reasons: [],

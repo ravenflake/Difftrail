@@ -575,6 +575,48 @@ def _event_context(event: Event) -> str:
     return f"{area} · {event.subsystem}" if area and event.subsystem else area
 
 
+def _safe_draft_identity(event: Event) -> str | None:
+    candidates = [event.details.get("application_name"), event.entity]
+    generic = {"", "application error", "application hang", "unknown", "unknown app"}
+    for raw in candidates:
+        value = str(raw or "").strip().strip("\"'")
+        if not value or value.casefold() in generic:
+            continue
+        contained_path = "\\" in value or "/" in value
+        value = re.split(r"[\\/]", value)[-1]
+        executable = re.match(
+            r"^(.+?\.(?:exe|com|bat|cmd|msi|msix|appx))(?:\s|$)",
+            value,
+            flags=re.IGNORECASE,
+        )
+        if executable:
+            value = executable.group(1)
+        elif contained_path:
+            continue
+        value = redact_public_text(value)
+        value = re.sub(r"[^A-Za-z0-9._() +\-]", "", value)[:80].strip()
+        if value and value.casefold() not in generic and "<path>" not in value.casefold():
+            return value
+    return None
+
+
+def _automatic_draft_title(event: Event) -> tuple[str, str | None]:
+    """Build a concise title from normalized, non-sensitive event identity."""
+
+    identity = _safe_draft_identity(event)
+    if event.action == "crash":
+        return (f"{identity} crashed" if identity else "Application crashed"), identity
+    if event.action == "hang":
+        return (f"{identity} stopped responding" if identity else "Application stopped responding"), identity
+    fallbacks = {
+        "driver_reset": "Display driver reset detected",
+        "unexpected_restart": "Unexpected restart detected",
+        "unexpected_shutdown": "Unexpected shutdown detected",
+        "failure": "Application failure detected" if event.subsystem == "application" else "System failure detected",
+    }
+    return fallbacks.get(event.action, "System symptom detected"), None
+
+
 def _queue_event_notification(
     database: Database,
     event: Event,
@@ -622,7 +664,7 @@ def _queue_event_notification(
 def _create_investigation_draft(database: Database, event: Event) -> tuple[str | None, bool]:
     if not event.event_id:
         return None, False
-    description = f"Automatic draft: {event.title}"
+    description, affected_entity = _automatic_draft_title(event)
     subsystem = event.subsystem if event.subsystem in KNOWN_SUBSYSTEMS else "general"
     request = IncidentRequest(
         description=description,
@@ -630,6 +672,7 @@ def _create_investigation_draft(database: Database, event: Event) -> tuple[str |
         onset_end=event.occurred_at,
         subsystem=subsystem,
         lookback_days=7,
+        affected_entity=affected_entity,
     )
     # Keep the idempotency marker together with both incident writes. If
     # ranking/persistence fails, a later watcher pass can create the draft.

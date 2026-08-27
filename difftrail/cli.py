@@ -121,7 +121,15 @@ def command_investigate(args: argparse.Namespace) -> int:
     onset_start = parse_datetime(args.onset) if args.onset else now
     onset_end = now
     subsystem = args.subsystem or infer_subsystem(args.description)
-    request = IncidentRequest(args.description, onset_start, onset_end, subsystem, args.lookback_days)
+    request = IncidentRequest(
+        args.description,
+        onset_start,
+        onset_end,
+        subsystem,
+        args.lookback_days,
+        affected_entity=getattr(args, "affected_entity", None),
+        suspected_change=getattr(args, "suspected_change", None),
+    )
     with _database(args) as database:
         run = run_investigation(database, request)
         incident = run.incident
@@ -441,6 +449,14 @@ def build_parser() -> argparse.ArgumentParser:
         ],
     )
     investigate.add_argument("--lookback-days", type=int, default=7)
+    investigate.add_argument(
+        "--affected-entity",
+        help="Optional affected application, process, service, or device name",
+    )
+    investigate.add_argument(
+        "--suspected-change",
+        help="Optional recent update, install, or other change the user suspects",
+    )
     investigate.add_argument("--json", action="store_true")
     investigate.set_defaults(func=command_investigate)
 

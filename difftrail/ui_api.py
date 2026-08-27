@@ -207,6 +207,8 @@ def public_incident(incident: dict[str, Any]) -> dict[str, Any]:
         "onset_start": redact_public_text(str(raw.get("onset_start", ""))),
         "onset_end": redact_public_text(str(raw.get("onset_end", ""))),
         "lookback_days": _safe_count(raw.get("lookback_days")),
+        "affected_entity": redact_public_text(str(raw["affected_entity"])) if raw.get("affected_entity") is not None else None,
+        "suspected_change": redact_public_text(str(raw["suspected_change"])) if raw.get("suspected_change") is not None else None,
         "status": redact_public_text(str(raw.get("status", ""))),
         "assessment": assessment if assessment in {NEUTRAL_ASSESSMENT, "candidate_found", "no_recent_changes", "limited_coverage"} else NEUTRAL_ASSESSMENT,
         "assessment_reasons": [redact_public_text(str(reason)) for reason in raw_reasons],
@@ -232,6 +234,8 @@ def public_investigation_summary(summary: Any) -> dict[str, Any]:
         "onset_start": redact_public_text(str(raw.get("onset_start", ""))),
         "onset_end": redact_public_text(str(raw.get("onset_end", ""))),
         "lookback_days": _safe_count(raw.get("lookback_days")),
+        "affected_entity": redact_public_text(str(raw["affected_entity"])) if raw.get("affected_entity") is not None else None,
+        "suspected_change": redact_public_text(str(raw["suspected_change"])) if raw.get("suspected_change") is not None else None,
         "method": redact_public_text(str(raw.get("method", ""))),
         "assessment": {
             "state": state if state in {NEUTRAL_ASSESSMENT, "candidate_found", "no_recent_changes", "limited_coverage"} else NEUTRAL_ASSESSMENT,
@@ -328,7 +332,22 @@ def create_investigation(database: Database, body: dict[str, Any]) -> dict[str, 
         lookback_days = int(raw_lookback)
     except (TypeError, ValueError) as exc:
         raise ValueError("lookback_days must be an integer") from exc
-    request = IncidentRequest(description, onset_start, onset_end, subsystem, lookback_days)
+    context: dict[str, str | None] = {}
+    for field in ("affected_entity", "suspected_change"):
+        value = body.get(field)
+        if value is not None and not isinstance(value, str):
+            raise ValueError(f"{field} must be a string")
+        normalized = value.strip() if isinstance(value, str) else ""
+        context[field] = normalized or None
+    request = IncidentRequest(
+        description,
+        onset_start,
+        onset_end,
+        subsystem,
+        lookback_days,
+        affected_entity=context["affected_entity"],
+        suspected_change=context["suspected_change"],
+    )
     run = run_investigation(database, request)
     incident = run.incident
     summary = run.summary

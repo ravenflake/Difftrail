@@ -178,6 +178,8 @@ def _safe_incident(incident: dict[str, Any]) -> dict[str, Any]:
         "onset_start": incident.get("onset_start"),
         "onset_end": incident.get("onset_end"),
         "lookback_days": incident.get("lookback_days"),
+        "affected_entity": _safe_text(incident.get("affected_entity", "")) or None,
+        "suspected_change": _safe_text(incident.get("suspected_change", "")) or None,
         "status": _safe_text(incident.get("status", "")),
         "assessment": _safe_text(incident.get("assessment", NEUTRAL_ASSESSMENT)),
         "assessment_reasons": [_safe_text(reason) for reason in raw_reasons],
