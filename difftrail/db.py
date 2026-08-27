@@ -16,6 +16,7 @@ from .models import (
     IncidentRequest,
     SnapshotItem,
     automatic_draft_request,
+    legacy_automatic_draft_request,
     ensure_utc,
     iso_datetime,
     parse_datetime,
@@ -32,7 +33,7 @@ from .service_identity import is_per_user_service_payload, service_base_name
 
 
 DEFAULT_RETENTION_DAYS = 30
-DATABASE_SCHEMA_VERSION = 6
+DATABASE_SCHEMA_VERSION = 7
 STALE_SCAN_AFTER = timedelta(minutes=15)
 MAX_PERSISTED_JSON_NESTING = 64
 VALID_SCAN_STATUSES = frozenset({"running", "ok", "partial", "failed", "interrupted"})
@@ -126,7 +127,9 @@ CREATE TABLE IF NOT EXISTS incidents (
     result_json TEXT NOT NULL DEFAULT '[]',
     feedback_outcome TEXT,
     feedback_event_id TEXT,
-    feedback_at TEXT
+    feedback_at TEXT,
+    affected_entity TEXT,
+    suspected_change TEXT
 );
 
 CREATE TABLE IF NOT EXISTS overhead_measurements (
@@ -454,6 +457,7 @@ class Database:
             4: ("journal lookup indexes", self._migration_lookup_indexes),
             5: ("investigation assessment fields", self._migration_investigation_assessment),
             6: ("legacy journal privacy re-sanitization", self._migration_redact_legacy_journal),
+            7: ("optional investigation context", self._migration_investigation_context),
         }
         for version in range(current_version + 1, DATABASE_SCHEMA_VERSION + 1):
             name, callback = migrations[version]
@@ -649,6 +653,13 @@ class Database:
                 notification_updates,
             )
 
+    def _migration_investigation_context(self) -> None:
+        columns = _table_columns(self.connection, "incidents")
+        if "affected_entity" not in columns:
+            self.connection.execute("ALTER TABLE incidents ADD COLUMN affected_entity TEXT")
+        if "suspected_change" not in columns:
+            self.connection.execute("ALTER TABLE incidents ADD COLUMN suspected_change TEXT")
+
     def _backfill_safe_application_entities(self, *, commit: bool = True) -> None:
         """Add parsed executable labels to older local symptom records."""
 
@@ -739,7 +750,7 @@ class Database:
             action_updates: list[tuple[str, str, str]] = []
             for row in rows:
                 event = self.connection.execute(
-                    "SELECT title, entity, subsystem, occurred_at FROM events WHERE id = ?",
+                    "SELECT title, entity, subsystem, action, occurred_at FROM events WHERE id = ?",
                     (row["event_id"],),
                 ).fetchone()
                 if event is None:
@@ -749,8 +760,19 @@ class Database:
                     entity=str(event["entity"]),
                     occurred_at=parse_datetime(str(event["occurred_at"])),
                     subsystem=str(event["subsystem"]),
+                    action=str(event["action"]),
                 )
                 incident_id = self.find_incident_id(request, status="draft")
+                if incident_id is None:
+                    incident_id = self.find_incident_id(
+                        legacy_automatic_draft_request(
+                            title=str(event["title"]),
+                            entity=str(event["entity"]),
+                            occurred_at=parse_datetime(str(event["occurred_at"])),
+                            subsystem=str(event["subsystem"]),
+                        ),
+                        status="draft",
+                    )
                 if incident_id is not None:
                     action_updates.append(
                         (incident_id, str(row["event_id"]), str(row["id"]))
@@ -1717,8 +1739,8 @@ class Database:
             """
             INSERT INTO incidents
             (id, created_at, description, subsystem, onset_start, onset_end, lookback_days, status, result_json,
-             assessment, assessment_reasons_json, coverage_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             assessment, assessment_reasons_json, coverage_json, affected_entity, suspected_change)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 incident.id,
@@ -1733,6 +1755,8 @@ class Database:
                 NEUTRAL_ASSESSMENT,
                 "[]",
                 "{}",
+                redact_text(request.affected_entity.strip()) if request.affected_entity and request.affected_entity.strip() else None,
+                redact_text(request.suspected_change.strip()) if request.suspected_change and request.suspected_change.strip() else None,
             ),
         )
         if commit:
@@ -1857,6 +1881,8 @@ class Database:
             "onset_start": row["onset_start"],
             "onset_end": row["onset_end"],
             "lookback_days": row["lookback_days"],
+            "affected_entity": row["affected_entity"] if "affected_entity" in row.keys() else None,
+            "suspected_change": row["suspected_change"] if "suspected_change" in row.keys() else None,
             "status": row["status"],
             "assessment": assessment,
             "assessment_reasons": reasons,
@@ -1882,6 +1908,8 @@ class Database:
             "onset_start = ?",
             "onset_end = ?",
             "lookback_days = ?",
+            "affected_entity IS ?",
+            "suspected_change IS ?",
         ]
         params: list[Any] = [
             request.description,
@@ -1889,6 +1917,8 @@ class Database:
             iso_datetime(request.onset_start),
             iso_datetime(request.onset_end),
             request.lookback_days,
+            redact_text(request.affected_entity.strip()) if request.affected_entity and request.affected_entity.strip() else None,
+            redact_text(request.suspected_change.strip()) if request.suspected_change and request.suspected_change.strip() else None,
         ]
         if status is not None:
             clauses.append("status = ?")

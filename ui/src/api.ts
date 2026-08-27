@@ -5,6 +5,7 @@ import type {
   AutomationConfig,
   AutomationSummary,
   Incident,
+  InvestigationInput,
   InvestigationResponse,
   TimelineFilters,
   EventRecord,
@@ -158,12 +159,7 @@ export function recordOverhead(): Promise<OverheadResponse> {
   return request<OverheadResponse>("/overhead", { method: "POST", body: "{}" });
 }
 
-export function createInvestigation(input: {
-  description: string;
-  subsystem?: string;
-  onset?: string;
-  lookback_days: number;
-}): Promise<InvestigationResponse> {
+export function createInvestigation(input: InvestigationInput): Promise<InvestigationResponse> {
   return request<InvestigationResponse>("/investigations", {
     method: "POST",
     body: JSON.stringify(input),

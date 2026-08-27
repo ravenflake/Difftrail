@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createInvestigation, deleteInvestigation, exportBundle, loadBootstrap, loadTimeline, markAutomationNotificationsRead, recordFeedback, recordOverhead, runScan, updateAutomationConfig, updateAutomationWatcher, waitForApi } from "./api";
 import { makePreviewBootstrap } from "./mock";
-import type { AutomationConfig, Bootstrap, Incident, TimelineFilters, View } from "./types";
+import type { AutomationConfig, Bootstrap, Incident, InvestigationInput, TimelineFilters, View } from "./types";
 import { AppShell } from "./components/AppShell";
 import { BrandMark } from "./components/BrandMark";
 import { Icon } from "./components/Icon";
@@ -180,7 +180,7 @@ export default function App() {
     return loadTimeline(filters);
   }, [connection, data]);
 
-  const handleInvestigate = useCallback(async (input: { description: string; subsystem?: string; onset?: string; lookback_days: number }) => {
+  const handleInvestigate = useCallback(async (input: InvestigationInput) => {
     if (connection === "preview") throw new Error("The local UI API is not connected. Start it to investigate the real journal.");
     const response = await createInvestigation(input);
     setData((current) => current ? { ...current, incidents: [response.incident, ...current.incidents.filter((incident) => incident.id !== response.incident.id)], status: { ...current.status, incidents: current.status.incidents + 1 } } : current);

@@ -67,7 +67,8 @@ class AutomationTests(unittest.TestCase):
             self.assertEqual(database.automation_draft_count(), 1)
             self.assertEqual(database.unread_automation_notification_count(), 1)
             snapshot = automation_snapshot(database)
-            incident_id = database.recent_incidents()[0]["id"]
+            draft = database.recent_incidents()[0]
+            incident_id = draft["id"]
             self.assertEqual(snapshot["notifications"]["recent"][0]["incident_id"], incident_id)
             self.assertEqual(
                 database.connection.execute(
@@ -76,9 +77,89 @@ class AutomationTests(unittest.TestCase):
                 ).fetchone()[0],
                 incident_id,
             )
+            self.assertEqual(draft["description"], "Example.exe crashed")
+            self.assertEqual(draft["affected_entity"], "Example.exe")
 
             marked = mark_notifications_read(database)
             self.assertEqual(marked["notifications"]["unread"], 0)
+
+    def test_crash_drafts_are_distinguishable_by_application(self) -> None:
+        with Database(":memory:") as database:
+            now = utc_now()
+            events = [
+                Event(now, "symptom", "application", "crash", "Application crash detected", entity="First.exe", severity="high", source="eventlog", event_id="first-crash"),
+                Event(now + timedelta(seconds=1), "symptom", "application", "crash", "Application crash detected", entity="Second.exe", severity="high", source="eventlog", event_id="second-crash"),
+            ]
+
+            process_scan_events(database, SimpleNamespace(scan_id="scan-crashes", errors=()), events)
+
+            self.assertEqual(
+                {incident["description"] for incident in database.recent_incidents()},
+                {"First.exe crashed", "Second.exe crashed"},
+            )
+
+    def test_crash_draft_uses_safe_fallback_when_identity_is_missing(self) -> None:
+        with Database(":memory:") as database:
+            event = Event(
+                utc_now(),
+                "symptom",
+                "application",
+                "crash",
+                "Application crash detected",
+                entity="Application Error",
+                severity="high",
+                source="eventlog",
+                event_id="missing-identity",
+            )
+
+            process_scan_events(database, SimpleNamespace(scan_id="scan-missing", errors=()), [event])
+
+            draft = database.recent_incidents()[0]
+            self.assertEqual(draft["description"], "Application crashed")
+            self.assertIsNone(draft["affected_entity"])
+
+    def test_crash_draft_title_drops_sensitive_path_and_command_line(self) -> None:
+        with Database(":memory:") as database:
+            event = Event(
+                utc_now(),
+                "symptom",
+                "application",
+                "crash",
+                "Application crash detected",
+                entity=r'"C:\Users\Alice\Private\Secret.exe" --token hunter2',
+                severity="high",
+                source="eventlog",
+                event_id="sensitive-identity",
+            )
+
+            process_scan_events(database, SimpleNamespace(scan_id="scan-sensitive", errors=()), [event])
+
+            draft = database.recent_incidents()[0]
+            encoded = json.dumps(draft)
+            self.assertEqual(draft["description"], "Secret.exe crashed")
+            self.assertEqual(draft["affected_entity"], "Secret.exe")
+            self.assertIn("Secret.exe crashed", encoded)
+            self.assertNotIn("Alice", encoded)
+            self.assertNotIn("hunter2", encoded)
+            self.assertNotIn(r"C:\Users", encoded)
+
+    def test_hang_draft_names_the_application_and_symptom(self) -> None:
+        with Database(":memory:") as database:
+            event = Event(
+                utc_now(),
+                "symptom",
+                "application",
+                "hang",
+                "Application hang detected",
+                entity="Editor.exe",
+                severity="high",
+                source="eventlog",
+                event_id="app-hang",
+            )
+
+            process_scan_events(database, SimpleNamespace(scan_id="scan-hang", errors=()), [event])
+
+            self.assertEqual(database.recent_incidents()[0]["description"], "Editor.exe stopped responding")
 
     def test_automation_snapshot_redacts_notification_paths(self) -> None:
         with Database(":memory:") as database:
@@ -191,7 +272,7 @@ class AutomationTests(unittest.TestCase):
             )
             process_scan_events(database, SimpleNamespace(scan_id="path-title", errors=()), [event])
             description = database.recent_incidents()[0]["description"]
-            self.assertIn("Automatic draft: Crash in <path>", description)
+            self.assertEqual(description, "Application crashed")
             self.assertNotIn(r"C:\Program Files\Secret\tool.exe", description)
 
     def test_legacy_null_draft_link_is_repaired_atomically(self) -> None:
