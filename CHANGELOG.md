@@ -23,6 +23,9 @@
 - Separated installed driver inventory from live device presence so temporary
   device transitions are not duplicated as driver uninstall/reinstall events;
   existing journals take a quiet one-time driver baseline after upgrading.
+- Added a lightweight Windows notification-area companion that shows whether
+  scheduled collection is enabled, actively scanning, or off; it opens the
+  desktop UI on demand without keeping the WebView and local API resident.
 
 ## 0.1.3 — Trust and Portability
 

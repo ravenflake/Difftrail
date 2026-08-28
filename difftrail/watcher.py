@@ -3,6 +3,7 @@ from __future__ import annotations
 """Headless one-shot worker used by the Windows background task."""
 
 import argparse
+from contextlib import contextmanager
 import logging
 import logging.handlers
 import os
@@ -23,6 +24,25 @@ def _log_path(database_path: Path) -> Path:
     return database_path.with_name("watcher.log")
 
 
+def _active_marker_path(database_path: Path) -> Path:
+    if os.name == "nt":
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if local_app_data:
+            return Path(local_app_data) / "Difftrail" / "watcher.active"
+    return database_path.with_name("watcher.active")
+
+
+@contextmanager
+def _active_marker(database_path: Path):
+    marker = _active_marker_path(database_path)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(str(os.getpid()), encoding="ascii")
+    try:
+        yield
+    finally:
+        marker.unlink(missing_ok=True)
+
+
 def _configure_logging(database_path: Path) -> None:
     log_path = _log_path(database_path)
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -40,8 +60,9 @@ def _configure_logging(database_path: Path) -> None:
 def run_once(database_path: Path) -> int:
     _configure_logging(database_path)
     try:
-        with Database(database_path) as database:
-            result = run_automated_scan(database)
+        with _active_marker(database_path):
+            with Database(database_path) as database:
+                result = run_automated_scan(database)
         if result.errors:
             LOGGER.warning(
                 "Background scan completed with warnings: %s",

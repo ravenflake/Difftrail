@@ -158,6 +158,8 @@ The watcher snapshots applications, Windows updates, installed driver associatio
 
 The desktop app's Automation screen manages a hidden, periodic Windows Task Scheduler job, runs a scan on demand, stores local notifications for high-value signals and provider warnings, and creates reviewable investigation drafts. Each scheduled run is a short headless worker rather than a visible terminal process; Task Scheduler handles logon startup, missed runs, and restart-on-failure. These automations observe and prepare evidence; they do not change Windows settings or apply remediation.
 
+The installer also starts a lightweight Difftrail companion in the Windows notification area and registers it for the current user's next logon. It reports whether scheduled collection is enabled, actively scanning, or off, and opens the full desktop UI on left-click. The WebView and local UI API still exit when the main window closes, so the status icon does not carry the desktop application's memory footprint. Right-click the icon for status, open, and explicit exit actions. Exiting the status icon does not disable the independently scheduled watcher; use Automation > Disable when you want background collection to stop.
+
 To start it at logon from a checkout, review the script and run PowerShell as the user who should own the task:
 
 ```powershell

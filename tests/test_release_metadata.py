@@ -48,6 +48,10 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("if ($exitCode -ne 0)", script)
 
         self.assertIn('Filter "difftrail-desktop.exe"', script)
+        self.assertIn('Filter "difftrail-status.exe"', script)
+        self.assertIn('$statusRunValueName = "Difftrail Status"', script)
+        self.assertIn("did not register the Difftrail notification-area companion", script)
+        self.assertIn("left the Difftrail notification-area startup registration", script)
         self.assertIn('$startInfo.Arguments = $RawArguments', script)
         self.assertIn('Invoke-Installer -FilePath $installer -RawArguments "/S /D=$installRoot"', script)
         self.assertIn('Invoke-Installer -FilePath $uninstaller.FullName -RawArguments "/S _?=$installRoot"', script)
@@ -74,6 +78,9 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("DifftrailRemoveWatcherTask", hooks)
         self.assertNotIn("LOCALAPPDATA", hooks)
         self.assertNotIn("difftrail.db", hooks.casefold())
+        self.assertIn("difftrail-status.exe", hooks)
+        self.assertIn('WriteRegStr HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Run" "Difftrail Status"', hooks)
+        self.assertIn('DeleteRegValue HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Run" "Difftrail Status"', hooks)
 
     def test_release_workflow_reuses_metadata_checker(self) -> None:
         from pathlib import Path

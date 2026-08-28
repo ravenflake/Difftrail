@@ -33,8 +33,9 @@ struct ApiEndpoint {
 
 fn generate_api_token() -> Result<String, Box<dyn Error>> {
     let mut bytes = [0_u8; 32];
-    getrandom::fill(&mut bytes)
-        .map_err(|error| io::Error::other(format!("could not generate the local API token: {error}")))?;
+    getrandom::fill(&mut bytes).map_err(|error| {
+        io::Error::other(format!("could not generate the local API token: {error}"))
+    })?;
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
@@ -276,10 +277,7 @@ fn wait_for_api_ready(child: &mut Child, port: u16, token: &str) -> Result<(), B
     }
 }
 
-fn start_local_api(
-    _app: &tauri::AppHandle,
-    token: &str,
-) -> Result<(Child, u16), Box<dyn Error>> {
+fn start_local_api(_app: &tauri::AppHandle, token: &str) -> Result<(Child, u16), Box<dyn Error>> {
     let db = database_path();
     let mut command;
 
@@ -449,9 +447,8 @@ fn main() {
                 let (backend, port) = start_local_api(app.handle(), &token)?;
                 Ok((backend, port, token))
             })();
-            let (backend, port, token) = startup.map_err(|error| {
+            let (backend, port, token) = startup.inspect_err(|error| {
                 report_startup_failure(error.as_ref());
-                error
             })?;
             app.manage(ApiEndpoint { port, token });
             app.manage(BackendProcess(Mutex::new(Some(backend))));

@@ -61,6 +61,10 @@ flowchart TD
 - Background collection is opt-in. It uses a current-user scheduled task whose
   executable, database argument, repetition, and one-shot worker shape are
   checked before Difftrail reports it healthy.
+- A separate lightweight notification-area companion reports whether the
+  scheduled watcher is enabled, actively scanning, or off. It can launch the
+  desktop shell, but does not keep the WebView or local UI API resident after
+  the window closes. Exiting the icon does not silently disable collection.
 - Uninstall stops Difftrail processes and removes the scheduled task. The local
   journal is deliberately preserved.
 

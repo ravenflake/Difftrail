@@ -16,6 +16,8 @@ $processTreeWaitMilliseconds = 5000
 $uninstallCleanupTimeoutMilliseconds = 30000
 $uninstallRegistryKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Difftrail"
 $productRegistryKey = "HKCU:\Software\difftrail\Difftrail"
+$runRegistryKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+$statusRunValueName = "Difftrail Status"
 
 function Assert-NoExistingDifftrailRegistration {
     if (
@@ -49,6 +51,14 @@ function Remove-SmokeInstallerState {
         if ($registeredLocation.Trim().Trim('"') -ieq $ExpectedInstallRoot) {
             Remove-Item -LiteralPath $productRegistryKey -Recurse -Force -ErrorAction Stop
         }
+    }
+
+    $expectedStatusExecutable = Join-Path $ExpectedInstallRoot "backend\difftrail-status.exe"
+    $statusCommand = [string](
+        Get-ItemPropertyValue -LiteralPath $runRegistryKey -Name $statusRunValueName -ErrorAction SilentlyContinue
+    )
+    if ($statusCommand.Trim().Trim('"') -ieq $expectedStatusExecutable) {
+        Remove-ItemProperty -LiteralPath $runRegistryKey -Name $statusRunValueName -Force -ErrorAction Stop
     }
 
     $shortcutPath = Join-Path ([Environment]::GetFolderPath("Programs")) "Difftrail.lnk"
@@ -198,6 +208,18 @@ try {
         throw "Silent installation completed but difftrail-desktop.exe was not found under $installRoot"
     }
 
+    $installedStatusExecutable = Get-ChildItem -LiteralPath $installRoot -Filter "difftrail-status.exe" -File -Recurse |
+        Select-Object -First 1
+    if ($null -eq $installedStatusExecutable) {
+        throw "Silent installation completed but difftrail-status.exe was not found under $installRoot"
+    }
+    $statusCommand = [string](
+        Get-ItemPropertyValue -LiteralPath $runRegistryKey -Name $statusRunValueName -ErrorAction SilentlyContinue
+    )
+    if ($statusCommand.Trim().Trim('"') -ine $installedStatusExecutable.FullName) {
+        throw "Silent installation did not register the Difftrail notification-area companion"
+    }
+
     $uninstaller = Get-ChildItem -LiteralPath $installRoot -Filter "uninstall.exe" -File -Recurse |
         Select-Object -First 1
     if ($null -eq $uninstaller) {
@@ -214,6 +236,9 @@ try {
     }
     if (Test-Path -LiteralPath $installedExecutable.FullName) {
         throw "Silent uninstall left the application executable in place: $($installedExecutable.FullName)"
+    }
+    if ($null -ne (Get-ItemPropertyValue -LiteralPath $runRegistryKey -Name $statusRunValueName -ErrorAction SilentlyContinue)) {
+        throw "Silent uninstall left the Difftrail notification-area startup registration in place"
     }
 }
 catch {
