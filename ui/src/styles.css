@@ -239,6 +239,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .field-label select:focus, .field-label input:focus { border-color: var(--teal); }
 .onset-field { margin-top: 15px; max-width: 50%; }
 .onset-field small { color: var(--ink-faint); font-size: 10px; font-weight: 400; }
+.context-grid { margin-top: 15px; }
+.heading-context { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 10px; color: var(--ink-soft); font-size: 11px; }
+.heading-context strong { color: var(--ink); font-weight: 650; }
 .form-error { display: flex; align-items: flex-start; gap: 7px; margin-top: 15px; padding: 10px 11px; color: var(--red); border: 1px solid #efd0ca; border-radius: 6px; background: var(--red-wash); font-size: 11px; line-height: 1.45; }
 .investigate-submit { min-height: 40px; margin-top: 21px; }
 .button-spinner { width: 12px; height: 12px; border: 2px solid rgba(255,255,255,.45); border-top-color: white; border-radius: 50%; animation: spin 700ms linear infinite; }

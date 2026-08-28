@@ -20,7 +20,7 @@ from typing import Any, Iterable
 
 from .db import Database
 from .investigation import run_investigation
-from .models import Event, automatic_draft_request
+from .models import Event, automatic_draft_request, legacy_automatic_draft_request
 from .privacy import redact_public_text
 from ._process import _hidden_process_kwargs
 
@@ -628,6 +628,7 @@ def _create_investigation_draft(database: Database, event: Event) -> tuple[str |
         entity=event.entity,
         occurred_at=event.occurred_at,
         subsystem=event.subsystem,
+        action=event.action,
     )
     # Allocate the incident id before recording the marker. The marker and
     # incident then carry the same id inside one transaction, so a concurrent
@@ -652,6 +653,16 @@ def _create_investigation_draft(database: Database, event: Event) -> tuple[str |
             if existing_id:
                 return existing_id, False
             matching_id = database.find_incident_id(request, status="draft")
+            if not matching_id:
+                matching_id = database.find_incident_id(
+                    legacy_automatic_draft_request(
+                        title=event.title,
+                        entity=event.entity,
+                        occurred_at=event.occurred_at,
+                        subsystem=event.subsystem,
+                    ),
+                    status="draft",
+                )
             if matching_id:
                 database.link_automation_action_to_incident(
                     event.event_id, "draft_investigation", matching_id, commit=False

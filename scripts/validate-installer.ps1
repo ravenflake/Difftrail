@@ -14,6 +14,53 @@ $installRoot = $null
 $installerTimeoutMilliseconds = 120000
 $processTreeWaitMilliseconds = 5000
 $uninstallCleanupTimeoutMilliseconds = 30000
+$uninstallRegistryKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Difftrail"
+$productRegistryKey = "HKCU:\Software\difftrail\Difftrail"
+
+function Assert-NoExistingDifftrailRegistration {
+    if (
+        (Test-Path -LiteralPath $uninstallRegistryKey) -or
+        (Test-Path -LiteralPath $productRegistryKey)
+    ) {
+        throw "Installer smoke validation requires a machine without an existing Difftrail registration. Use an isolated runner or VM."
+    }
+}
+
+function Remove-SmokeInstallerState {
+    param(
+        [string]$ExpectedInstallRoot
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ExpectedInstallRoot)) {
+        return
+    }
+
+    if (Test-Path -LiteralPath $uninstallRegistryKey) {
+        $registeredLocation = [string](
+            Get-ItemPropertyValue -LiteralPath $uninstallRegistryKey -Name "InstallLocation" -ErrorAction SilentlyContinue
+        )
+        if ($registeredLocation.Trim().Trim('"') -ieq $ExpectedInstallRoot) {
+            Remove-Item -LiteralPath $uninstallRegistryKey -Recurse -Force -ErrorAction Stop
+        }
+    }
+
+    if (Test-Path -LiteralPath $productRegistryKey) {
+        $registeredLocation = [string](Get-Item -LiteralPath $productRegistryKey).GetValue("")
+        if ($registeredLocation.Trim().Trim('"') -ieq $ExpectedInstallRoot) {
+            Remove-Item -LiteralPath $productRegistryKey -Recurse -Force -ErrorAction Stop
+        }
+    }
+
+    $shortcutPath = Join-Path ([Environment]::GetFolderPath("Programs")) "Difftrail.lnk"
+    if (Test-Path -LiteralPath $shortcutPath -PathType Leaf) {
+        $shell = New-Object -ComObject WScript.Shell
+        $shortcut = $shell.CreateShortcut($shortcutPath)
+        $expectedTarget = Join-Path $ExpectedInstallRoot "difftrail-desktop.exe"
+        if ($shortcut.TargetPath -ieq $expectedTarget) {
+            Remove-Item -LiteralPath $shortcutPath -Force -ErrorAction Stop
+        }
+    }
+}
 
 function Get-DescendantProcessIds {
     param(
@@ -135,6 +182,7 @@ function Invoke-Installer {
 }
 
 try {
+    Assert-NoExistingDifftrailRegistration
     $smokeRoot = Join-Path ([IO.Path]::GetTempPath()) ("Difftrail Installer Smoke " + [Guid]::NewGuid().ToString("N"))
     $installRoot = Join-Path $smokeRoot "install"
     New-Item -ItemType Directory -Path $installRoot -Force | Out-Null
@@ -172,6 +220,20 @@ catch {
     $failure = $_
 }
 finally {
+    if ($null -ne $installRoot) {
+        try {
+            Remove-SmokeInstallerState -ExpectedInstallRoot $installRoot
+        }
+        catch {
+            $cleanupMessage = "Installer smoke-test registration cleanup failed: $($_.Exception.Message)"
+            if ($null -eq $failure) {
+                $failure = $_
+            }
+            else {
+                Write-Warning "$cleanupMessage (preserving the original installer failure)"
+            }
+        }
+    }
     if ($null -ne $smokeRoot -and (Test-Path -LiteralPath $smokeRoot)) {
         try {
             Remove-Item -LiteralPath $smokeRoot -Recurse -Force -ErrorAction Stop
