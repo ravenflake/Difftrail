@@ -731,3 +731,11 @@ class AutomationTests(unittest.TestCase):
         self.assertIn("-Hidden", contents)
         self.assertIn("-RestartCount", contents)
         self.assertIn("difftrail.watcher", contents)
+
+    def test_source_uninstaller_surfaces_task_scheduler_access_errors(self) -> None:
+        script = Path(__file__).parents[1] / "scripts" / "uninstall-watcher.ps1"
+        contents = script.read_text(encoding="utf-8")
+        self.assertIn("Get-ScheduledTask", contents)
+        self.assertIn("Unregister-ScheduledTask", contents)
+        self.assertIn("-ErrorAction Stop", contents)
+        self.assertNotIn("Unregister-ScheduledTask -TaskName \"Difftrail Watcher\" -Confirm:$false -ErrorAction SilentlyContinue", contents)
