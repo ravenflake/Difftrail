@@ -277,6 +277,27 @@ fn wait_for_api_ready(child: &mut Child, port: u16, token: &str) -> Result<(), B
     }
 }
 
+fn terminate_backend(child: &mut Child) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+
+        let taskkill_result = Command::new("taskkill")
+            .args(["/PID", &child.id().to_string(), "/T", "/F"])
+            .creation_flags(0x08000000)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        if taskkill_result.is_ok() {
+            let _ = child.wait();
+            return;
+        }
+    }
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 fn start_local_api(_app: &tauri::AppHandle, token: &str) -> Result<(Child, u16), Box<dyn Error>> {
     let db = database_path();
     let mut command;
@@ -348,8 +369,7 @@ fn start_local_api(_app: &tauri::AppHandle, token: &str) -> Result<(Child, u16),
     let port = match port_receiver.recv_timeout(API_READY_TIMEOUT) {
         Ok(Ok(port)) => port,
         Ok(Err(message)) => {
-            let _ = child.kill();
-            let _ = child.wait();
+            terminate_backend(&mut child);
             return Err(Box::new(io::Error::other(format!(
                 "Difftrail backend startup failed: {message}; stdout: {}; stderr: {}",
                 backend_output(&stdout),
@@ -357,8 +377,7 @@ fn start_local_api(_app: &tauri::AppHandle, token: &str) -> Result<(Child, u16),
             ))));
         }
         Err(mpsc::RecvTimeoutError::Timeout) => {
-            let _ = child.kill();
-            let _ = child.wait();
+            terminate_backend(&mut child);
             return Err(Box::new(io::Error::new(
                 io::ErrorKind::TimedOut,
                 format!(
@@ -370,8 +389,7 @@ fn start_local_api(_app: &tauri::AppHandle, token: &str) -> Result<(Child, u16),
             )));
         }
         Err(mpsc::RecvTimeoutError::Disconnected) => {
-            let _ = child.kill();
-            let _ = child.wait();
+            terminate_backend(&mut child);
             return Err(Box::new(io::Error::other(format!(
                 "Difftrail backend port channel closed unexpectedly; stdout: {}; stderr: {}",
                 backend_output(&stdout),
@@ -381,8 +399,7 @@ fn start_local_api(_app: &tauri::AppHandle, token: &str) -> Result<(Child, u16),
     };
 
     if let Err(error) = wait_for_api_ready(&mut child, port, token) {
-        let _ = child.kill();
-        let _ = child.wait();
+        terminate_backend(&mut child);
         return Err(Box::new(io::Error::other(format!(
             "Difftrail backend startup failed: {error}; stdout: {}; stderr: {}",
             backend_output(&stdout),
@@ -461,8 +478,7 @@ fn main() {
                 if let Some(process) = app_handle.try_state::<BackendProcess>() {
                     if let Ok(mut child) = process.0.lock() {
                         if let Some(process) = child.as_mut() {
-                            let _ = process.kill();
-                            let _ = process.wait();
+                            terminate_backend(process);
                         }
                     }
                 }
