@@ -23,6 +23,7 @@ mod windows_app {
     use windows_sys::Win32::System::Threading::CreateMutexW;
 
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    const STATUS_ID: &str = "toggle-background-collection";
     const OPEN_ID: &str = "open-difftrail";
     const EXIT_ID: &str = "exit-difftrail-status";
     const ACTIVE_MARKER: &str = "watcher.active";
@@ -127,6 +128,85 @@ mod windows_app {
             .is_ok_and(|status| status.success())
     }
 
+    fn powershell_executable() -> PathBuf {
+        let system_root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+        PathBuf::from(system_root)
+            .join("System32")
+            .join("WindowsPowerShell")
+            .join("v1.0")
+            .join("powershell.exe")
+    }
+
+    fn run_watcher_script(
+        root: &Path,
+        script_name: &str,
+        extra_arguments: &[(&str, String)],
+    ) -> bool {
+        let script = root.join("backend").join(script_name);
+        if !script.is_file() {
+            return false;
+        }
+
+        let mut command = Command::new(powershell_executable());
+        command
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+            ])
+            .arg(script)
+            .current_dir(root.join("backend"));
+        for (name, value) in extra_arguments {
+            command.arg(name).arg(value);
+        }
+        command
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
+    fn database_path(root: &Path) -> PathBuf {
+        std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .map(|path| path.join("Difftrail").join("difftrail.db"))
+            .unwrap_or_else(|| root.join("difftrail.db"))
+    }
+
+    fn enable_watcher(root: &Path) -> bool {
+        let watcher = root.join("backend").join("difftrail-watcher.exe");
+        let working_directory = root.join("backend");
+        run_watcher_script(
+            root,
+            "install-watcher.ps1",
+            &[
+                ("-IntervalSeconds", "300".to_string()),
+                ("-DatabasePath", database_path(root).display().to_string()),
+                ("-ExecutablePath", watcher.display().to_string()),
+                ("-WorkingDirectory", working_directory.display().to_string()),
+            ],
+        )
+    }
+
+    fn disable_watcher(root: &Path) -> bool {
+        run_watcher_script(root, "uninstall-watcher.ps1", &[])
+    }
+
+    fn toggle_watcher(root: &Path) {
+        match collection_status(root) {
+            CollectionStatus::Off => {
+                let _ = enable_watcher(root);
+            }
+            CollectionStatus::Enabled | CollectionStatus::Scanning => {
+                let _ = disable_watcher(root);
+            }
+        }
+    }
+
     fn collection_status(root: &Path) -> CollectionStatus {
         if watcher_is_active(root) {
             CollectionStatus::Scanning
@@ -181,10 +261,9 @@ mod windows_app {
         });
 
         let initial_status = collection_status(&root);
-        let status_item =
-            MenuItem::with_id("collection-status", initial_status.menu_text(), false, None);
+        let status_item = MenuItem::with_id(STATUS_ID, initial_status.menu_text(), true, None);
         let open_item = MenuItem::with_id(OPEN_ID, "Open Difftrail", true, None);
-        let exit_item = MenuItem::with_id(EXIT_ID, "Exit Difftrail status icon", true, None);
+        let exit_item = MenuItem::with_id(EXIT_ID, "Exit Difftrail", true, None);
         let separator = PredefinedMenuItem::separator();
         let menu = Menu::with_items(&[&status_item, &separator, &open_item, &exit_item])?;
         let tray = TrayIconBuilder::new()
@@ -209,6 +288,15 @@ mod windows_app {
                         ..
                     },
                 )) => open_difftrail(&root),
+                Event::UserEvent(UserEvent::Menu(event)) if event.id.as_ref() == STATUS_ID => {
+                    toggle_watcher(&root);
+                    let status = collection_status(&root);
+                    if status != last_status {
+                        status_item.set_text(status.menu_text());
+                        let _ = tray.set_tooltip(Some(status.tooltip()));
+                        last_status = status;
+                    }
+                }
                 Event::UserEvent(UserEvent::Menu(event)) if event.id.as_ref() == OPEN_ID => {
                     open_difftrail(&root);
                 }

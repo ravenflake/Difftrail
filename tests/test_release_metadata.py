@@ -82,6 +82,19 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn('WriteRegStr HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Run" "Difftrail Status"', hooks)
         self.assertIn('DeleteRegValue HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Run" "Difftrail Status"', hooks)
 
+    def test_status_companion_menu_can_toggle_collection(self) -> None:
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "ui" / "src-tauri" / "src" / "bin" / "difftrail-status.rs").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('const STATUS_ID: &str = "toggle-background-collection";', source)
+        self.assertIn('MenuItem::with_id(STATUS_ID, initial_status.menu_text(), true, None)', source)
+        self.assertIn('MenuItem::with_id(EXIT_ID, "Exit Difftrail", true, None)', source)
+        self.assertIn('run_watcher_script(root, "uninstall-watcher.ps1", &[])', source)
+        self.assertIn('"install-watcher.ps1"', source)
+
     def test_release_workflow_reuses_metadata_checker(self) -> None:
         from pathlib import Path
 

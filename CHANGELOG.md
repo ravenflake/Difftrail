@@ -26,6 +26,9 @@
 - Added a lightweight Windows notification-area companion that shows whether
   scheduled collection is enabled, actively scanning, or off; it opens the
   desktop UI on demand without keeping the WebView and local API resident.
+- Made the notification-area collection status actionable: clicking it toggles
+  the scheduled watcher, while the full Automation screen retains interval and
+  rule controls.
 
 ## 0.1.3 — Trust and Portability
 
