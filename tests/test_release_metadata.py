@@ -92,3 +92,17 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertNotRegex(workflow, re.compile(r"\bversions\s*=\s*\{"))
         self.assertIn("sha256sum -- *-setup.exe > SHA256SUMS.txt", workflow)
         self.assertIn('checksum_file="release-assets/SHA256SUMS.txt"', workflow)
+
+    def test_ci_stamps_both_pull_request_and_main_snapshot_builds(self) -> None:
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        workflow = (root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+
+        self.assertIn("Stamp development build version", workflow)
+        self.assertIn('--pr-number "$env:PR_NUMBER"', workflow)
+        self.assertIn("--channel main", workflow)
+        self.assertIn('--build-number "$env:BUILD_NUMBER"', workflow)
+        self.assertIn("Build versioned development UI", workflow)
+        self.assertIn("--config src-tauri/tauri.build.conf.json", workflow)
+        self.assertIn("steps.stamp_build.outputs.artifact_name", workflow)

@@ -15,7 +15,7 @@ _STABLE_VERSION_PATTERN = re.compile(
 )
 _DEVELOPMENT_VERSION_PATTERN = re.compile(
     r"^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
-    r"-dev\.[1-9]\d*\+[0-9A-Za-z-]+$"
+    r"-dev\.(?:[1-9]\d*|main\.[1-9]\d*)\+[0-9A-Za-z-]+$"
 )
 _COMMIT_SHA_PATTERN = re.compile(r"^[0-9a-fA-F]+$")
 _PR_NUMBER_PATTERN = re.compile(r"^[1-9]\d*$")
@@ -68,10 +68,28 @@ def development_version(next_version: str, pr_number: str | int, commit_sha: str
     return f"{base}-dev.{pull_request}+{short_commit_sha(commit_sha)}"
 
 
+def main_snapshot_version(
+    next_version: str,
+    build_number: str | int,
+    commit_sha: str,
+) -> str:
+    """Build the disposable SemVer used by main-branch snapshot installers."""
+
+    base = validate_stable_version(next_version)
+    build = validate_pull_request_number(build_number)
+    return f"{base}-dev.main.{build}+{short_commit_sha(commit_sha)}"
+
+
 def artifact_name(pr_number: str | int, commit_sha: str) -> str:
     """Return an unambiguous CI artifact name for a pull-request build."""
 
     return f"difftrail-windows-installer-pr-{validate_pull_request_number(pr_number)}-{short_commit_sha(commit_sha)}"
+
+
+def main_artifact_name(commit_sha: str) -> str:
+    """Return an unambiguous CI artifact name for a main snapshot build."""
+
+    return f"difftrail-windows-installer-main-{short_commit_sha(commit_sha)}"
 
 
 def write_build_stamp(root: Path, version: str) -> None:
