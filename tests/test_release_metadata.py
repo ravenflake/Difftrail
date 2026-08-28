@@ -94,6 +94,7 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn('MenuItem::with_id(EXIT_ID, "Exit Difftrail", true, None)', source)
         self.assertIn('run_watcher_script(root, "uninstall-watcher.ps1", &[])', source)
         self.assertIn('"install-watcher.ps1"', source)
+        self.assertIn("-Verb RunAs", source)
 
     def test_release_workflow_reuses_metadata_checker(self) -> None:
         from pathlib import Path
