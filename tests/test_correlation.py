@@ -351,6 +351,143 @@ class CorrelationTests(unittest.TestCase):
         )
         self.assertEqual(brave_hypothesis.confidence, "Low")
 
+    def test_unrelated_services_and_startup_entries_do_not_inherit_app_crashes(self) -> None:
+        now = utc_now()
+        onset = now - timedelta(minutes=30)
+        changes = [
+            Event(
+                onset - timedelta(minutes=30),
+                "change",
+                "startup",
+                "updated",
+                "Service Google Chrome Elevation Service updated",
+                entity="GoogleChromeElevationService",
+                source="services",
+                event_id="chrome-service",
+            ),
+            Event(
+                onset - timedelta(hours=1),
+                "change",
+                "startup",
+                "updated",
+                "Service Brave Elevation Service updated",
+                entity="BraveElevationService",
+                source="services",
+                event_id="brave-service",
+            ),
+            Event(
+                onset - timedelta(hours=2),
+                "change",
+                "startup",
+                "updated",
+                "Startup entry GoogleDriveFS updated",
+                entity="GoogleDriveFS",
+                source="startup",
+                event_id="drive-startup",
+            ),
+        ]
+        symptom = Event(
+            onset,
+            "symptom",
+            "application",
+            "crash",
+            "Application crash detected",
+            entity="Cloudflare WARP.exe",
+            source="eventlog",
+            event_id="warp-crash",
+        )
+        request = IncidentRequest(
+            "Cloudflare WARP.exe crashed",
+            onset,
+            now,
+            "application",
+            7,
+            affected_entity="Cloudflare WARP.exe",
+        )
+
+        hypotheses = rank_candidates([*changes, symptom], request)
+
+        self.assertEqual({item.confidence for item in hypotheses}, {"Low"})
+        for hypothesis in hypotheses:
+            baseline = next(item for item in hypothesis.evidence if item.signal == "baseline break")
+            self.assertEqual(baseline.strength, "weak")
+            self.assertTrue(any(item.signal == "entity mismatch" for item in hypothesis.counter_evidence))
+
+    def test_matching_service_still_uses_affected_entity_symptom(self) -> None:
+        now = utc_now()
+        onset = now - timedelta(minutes=30)
+        service = Event(
+            onset - timedelta(hours=1),
+            "change",
+            "startup",
+            "updated",
+            "Service Google Chrome Elevation Service updated",
+            entity="GoogleChromeElevationService",
+            source="services",
+            event_id="chrome-service",
+        )
+        symptom = Event(
+            onset,
+            "symptom",
+            "application",
+            "crash",
+            "Application crash detected",
+            entity="GoogleChromeElevationService.exe",
+            source="eventlog",
+            event_id="chrome-crash",
+        )
+        request = IncidentRequest(
+            "GoogleChromeElevationService.exe crashed",
+            onset,
+            now,
+            "application",
+            7,
+            affected_entity="GoogleChromeElevationService.exe",
+        )
+
+        hypothesis = rank_candidates([service, symptom], request)[0]
+
+        baseline = next(item for item in hypothesis.evidence if item.signal == "baseline break")
+        self.assertNotEqual(baseline.strength, "weak")
+        self.assertFalse(any(item.signal == "entity mismatch" for item in hypothesis.counter_evidence))
+
+    def test_unidentified_service_remains_eligible_for_symptom_support(self) -> None:
+        now = utc_now()
+        onset = now - timedelta(minutes=30)
+        service = Event(
+            onset - timedelta(hours=1),
+            "change",
+            "startup",
+            "updated",
+            "Service updated",
+            source="services",
+            event_id="unknown-service",
+        )
+        symptom = Event(
+            onset,
+            "symptom",
+            "application",
+            "crash",
+            "Application crash detected",
+            entity="nvcontainer.exe",
+            source="eventlog",
+            event_id="nvcontainer-crash",
+        )
+        request = IncidentRequest(
+            "nvcontainer.exe crashed",
+            onset,
+            now,
+            "application",
+            7,
+            affected_entity="nvcontainer.exe",
+        )
+
+        hypothesis = rank_candidates([service, symptom], request)[0]
+
+        baseline = next(item for item in hypothesis.evidence if item.signal == "baseline break")
+        self.assertNotEqual(baseline.strength, "weak")
+        self.assertFalse(any(item.signal == "entity mismatch" for item in hypothesis.counter_evidence))
+
     def test_cross_application_system_changes_remain_eligible(self) -> None:
         now = utc_now()
         onset = now - timedelta(minutes=30)
