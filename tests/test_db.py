@@ -165,6 +165,43 @@ class DatabaseTests(unittest.TestCase):
             self.assertIsNone(database.get_meta("source:apps:initialized"))
             self.assertEqual(database.apply_snapshot("apps", [item], occurred_at=now + timedelta(minutes=2)), [])
 
+    def test_existing_driver_state_is_quietly_rebaselined_for_installed_inventory(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "driver-inventory.db"
+            now = utc_now()
+            item = SnapshotItem(
+                "drivers",
+                "PCI\\GPU",
+                "graphics",
+                "Driver for GPU",
+                {"device_id": "PCI\\GPU", "version": "1.0"},
+            )
+            with Database(path) as database:
+                database.apply_snapshot("drivers", [item], occurred_at=now)
+                database.connection.execute(
+                    "DELETE FROM meta WHERE key = ?",
+                    ("migration:installed-driver-inventory",),
+                )
+                database.connection.commit()
+
+            with Database(path) as database:
+                self.assertEqual(
+                    database.connection.execute(
+                        "SELECT COUNT(*) FROM state_items WHERE source = 'drivers'"
+                    ).fetchone()[0],
+                    0,
+                )
+                self.assertIsNone(database.get_meta("source:drivers:initialized"))
+                self.assertEqual(database.get_meta("migration:installed-driver-inventory"), "1")
+                self.assertEqual(
+                    database.apply_snapshot(
+                        "drivers",
+                        [item],
+                        occurred_at=now + timedelta(minutes=1),
+                    ),
+                    [],
+                )
+
     def test_deep_persisted_event_details_are_ignored_on_read(self) -> None:
         with Database(":memory:") as database:
             now = utc_now()

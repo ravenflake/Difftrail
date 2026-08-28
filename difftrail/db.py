@@ -41,6 +41,7 @@ VALID_INVESTIGATION_ASSESSMENTS = ASSESSMENT_STATES
 _DATABASE_INITIALIZATION_LOCK = threading.RLock()
 _AUTOMATION_LINK_REPAIR_CURSOR = "automation:link-repair-cursor"
 _AUTOMATION_LINK_REPAIR_BATCH = 200
+_DRIVER_INVENTORY_REBASE_MARKER = "migration:installed-driver-inventory"
 
 
 # These fields describe runtime state or localized display metadata rather
@@ -402,6 +403,7 @@ class Database:
                     self.connection.execute("PRAGMA journal_mode = WAL")
                 self.connection.execute("PRAGMA synchronous = NORMAL")
                 self._run_migrations()
+                self._rebaseline_installed_driver_inventory()
                 # This compatibility backfill intentionally remains safe to rerun. It
                 # also repairs a journal where an older build's marker was lost without
                 # changing the schema version or deleting any evidence.
@@ -412,6 +414,16 @@ class Database:
                 if connection is not None:
                     connection.close()
                 raise
+
+    def _rebaseline_installed_driver_inventory(self) -> None:
+        """Quietly reset state written with the old present-device filter."""
+
+        if self.get_meta(_DRIVER_INVENTORY_REBASE_MARKER) == "1":
+            return
+        with self.connection:
+            self.connection.execute("DELETE FROM state_items WHERE source = 'drivers'")
+            self.connection.execute("DELETE FROM meta WHERE key = 'source:drivers:initialized'")
+            self._set_meta_without_commit(_DRIVER_INVENTORY_REBASE_MARKER, "1")
 
     def _run_migrations(self) -> None:
         """Apply numbered, transactional migrations to fresh and legacy journals."""

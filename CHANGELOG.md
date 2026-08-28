@@ -21,7 +21,8 @@
 - Canonicalized allow-listed loopback origins before writing CORS response
   headers.
 - Separated installed driver inventory from live device presence so temporary
-  device transitions are not duplicated as driver uninstall/reinstall events.
+  device transitions are not duplicated as driver uninstall/reinstall events;
+  existing journals take a quiet one-time driver baseline after upgrading.
 
 ## 0.1.3 — Trust and Portability
 
