@@ -137,6 +137,18 @@ mod windows_app {
             .join("powershell.exe")
     }
 
+    fn powershell_literal(value: &str) -> String {
+        format!("'{}'", value.replace('\'', "''"))
+    }
+
+    fn command_line_argument(value: &str) -> String {
+        if value.is_empty() || value.chars().any(char::is_whitespace) {
+            format!("\"{}\"", value.replace('"', "\\\""))
+        } else {
+            value.to_string()
+        }
+    }
+
     fn run_watcher_script(
         root: &Path,
         script_name: &str,
@@ -147,21 +159,50 @@ mod windows_app {
             return false;
         }
 
-        let mut command = Command::new(powershell_executable());
-        command
+        let powershell = powershell_executable();
+        let mut arguments = vec![
+            "-NoProfile".to_string(),
+            "-NonInteractive".to_string(),
+            "-ExecutionPolicy".to_string(),
+            "Bypass".to_string(),
+            "-File".to_string(),
+            script.display().to_string(),
+        ];
+        for (name, value) in extra_arguments {
+            arguments.push((*name).to_string());
+            arguments.push(value.clone());
+        }
+
+        let mut command = Command::new(&powershell);
+        command.args(&arguments).current_dir(root.join("backend"));
+        let completed = command
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        if completed.is_ok_and(|status| status.success()) {
+            return true;
+        }
+
+        let argument_string = arguments
+            .iter()
+            .map(|argument| command_line_argument(argument))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let elevated_command = format!(
+            "$process = Start-Process -FilePath {} -Verb RunAs -Wait -PassThru -WindowStyle Hidden -ArgumentList {}; exit $process.ExitCode",
+            powershell_literal(&powershell.display().to_string()),
+            powershell_literal(&argument_string),
+        );
+        Command::new(&powershell)
             .args([
                 "-NoProfile",
                 "-NonInteractive",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
+                "-Command",
+                &elevated_command,
             ])
-            .arg(script)
-            .current_dir(root.join("backend"));
-        for (name, value) in extra_arguments {
-            command.arg(name).arg(value);
-        }
-        command
+            .current_dir(root.join("backend"))
             .creation_flags(CREATE_NO_WINDOW)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
