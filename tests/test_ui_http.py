@@ -68,6 +68,16 @@ class UiHttpTests(unittest.TestCase):
         status, _ = self.request("OPTIONS", "/api/health", Origin="http://127.0.0.1:5173")
         self.assertEqual(status, 204)
 
+    def test_allowed_cors_response_uses_the_canonical_allowlist_value(self) -> None:
+        connection = HTTPConnection("127.0.0.1", self.port, timeout=5)
+        connection.request("GET", "/api/health", headers={"Origin": "http://tauri.localhost"})
+        response = connection.getresponse()
+        response.read()
+        connection.close()
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.getheader("Access-Control-Allow-Origin"), "http://tauri.localhost")
+
     def test_bundle_routes_return_safe_contracts(self) -> None:
         with Database(self.database_path) as database:
             now = utc_now()

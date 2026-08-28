@@ -15,6 +15,13 @@
   and crash normalization.
 - Added the v0.1.4 field-validation checklist for real Windows install,
   watcher, incident, privacy, and release-readiness checks.
+- Improved investigation context, entity-aware ranking, and automatic draft
+  titles while rejecting unrelated service evidence.
+- Added an explicit collector JSON nesting limit and Python 3.14 CI coverage.
+- Canonicalized allow-listed loopback origins before writing CORS response
+  headers.
+- Separated installed driver inventory from live device presence so temporary
+  device transitions are not duplicated as driver uninstall/reinstall events.
 
 ## 0.1.3 — Trust and Portability
 

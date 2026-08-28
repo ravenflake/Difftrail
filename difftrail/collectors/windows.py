@@ -103,7 +103,11 @@ if ($null -eq $rows) { $rows = @() }
 $rows | ConvertTo-Json -Depth 5 -Compress
 ''',
         "drivers": r'''
-$rows = @(Get-CimInstance Win32_PnPSignedDriver | Where-Object { $_.DeviceID -and ($null -eq $_.Present -or $_.Present -eq $true) } | ForEach-Object {
+# Track the installed driver association independently from live device
+# presence. Get-PnpDevice owns presence transitions; filtering this inventory
+# by Present would duplicate every temporary device disconnect as a driver
+# uninstall/reinstall pair.
+$rows = @(Get-CimInstance Win32_PnPSignedDriver | Where-Object { $_.DeviceID } | ForEach-Object {
     [pscustomobject]@{
         DeviceID = [string]$_.DeviceID
         DeviceName = [string]$_.DeviceName

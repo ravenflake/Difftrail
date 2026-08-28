@@ -417,8 +417,9 @@ class UiRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         origin = self.headers.get("Origin")
-        if origin in ALLOWED_ORIGINS:
-            self.send_header("Access-Control-Allow-Origin", origin)
+        allowed_origin = next((value for value in ALLOWED_ORIGINS if value == origin), None)
+        if allowed_origin is not None:
+            self.send_header("Access-Control-Allow-Origin", allowed_origin)
             self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Difftrail-Token")
             self.send_header("Access-Control-Allow-Methods", "DELETE, GET, POST, OPTIONS")
             self.send_header("Vary", "Origin")
