@@ -24,6 +24,11 @@ jobs:
             const isRepositoryOwner =
               Boolean(repositoryOwner) && pr.user?.login === repositoryOwner;
 
+            if (pr.user?.login === 'dependabot[bot]') {
+              core.info('Dependabot pull request; CLA acknowledgement is not required.');
+              return;
+            }
+
             // Ignore Markdown that does not represent visible pull request content.
             const visibleBody = (pr.body || '')
               .replace(/<!--[\s\S]*?(?:-->|$)/g, '')
