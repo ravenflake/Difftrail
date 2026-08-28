@@ -55,7 +55,8 @@ SOURCE_PRIORITY: dict[str, int] = {
 # a causal conclusion by itself.
 ENTITY_RELEVANCE_BOOST = 0.12
 SUSPECTED_CHANGE_BOOST = 0.06
-APPLICATION_ENTITY_MISMATCH_PENALTY = 0.12
+ENTITY_SCOPED_MISMATCH_PENALTY = 0.12
+_ENTITY_SCOPED_CHANGE_SOURCES = frozenset({"apps", "services", "startup", "tasks"})
 _GENERIC_IDENTITY_WORDS = frozenset(
     {
         "app",
@@ -243,6 +244,21 @@ def _is_direct_application_change(event: Event) -> bool:
     return event.source == "apps"
 
 
+def _is_entity_scoped_change(event: Event) -> bool:
+    """Return whether a change belongs to an identifiable app or persistence entry."""
+
+    return event.source in _ENTITY_SCOPED_CHANGE_SOURCES
+
+
+def _entity_scoped_change_label(event: Event) -> str:
+    return {
+        "apps": "installed-application",
+        "services": "service",
+        "startup": "startup-entry",
+        "tasks": "scheduled-task",
+    }.get(event.source, "entity-scoped")
+
+
 def _symptom_matches_context(value: str | None, symptom: Event) -> bool:
     """Exclude a known different entity, while retaining unidentified evidence."""
 
@@ -343,14 +359,14 @@ def rank_candidates(
         relevance, relevance_text = _relevance(request.subsystem, event.subsystem)
         entity_relation = _context_identity_relation(request.affected_entity, event)
         entity_match = entity_relation == "match"
-        application_entity_mismatch = (
-            _is_direct_application_change(event) and entity_relation == "mismatch"
+        entity_scoped_mismatch = (
+            _is_entity_scoped_change(event) and entity_relation == "mismatch"
         )
         suspected_change_match = _context_matches_event(request.suspected_change, event)
         supporting = [
             symptom
             for symptom in symptoms
-            if not application_entity_mismatch
+            if not entity_scoped_mismatch
             and event_time <= ensure_utc(symptom.occurred_at) <= onset_end
             and _subsystem_matches(request.subsystem, symptom.subsystem)
             and _symptom_matches_context(request.affected_entity, symptom)
@@ -437,16 +453,17 @@ def rank_candidates(
             )
 
         counter: list[Evidence] = []
-        if application_entity_mismatch:
+        if entity_scoped_mismatch:
+            change_label = _entity_scoped_change_label(event)
             counter.append(
                 Evidence(
                     "entity mismatch",
                     "strong",
-                    "This installed-application change belongs to a different known application than the affected entity, so the reported symptom does not support it as a baseline break.",
+                    f"This {change_label} change belongs to a different known entity than the affected entity, so the reported symptom does not support it as a baseline break.",
                     event.event_id,
                 )
             )
-            score -= APPLICATION_ENTITY_MISMATCH_PENALTY
+            score -= ENTITY_SCOPED_MISMATCH_PENALTY
         if _is_per_user_service_event(event):
             counter.append(
                 Evidence(
