@@ -56,6 +56,11 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn('throw "Installer process failed with exit code', script)
         self.assertIn("Remove-Item -LiteralPath $smokeRoot -Recurse -Force -ErrorAction Stop", script)
         self.assertIn("Installer smoke-test cleanup failed", script)
+        self.assertIn("Assert-NoExistingDifftrailRegistration", script)
+        self.assertIn("requires a machine without an existing Difftrail registration", script)
+        self.assertIn("Remove-SmokeInstallerState -ExpectedInstallRoot $installRoot", script)
+        self.assertIn('$registeredLocation.Trim().Trim(\'"\') -ieq $ExpectedInstallRoot', script)
+        self.assertIn('$shortcut.TargetPath -ieq $expectedTarget', script)
         self.assertNotIn('/D=`"$installRoot`"', script)
 
     def test_uninstaller_removes_only_the_watcher_task(self) -> None:
