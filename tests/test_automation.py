@@ -18,6 +18,7 @@ from difftrail.automation import (
     TASK_RESULT_HAS_NOT_RUN,
     _normalize_task_time,
     _fallback_task_action,
+    _run_schtasks,
     _run_task_script,
     _watcher_task_needs_repair,
     _watcher_status_message,
@@ -637,6 +638,17 @@ class AutomationTests(unittest.TestCase):
         ), patch("difftrail.automation._run_elevated", return_value=elevated) as retry:
             _run_task_script(Path("install-watcher.ps1"), [])
             retry.assert_called_once()
+
+    def test_access_denied_retries_task_disable_with_uac(self) -> None:
+        denied = CompletedProcess(["schtasks.exe"], 1, "", "Access is denied.")
+        elevated = CompletedProcess(["schtasks.exe"], 0, "", "")
+        with patch("difftrail.automation.shutil.which", return_value="schtasks.exe"), patch(
+            "difftrail.automation.subprocess.run", return_value=denied
+        ), patch("difftrail.automation._run_elevated", return_value=elevated) as retry:
+            _run_schtasks(["/Delete", "/TN", "Difftrail Watcher", "/F"])
+            retry.assert_called_once_with(
+                "schtasks.exe", ["/Delete", "/TN", "Difftrail Watcher", "/F"]
+            )
 
     def test_task_scheduler_never_run_sentinel_is_hidden(self) -> None:
         self.assertIsNone(_normalize_task_time("1999-11-30T00:00:00"))
