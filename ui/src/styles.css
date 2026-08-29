@@ -62,10 +62,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .theme-toggle:focus-visible { outline-color: rgba(216, 190, 126, 0.45); }
 .theme-toggle-icon { width: 20px; height: 20px; flex: 0 0 20px; position: relative; display: grid; place-items: center; color: #d8bd7a; }
 .theme-icon { position: absolute; inset: 0; display: grid; place-items: center; transition: opacity 260ms ease, transform 320ms cubic-bezier(.2,.8,.2,1); }
-.theme-icon-moon { opacity: 1; transform: rotate(0deg) scale(1); }
-.theme-icon-sun { opacity: 0; transform: rotate(-45deg) scale(.65); }
-.theme-toggle.is-dark .theme-icon-moon { opacity: 0; transform: rotate(45deg) scale(.65); }
-.theme-toggle.is-dark .theme-icon-sun { opacity: 1; transform: rotate(0deg) scale(1); }
+.theme-icon-moon { opacity: 0; transform: rotate(-45deg) scale(.65); }
+.theme-icon-sun { opacity: 1; transform: rotate(0deg) scale(1); }
+.theme-toggle.is-dark .theme-icon-moon { opacity: 1; transform: rotate(0deg) scale(1); }
+.theme-toggle.is-dark .theme-icon-sun { opacity: 0; transform: rotate(45deg) scale(.65); }
 .theme-toggle-label { color: #d7e3df; font-size: 10px; font-weight: 650; }
 .theme-toggle-track { width: 30px; height: 17px; flex: 0 0 30px; margin-left: auto; padding: 2px; border: 1px solid rgba(203, 226, 220, 0.2); border-radius: 99px; background: rgba(12, 25, 28, 0.36); }
 .theme-toggle-thumb { display: block; width: 11px; height: 11px; border-radius: 50%; background: #b8d0c9; transform: translateX(0); transition: transform 300ms cubic-bezier(.2,.8,.2,1), background-color 240ms ease; }
