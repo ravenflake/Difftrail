@@ -111,6 +111,7 @@ export function makePreviewBootstrap(): Bootstrap {
       ].map(([source, label]) => ({ source, label, initialized: true, item_count: source === "drivers" ? 12 : 5, last_seen_at: ago(0.5), status: "capturing" })),
       schema: { current_version: 5, supported_version: 5, up_to_date: true },
       journal: { ok: true, integrity: "ok", schema: { current_version: 5, supported_version: 5, up_to_date: true }, scans: { running: 0, stale_running: [], stale_after_seconds: 900 }, journal: { events: 6, state_items: 36, incidents: 1 } },
+      host: { captured_at_epoch: Math.floor(Date.now() / 1000), uptime_seconds: 172800, memory_total_bytes: 34_359_738_368, memory_available_bytes: 18_253_611_008, memory_used_percent: 46.9, system_disk_total_bytes: 1_000_000_000_000, system_disk_free_bytes: 420_000_000_000, system_disk_used_percent: 58 },
     },
     events: [symptom, graphicsChange, { ...graphicsChange, id: "preview-app-update", occurred_at: ago(17), subsystem: "application", title: "Discord updated", entity: "Discord", severity: "low", source: "apps", source_label: "Application" }, { ...graphicsChange, id: "preview-service", occurred_at: ago(30), subsystem: "startup", title: "Background service added", entity: "Difftrail Fixture Helper", severity: "medium", source: "services", source_label: "Service" }],
     incidents: [previewIncident],

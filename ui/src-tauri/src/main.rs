@@ -48,6 +48,26 @@ fn database_path() -> PathBuf {
     PathBuf::from("difftrail.db")
 }
 
+fn ensure_status_companion(_app: &tauri::AppHandle) {
+    #[cfg(all(windows, not(debug_assertions)))]
+    {
+        use std::os::windows::process::CommandExt;
+
+        let Ok(resource_root) = workspace_root(_app) else {
+            return;
+        };
+        let executable = resource_root.join("difftrail-status.exe");
+        if executable.is_file() {
+            let _ = Command::new(executable)
+                .creation_flags(0x08000000)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn();
+        }
+    }
+}
+
 #[cfg(not(debug_assertions))]
 fn workspace_root(app: &tauri::AppHandle) -> Result<PathBuf, Box<dyn Error>> {
     let resource_dir = app.path().resource_dir().map_err(|error| {
@@ -459,6 +479,10 @@ fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![api_port, api_token])
         .setup(|app| {
+            // The installer starts the companion at logon. Launching it here as
+            // a self-healing fallback is safe because the companion owns a
+            // named single-instance mutex.
+            ensure_status_companion(app.handle());
             let startup: Result<(Child, u16, String), Box<dyn Error>> = (|| {
                 let token = generate_api_token()?;
                 let (backend, port) = start_local_api(app.handle(), &token)?;

@@ -36,6 +36,7 @@ from .investigation import run_investigation
 from .models import IncidentRequest, parse_datetime, utc_now
 from .host_validation import build_host_validation_report
 from .overhead import measure_watcher_overhead
+from .system_health import system_health_snapshot
 from .assessment import NEUTRAL_ASSESSMENT
 from .privacy import error_bucket, redact_public_text, redact_text
 from .public_data import public_detail_summary
@@ -308,6 +309,7 @@ def _now_or_parse(value: str | None) -> datetime:
 
 def build_bootstrap(database: Database, *, days: int = 7) -> dict[str, Any]:
     status = database.status()
+    status["host"] = system_health_snapshot()
     return {
         "version": __version__,
         "status": public_status(status),

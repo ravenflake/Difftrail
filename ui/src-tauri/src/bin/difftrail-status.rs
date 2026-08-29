@@ -7,12 +7,14 @@ fn main() {}
 mod windows_app {
     use std::error::Error;
     use std::ffi::OsStr;
+    use std::fs::OpenOptions;
+    use std::io::Write;
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::process::CommandExt;
     use std::path::{Path, PathBuf};
     use std::process::{Command, Stdio};
     use std::thread;
-    use std::time::{Duration, SystemTime};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use image::ImageReader;
     use tao::event::Event;
@@ -27,9 +29,12 @@ mod windows_app {
     const OPEN_ID: &str = "open-difftrail";
     const EXIT_ID: &str = "exit-difftrail-status";
     const ACTIVE_MARKER: &str = "watcher.active";
+    const INTERVAL_STATE: &str = "watcher-interval.txt";
     const TASK_NAME: &str = "Difftrail Watcher";
     const STATUS_INTERVAL: Duration = Duration::from_secs(2);
     const STALE_ACTIVE_MARKER: Duration = Duration::from_secs(120);
+    const STARTUP_RETRY_INTERVAL: Duration = Duration::from_secs(5);
+    const STARTUP_ATTEMPTS: u8 = 13;
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum CollectionStatus {
@@ -218,6 +223,18 @@ mod windows_app {
             .unwrap_or_else(|| root.join("difftrail.db"))
     }
 
+    fn saved_interval_seconds(root: &Path) -> u32 {
+        let state_path = std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .map(|path| path.join("Difftrail").join(INTERVAL_STATE))
+            .unwrap_or_else(|| root.join(INTERVAL_STATE));
+        std::fs::read_to_string(state_path)
+            .ok()
+            .and_then(|value| value.trim().parse::<u32>().ok())
+            .filter(|value| (15..=86_400).contains(value))
+            .unwrap_or(300)
+    }
+
     fn enable_watcher(root: &Path) -> bool {
         let watcher = root.join("backend").join("difftrail-watcher.exe");
         let working_directory = root.join("backend");
@@ -225,7 +242,7 @@ mod windows_app {
             root,
             "install-watcher.ps1",
             &[
-                ("-IntervalSeconds", "300".to_string()),
+                ("-IntervalSeconds", saved_interval_seconds(root).to_string()),
                 ("-DatabasePath", database_path(root).display().to_string()),
                 ("-ExecutablePath", watcher.display().to_string()),
                 ("-WorkingDirectory", working_directory.display().to_string()),
@@ -357,6 +374,41 @@ mod windows_app {
         });
     }
 
+    fn record_startup_failure(attempt: u8, error: &dyn Error) {
+        let log_path = std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .map(|path| path.join("Difftrail").join("status.log"))
+            .unwrap_or_else(|| PathBuf::from("difftrail-status.log"));
+        if let Some(parent) = log_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let Ok(mut log) = OpenOptions::new().create(true).append(true).open(log_path) else {
+            return;
+        };
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or_default();
+        let _ = writeln!(
+            log,
+            "[{timestamp}] notification-area startup attempt {attempt}/{STARTUP_ATTEMPTS} failed: {error}"
+        );
+    }
+
+    pub fn run_with_startup_retry() {
+        for attempt in 1..=STARTUP_ATTEMPTS {
+            match run() {
+                Ok(()) => return,
+                Err(error) => {
+                    record_startup_failure(attempt, error.as_ref());
+                    if attempt < STARTUP_ATTEMPTS {
+                        thread::sleep(STARTUP_RETRY_INTERVAL);
+                    }
+                }
+            }
+        }
+    }
+
     #[cfg(test)]
     mod tests {
         use super::CollectionStatus;
@@ -381,5 +433,5 @@ mod windows_app {
 
 #[cfg(windows)]
 fn main() {
-    let _ = windows_app::run();
+    windows_app::run_with_startup_retry();
 }

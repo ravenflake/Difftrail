@@ -70,4 +70,20 @@ $settings = New-ScheduledTaskSettingsSet `
     -ExecutionTimeLimit (New-TimeSpan -Hours 2)
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger @($periodicTrigger, $logonTrigger) -Settings $settings -Description "Difftrail local-first background journal scans" -Force | Out-Null
 Start-ScheduledTask -TaskName $taskName
+
+# Keep the last successful interval outside the task so the notification-area
+# companion can re-enable collection without silently resetting a custom value.
+try {
+    if ($DatabasePath) {
+        $intervalStateRoot = Split-Path -Parent $DatabasePath
+    } elseif ($env:LOCALAPPDATA) {
+        $intervalStateRoot = Join-Path $env:LOCALAPPDATA "Difftrail"
+    } else {
+        $intervalStateRoot = $WorkingDirectory
+    }
+    New-Item -ItemType Directory -Path $intervalStateRoot -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $intervalStateRoot "watcher-interval.txt") -Value $scheduledIntervalSeconds -Encoding ascii
+} catch {
+    Write-Warning "The watcher was installed, but its tray interval preference could not be saved: $($_.Exception.Message)"
+}
 Write-Host "Installed and started $taskName. It will also scan every $scheduledIntervalSeconds seconds and start at logon."

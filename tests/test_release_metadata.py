@@ -81,6 +81,8 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("difftrail-status.exe", hooks)
         self.assertIn('WriteRegStr HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Run" "Difftrail Status"', hooks)
         self.assertIn('DeleteRegValue HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Run" "Difftrail Status"', hooks)
+        self.assertIn('CreateShortCut "$SMSTARTUP\\Difftrail Status.lnk"', hooks)
+        self.assertIn('Delete "$SMSTARTUP\\Difftrail Status.lnk"', hooks)
 
     def test_status_companion_menu_can_toggle_collection(self) -> None:
         from pathlib import Path
@@ -95,6 +97,16 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn('run_watcher_script(root, "uninstall-watcher.ps1", &[])', source)
         self.assertIn('"install-watcher.ps1"', source)
         self.assertIn("-Verb RunAs", source)
+        self.assertIn("run_with_startup_retry", source)
+        self.assertIn("watcher-interval.txt", source)
+
+    def test_installer_validation_covers_status_startup_fallback(self) -> None:
+        from pathlib import Path
+
+        source = Path("scripts/validate-installer.ps1").read_text(encoding="utf-8")
+        self.assertIn("$statusStartupShortcut", source)
+        self.assertIn("notification-area startup shortcut targets the wrong executable", source)
+        self.assertIn("startup shortcut in place", source)
 
     def test_release_workflow_reuses_metadata_checker(self) -> None:
         from pathlib import Path

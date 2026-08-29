@@ -731,6 +731,8 @@ class AutomationTests(unittest.TestCase):
         self.assertIn("-Hidden", contents)
         self.assertIn("-RestartCount", contents)
         self.assertIn("difftrail.watcher", contents)
+        self.assertIn("watcher-interval.txt", contents)
+        self.assertIn("Set-Content", contents)
 
     def test_source_uninstaller_surfaces_task_scheduler_access_errors(self) -> None:
         script = Path(__file__).parents[1] / "scripts" / "uninstall-watcher.ps1"

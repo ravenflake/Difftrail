@@ -258,7 +258,15 @@ export default function App() {
           const warning = response.scan.errors.length ? ` with ${response.scan.errors.length} warning${response.scan.errors.length === 1 ? "" : "s"}` : "";
           setAutomationNotice(`Scan completed${warning}: ${response.scan.state_events} changes and ${response.scan.symptom_events} symptoms recorded.`);
         }
-      } else setData((current) => current ? { ...current, automation: response.automation } : current);
+      } else {
+        const installed = response.automation.watcher.installed && response.automation.watcher.state?.toLowerCase() !== "disabled";
+        if (action === "enable" && !installed) throw new Error(response.automation.watcher.message || "The watcher did not remain enabled.");
+        if (action === "disable" && installed) throw new Error(response.automation.watcher.message || "The watcher is still enabled.");
+        setData((current) => current ? { ...current, automation: response.automation } : current);
+        setAutomationNotice(action === "enable"
+          ? `Background collection enabled. Difftrail will scan every ${formatInterval(response.automation.config.interval_seconds)}.`
+          : "Background collection disabled. No scheduled scans will run until you enable it again.");
+      }
       return true;
     } catch (reason) {
       setAutomationError(reason instanceof Error ? reason.message : "The automation action could not be completed.");
@@ -297,6 +305,12 @@ export default function App() {
       {view === "automation" && <AutomationView automation={data.automation} connection={connection} busy={automationBusy} error={automationError} notice={automationNotice} onConfigSave={handleAutomationConfig} onWatcherAction={handleAutomationWatcher} onMarkRead={handleMarkAutomationRead} onNavigate={navigate} />}
     </AppShell>
   );
+}
+
+function formatInterval(seconds: number): string {
+  if (seconds % 3600 === 0) return `${seconds / 3600} hour${seconds === 3600 ? "" : "s"}`;
+  if (seconds % 60 === 0) return `${seconds / 60} minute${seconds === 60 ? "" : "s"}`;
+  return `${seconds} seconds`;
 }
 
 function LoadingScreen() {

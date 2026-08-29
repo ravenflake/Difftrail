@@ -9,6 +9,26 @@ from difftrail.ui_api import build_bootstrap, create_investigation, record_overh
 
 
 class UiApiTests(unittest.TestCase):
+    def test_bootstrap_exposes_privacy_safe_host_health(self) -> None:
+        host = {
+            "captured_at_epoch": 1,
+            "uptime_seconds": 3600,
+            "memory_total_bytes": 16_000,
+            "memory_available_bytes": 8_000,
+            "memory_used_percent": 50.0,
+            "system_disk_total_bytes": 100_000,
+            "system_disk_free_bytes": 40_000,
+            "system_disk_used_percent": 60.0,
+        }
+        with (
+            Database(":memory:") as database,
+            patch("difftrail.ui_api.system_health_snapshot", return_value=host),
+        ):
+            payload = build_bootstrap(database)
+
+        self.assertEqual(payload["status"]["host"], host)
+        self.assertNotIn("path", json.dumps(payload["status"]["host"]).casefold())
+
     def test_bootstrap_exposes_real_journal_without_raw_event_details(self) -> None:
         with Database(":memory:") as database:
             simulate_nvidia_driver_switch(database)

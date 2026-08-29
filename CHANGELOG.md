@@ -29,6 +29,14 @@
 - Made the notification-area collection status actionable: clicking it toggles
   the scheduled watcher, while the full Automation screen retains interval and
   rule controls.
+- Hardened notification-area startup with a shell-ready fallback, startup
+  retries, failure logging, and desktop self-healing.
+- Made the background interval explicit and persistent, clarified watcher
+  enable/disable results, and constrained the Automation inbox to its own
+  scrollable panel.
+- Reworked System health around live uptime, memory, system-drive space,
+  collection health, source coverage, and an explained one-scan footprint
+  measurement; fixed footprint sampling in the installed executable.
 
 ## 0.1.3 — Trust and Portability
 

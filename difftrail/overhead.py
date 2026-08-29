@@ -40,6 +40,44 @@ def _sample_tree(process: Any) -> ProcessSample:
     return ProcessSample(cpu, rss, read_bytes, write_bytes)
 
 
+def _watcher_command(interval_seconds: int) -> tuple[list[str], Path]:
+    """Return the real watcher command for source and frozen installations."""
+
+    if getattr(sys, "frozen", False):
+        # The bundled backend is already the ``difftrail`` entry point. Passing
+        # ``-m difftrail`` to it makes argparse treat ``difftrail`` as a command,
+        # which is why installed footprint measurements used to fail during
+        # warmup. Keep using the continuous watcher command here so the sampling
+        # window measures repeated-scan idle behavior as well as startup.
+        executable = Path(sys.executable).resolve()
+        return (
+            [
+                str(executable),
+                "--db",
+                ":memory:",
+                "watch",
+                "--interval",
+                str(interval_seconds),
+            ],
+            executable.parent,
+        )
+
+    project_root = Path(__file__).resolve().parent.parent
+    return (
+        [
+            sys.executable,
+            "-m",
+            "difftrail",
+            "--db",
+            ":memory:",
+            "watch",
+            "--interval",
+            str(interval_seconds),
+        ],
+        project_root,
+    )
+
+
 def measure_watcher_overhead(
     *,
     interval_seconds: int = 15,
@@ -63,18 +101,14 @@ def measure_watcher_overhead(
     except ImportError as exc:
         raise RuntimeError("The overhead validator requires the optional psutil package") from exc
 
-    project_root = Path(__file__).resolve().parent.parent
-    command = [
-        sys.executable,
-        "-m",
-        "difftrail",
-        "--db",
-        ":memory:",
-        "watch",
-        "--interval",
-        str(interval_seconds),
-    ]
-    child = subprocess.Popen(command, cwd=project_root, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    command, working_directory = _watcher_command(interval_seconds)
+    child = subprocess.Popen(
+        command,
+        cwd=working_directory,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
     process = psutil.Process(child.pid)
     error_text = ""
     try:

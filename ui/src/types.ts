@@ -152,6 +152,16 @@ export interface Status {
     scans: { running: number; stale_running: Array<{ id: string; started_at: string }>; stale_after_seconds: number };
     journal: { events: number; state_items: number; incidents: number };
   };
+  host: {
+    captured_at_epoch: number;
+    uptime_seconds: number | null;
+    memory_total_bytes: number | null;
+    memory_available_bytes: number | null;
+    memory_used_percent: number | null;
+    system_disk_total_bytes: number | null;
+    system_disk_free_bytes: number | null;
+    system_disk_used_percent: number | null;
+  };
 }
 
 export interface ValidationReport {

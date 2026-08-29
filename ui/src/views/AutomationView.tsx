@@ -17,9 +17,14 @@ interface Props {
 
 const intervalOptions = [
   { value: 300, label: "Every 5 minutes" },
+  { value: 600, label: "Every 10 minutes" },
   { value: 900, label: "Every 15 minutes" },
   { value: 1800, label: "Every 30 minutes" },
   { value: 3600, label: "Every hour" },
+  { value: 7200, label: "Every 2 hours" },
+  { value: 21600, label: "Every 6 hours" },
+  { value: 43200, label: "Every 12 hours" },
+  { value: 86400, label: "Every day" },
 ];
 
 export function AutomationView({ automation, connection, busy, error, notice, onConfigSave, onWatcherAction, onMarkRead, onNavigate }: Props) {
@@ -74,6 +79,8 @@ export function AutomationView({ automation, connection, busy, error, notice, on
         <h2>Automation</h2>
         <p>Keep the evidence loop running in the background and bring only meaningful signals back to you.</p>
       </section>
+      {error && <div className="form-error automation-feedback" role="alert"><Icon name="alert" size={14} /> {error}</div>}
+      {notice && <div className="automation-run-notice automation-feedback" role="status"><Icon name="check" size={14} /> {notice}</div>}
 
       <div className="automation-grid">
         <section className="panel automation-panel automation-watcher-panel">
@@ -90,6 +97,11 @@ export function AutomationView({ automation, connection, busy, error, notice, on
             </div>
           </div>
 
+          <div className="automation-interval-control">
+            <label htmlFor="watcher-interval"><strong>Background scan interval</strong><span>Five minutes is the default. Longer intervals reduce scan frequency.</span></label>
+            <select id="watcher-interval" aria-label="Background scan interval" value={draft.interval_seconds} onChange={(event) => handleIntervalChange(Number(event.target.value))} disabled={!canControl || busy !== null}>{intervals.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select>
+          </div>
+
           <div className="automation-meta-grid">
             <AutomationMeta label="Interval" value={formatInterval(automation.config.interval_seconds)} />
             <AutomationMeta label="Last background scan" value={watcher.last_run_at ? relativeTime(watcher.last_run_at) : "Not recorded"} detail={watcher.last_run_at ? formatDateTime(watcher.last_run_at) : undefined} />
@@ -97,7 +109,7 @@ export function AutomationView({ automation, connection, busy, error, notice, on
           </div>
 
           <div className="automation-actions">
-            <button type="button" className="button button-primary" onClick={() => void handleIntervalApply()} disabled={!canControl || (!intervalChanged && !watcherNeedsSetup) || intervalApplied || busy !== null} aria-busy={busy === "enable"}>{busy === "enable" ? (watcherNeedsSetup ? "Enabling..." : "Applying...") : intervalApplied ? "Done" : watcherNeedsSetup ? "Enable watcher" : "Apply interval"}</button>
+            <button type="button" className="button button-primary" onClick={() => void handleIntervalApply()} disabled={!canControl || (!intervalChanged && !watcherNeedsSetup) || intervalApplied || busy !== null} aria-busy={busy === "enable"}>{busy === "enable" ? (watcherNeedsSetup ? "Enabling..." : "Saving...") : intervalApplied ? "Saved" : watcherNeedsSetup ? "Enable watcher" : "Save interval"}</button>
             <button type="button" className="button button-secondary" onClick={() => void onWatcherAction("run")} disabled={!canControl || busy !== null} aria-busy={busy === "run"}>{busy === "run" ? "Scanning..." : "Scan now"}</button>
             {watcherInstalled && <button type="button" className="button button-tertiary" onClick={() => void onWatcherAction("disable")} disabled={!canControl || busy !== null} aria-busy={busy === "disable"}>{busy === "disable" ? "Disabling..." : "Disable"}</button>}
           </div>
@@ -106,10 +118,6 @@ export function AutomationView({ automation, connection, busy, error, notice, on
 
         <section className="panel automation-panel automation-rules-panel">
           <div className="section-heading"><div><h3>Rules</h3><span className="section-subtitle">Choose what earns a notification or a draft.</span></div></div>
-          <fieldset className="automation-fieldset">
-            <legend>Scan interval</legend>
-            <label className="automation-select-label"><span>Run a scan</span><select aria-label="Scan interval" value={draft.interval_seconds} onChange={(event) => handleIntervalChange(Number(event.target.value))}>{intervals.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label>
-          </fieldset>
           <fieldset className="automation-fieldset automation-rules">
             <legend>Automation rules</legend>
             <RuleToggle checked={draft.notifications_enabled} onChange={() => setBoolean("notifications_enabled")} label="Show local notifications" note="Keep a small inbox of actionable signals." />
@@ -123,15 +131,12 @@ export function AutomationView({ automation, connection, busy, error, notice, on
 
         <section className="panel automation-panel automation-inbox-panel">
           <div className="section-heading">
-            <div><h3>Automation inbox</h3><span className="section-subtitle">{automation.notifications.unread ? `${automation.notifications.unread} unread notification${automation.notifications.unread === 1 ? "" : "s"}.` : "No unread notifications."}</span></div>
+            <div><h3>Automation inbox</h3><span className="section-subtitle">{automation.notifications.unread ? `${automation.notifications.unread} unread notification${automation.notifications.unread === 1 ? "" : "s"}.` : "No unread notifications."} Showing the latest {automation.notifications.recent.length}.</span></div>
             <div className="automation-inbox-actions"><span className="muted-count">{automation.drafts} draft{automation.drafts === 1 ? "" : "s"}</span>{automation.notifications.unread > 0 && <button type="button" className="quiet-link" onClick={() => void onMarkRead()} disabled={busy !== null}>{busy === "read" ? "Marking read..." : "Mark all read"}</button>}</div>
           </div>
           {automation.notifications.recent.length ? <div className="automation-notification-list">{automation.notifications.recent.map((notification) => <NotificationRow key={notification.id} notification={notification} onNavigate={onNavigate} />)}</div> : <div className="inline-empty"><Icon name="check" size={18} /><p>The inbox is clear. New high-value signals will appear here after a scan.</p></div>}
         </section>
       </div>
-
-      {error && <div className="form-error" role="alert"><Icon name="alert" size={14} /> {error}</div>}
-      {notice && <div className="automation-run-notice" role="status"><Icon name="check" size={14} /> {notice}</div>}
       <p className="panel-footnote automation-boundary">Automation observes, records, and drafts. It does not change Windows settings or apply remediation without your action.</p>
     </div>
   );
@@ -152,6 +157,6 @@ function NotificationRow({ notification, onNavigate }: { notification: Automatio
 
 function formatInterval(seconds: number): string {
   if (seconds % 3600 === 0) return `${seconds / 3600} hour${seconds === 3600 ? "" : "s"}`;
-  if (seconds % 60 === 0) return `${seconds / 60} minutes`;
+  if (seconds % 60 === 0) return `${seconds / 60} minute${seconds === 60 ? "" : "s"}`;
   return `${seconds} seconds`;
 }

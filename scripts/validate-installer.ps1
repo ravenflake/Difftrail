@@ -18,6 +18,7 @@ $uninstallRegistryKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninsta
 $productRegistryKey = "HKCU:\Software\difftrail\Difftrail"
 $runRegistryKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
 $statusRunValueName = "Difftrail Status"
+$statusStartupShortcut = Join-Path ([Environment]::GetFolderPath("Startup")) "Difftrail Status.lnk"
 
 function Assert-NoExistingDifftrailRegistration {
     if (
@@ -59,6 +60,13 @@ function Remove-SmokeInstallerState {
     )
     if ($statusCommand.Trim().Trim('"') -ieq $expectedStatusExecutable) {
         Remove-ItemProperty -LiteralPath $runRegistryKey -Name $statusRunValueName -Force -ErrorAction Stop
+    }
+    if (Test-Path -LiteralPath $statusStartupShortcut -PathType Leaf) {
+        $shell = New-Object -ComObject WScript.Shell
+        $statusShortcut = $shell.CreateShortcut($statusStartupShortcut)
+        if ($statusShortcut.TargetPath -ieq $expectedStatusExecutable) {
+            Remove-Item -LiteralPath $statusStartupShortcut -Force -ErrorAction Stop
+        }
     }
 
     $shortcutPath = Join-Path ([Environment]::GetFolderPath("Programs")) "Difftrail.lnk"
@@ -219,6 +227,14 @@ try {
     if ($statusCommand.Trim().Trim('"') -ine $installedStatusExecutable.FullName) {
         throw "Silent installation did not register the Difftrail notification-area companion"
     }
+    if (-not (Test-Path -LiteralPath $statusStartupShortcut -PathType Leaf)) {
+        throw "Silent installation did not create the Difftrail notification-area startup shortcut"
+    }
+    $shell = New-Object -ComObject WScript.Shell
+    $statusShortcut = $shell.CreateShortcut($statusStartupShortcut)
+    if ($statusShortcut.TargetPath -ine $installedStatusExecutable.FullName) {
+        throw "Difftrail notification-area startup shortcut targets the wrong executable"
+    }
 
     $uninstaller = Get-ChildItem -LiteralPath $installRoot -Filter "uninstall.exe" -File -Recurse |
         Select-Object -First 1
@@ -239,6 +255,9 @@ try {
     }
     if ($null -ne (Get-ItemPropertyValue -LiteralPath $runRegistryKey -Name $statusRunValueName -ErrorAction SilentlyContinue)) {
         throw "Silent uninstall left the Difftrail notification-area startup registration in place"
+    }
+    if (Test-Path -LiteralPath $statusStartupShortcut -PathType Leaf) {
+        throw "Silent uninstall left the Difftrail notification-area startup shortcut in place"
     }
 }
 catch {

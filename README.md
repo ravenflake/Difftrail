@@ -158,7 +158,7 @@ The watcher snapshots applications, Windows updates, installed driver associatio
 
 The desktop app's Automation screen manages a hidden, periodic Windows Task Scheduler job, runs a scan on demand, stores local notifications for high-value signals and provider warnings, and creates reviewable investigation drafts. Each scheduled run is a short headless worker rather than a visible terminal process; Task Scheduler handles logon startup, missed runs, and restart-on-failure. These automations observe and prepare evidence; they do not change Windows settings or apply remediation.
 
-The installer also starts a lightweight Difftrail companion in the Windows notification area and registers it for the current user's next logon. It reports whether scheduled collection is enabled, actively scanning, or off; click that status row to toggle background collection, or use the full Automation screen to choose the interval and rules. Left-click the icon opens the desktop UI. The WebView and local UI API still exit when the main window closes, so the status icon does not carry the desktop application's memory footprint. Right-click the icon for status, open, and explicit exit actions. Exiting the status icon does not disable the independently scheduled watcher.
+The installer also starts a lightweight Difftrail companion in the Windows notification area and registers both a per-user Run entry and Startup-folder fallback for the next logon. The companion retries briefly if Explorer is not ready yet, reports whether scheduled collection is enabled, actively scanning, or off, and is self-healed whenever the desktop is opened. Click the status row to toggle background collection, or use the full Automation screen to choose an interval from five minutes (the default) through one day and configure notification rules. Left-click the icon opens the desktop UI. The WebView and local UI API still exit when the main window closes, so the status icon does not carry the desktop application's memory footprint. Right-click the icon for status, open, and explicit exit actions. Exiting the status icon does not disable the independently scheduled watcher.
 
 To start it at logon from a checkout, review the script and run PowerShell as the user who should own the task:
 
@@ -185,7 +185,7 @@ python -m difftrail --db "$env:LOCALAPPDATA\Difftrail\difftrail.db" validate-hos
 python -m difftrail --db "$env:LOCALAPPDATA\Difftrail\difftrail.db" validate-host --days 7 --json
 ```
 
-The report aggregates scan stability, provider-error counts, change volume, source/subsystem distributions, recorded watcher overhead, and user-labeled investigation outcomes. It does not include event details, paths, descriptions, raw messages, or process IDs. To record an overhead sample, install the optional validation dependency and run `overhead --record`; this measures a disposable watcher process and stores only numeric results:
+The report aggregates scan stability, provider-error counts, change volume, source/subsystem distributions, recorded background-scan footprint, and user-labeled investigation outcomes. It does not include event details, paths, descriptions, raw messages, or process IDs. To record a footprint sample, install the optional validation dependency and run `overhead --record`; this measures a disposable watcher process tree and stores only numeric results. The scheduled watcher has no resident process between scans:
 
 ```powershell
 python -m pip install psutil

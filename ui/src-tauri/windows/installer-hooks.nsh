@@ -15,11 +15,13 @@
 
 !macro DifftrailInstallStatusIcon
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Difftrail Status" '"$INSTDIR\backend\difftrail-status.exe"'
+  CreateShortCut "$SMSTARTUP\Difftrail Status.lnk" "$INSTDIR\backend\difftrail-status.exe"
   Exec '"$INSTDIR\backend\difftrail-status.exe"'
 !macroend
 
 !macro DifftrailRemoveStatusIcon
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Difftrail Status"
+  Delete "$SMSTARTUP\Difftrail Status.lnk"
 !macroend
 
 ; The watcher is an opt-in per-user scheduled task. Removing the application
