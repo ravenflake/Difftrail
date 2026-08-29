@@ -216,8 +216,11 @@ try {
         throw "Silent installation completed but difftrail-desktop.exe was not found under $installRoot"
     }
 
-    $installedStatusExecutable = Get-ChildItem -LiteralPath $installRoot -Filter "difftrail-status.exe" -File -Recurse |
-        Select-Object -First 1
+    $installedStatusExecutable = Get-Item -LiteralPath (Join-Path $installRoot "backend\difftrail-status.exe") -ErrorAction SilentlyContinue
+    if ($null -eq $installedStatusExecutable) {
+        $installedStatusExecutable = Get-ChildItem -LiteralPath $installRoot -Filter "difftrail-status.exe" -File -Recurse |
+            Select-Object -First 1
+    }
     if ($null -eq $installedStatusExecutable) {
         throw "Silent installation completed but difftrail-status.exe was not found under $installRoot"
     }
