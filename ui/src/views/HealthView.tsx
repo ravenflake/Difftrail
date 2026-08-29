@@ -46,7 +46,7 @@ export function HealthView({ data, onRecordOverhead, recording, error, onExport,
 
   return (
     <div className="page-stack">
-      <section className="view-header">
+      <section className="view-header health-view-header">
         <div><h2>System health</h2><p>A quick machine snapshot plus the health of Difftrail&apos;s local monitoring.</p></div>
         <button type="button" className="button button-secondary button-small" onClick={() => void onExport()} disabled={exportBusy} aria-busy={exportBusy}>{exportBusy ? "Preparing report…" : "Export diagnostic report"}</button>
       </section>
