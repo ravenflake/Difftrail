@@ -6,6 +6,7 @@ import { EvidenceList } from "../components/EvidenceList";
 
 interface Props {
   incident: Incident;
+  connected: boolean;
   onFeedback: (incidentId: string, outcome: "correct" | "incorrect" | "unknown", eventId?: string) => Promise<void>;
   onDelete: (incidentId: string) => Promise<void>;
   onExport: (incidentId: string) => Promise<void>;
@@ -15,7 +16,7 @@ interface Props {
   deleteError: string | null;
 }
 
-export function InvestigationDetail({ incident, onFeedback, onDelete, onExport, exportBusy, exportError, deleteBusy, deleteError }: Props) {
+export function InvestigationDetail({ incident, connected, onFeedback, onDelete, onExport, exportBusy, exportError, deleteBusy, deleteError }: Props) {
   const [feedbackBusy, setFeedbackBusy] = useState(false);
   const [feedbackError, setFeedbackError] = useState<string | null>(null);
   const [removeConfirming, setRemoveConfirming] = useState(false);
@@ -44,11 +45,11 @@ export function InvestigationDetail({ incident, onFeedback, onDelete, onExport, 
     <div className="incident-detail-page">
       <section className="incident-heading">
         <div><span className="eyebrow">Investigation</span><h2>{incident.description}</h2><div className="heading-meta"><span>{subsystemLabel(incident.subsystem)}</span><span>·</span><span>Started {formatDateTime(incident.onset_start)}</span><span>·</span><span>{incident.lookback_days}-day lookback</span></div>{(incident.affected_entity || incident.suspected_change) && <div className="heading-context">{incident.affected_entity && <span><strong>Affected:</strong> {incident.affected_entity}</span>}{incident.suspected_change && <span><strong>Suspected change:</strong> {incident.suspected_change}</span>}</div>}</div>
-        <button type="button" className="button button-secondary button-small" onClick={() => void onExport(incident.id)} disabled={exportBusy}>{exportBusy ? "Preparing…" : "Export investigation"}</button>
+        <div className="incident-heading-actions">
+          <button type="button" className="button button-secondary button-small" title={connected ? undefined : "Connect the local journal to export this investigation"} onClick={() => void onExport(incident.id)} disabled={!connected || exportBusy}>{exportBusy ? "Preparing…" : "Export investigation"}</button>
+          {!removeConfirming ? <button type="button" className="button button-danger button-small" title={connected ? undefined : "Connect the local journal to remove this investigation"} onClick={() => setRemoveConfirming(true)} disabled={!connected || deleteBusy}>Remove</button> : <div className="incident-remove-confirm" role="group" aria-label="Confirm investigation removal"><span>Remove this investigation?</span><button type="button" className="button button-danger button-small" onClick={() => void removeInvestigation()} disabled={deleteBusy} aria-busy={deleteBusy}>{deleteBusy ? "Removing..." : "Confirm remove"}</button><button type="button" className="button button-secondary button-small" onClick={() => setRemoveConfirming(false)} disabled={deleteBusy}>Cancel</button></div>}
+        </div>
       </section>
-      <div className="incident-heading-actions">
-        {!removeConfirming ? <button type="button" className="button button-danger button-small" onClick={() => setRemoveConfirming(true)} disabled={deleteBusy}>Remove investigation</button> : <div className="incident-remove-confirm" role="group" aria-label="Confirm investigation removal"><span>Remove this investigation?</span><button type="button" className="button button-danger button-small" onClick={() => void removeInvestigation()} disabled={deleteBusy} aria-busy={deleteBusy}>{deleteBusy ? "Removing..." : "Confirm remove"}</button><button type="button" className="button button-secondary button-small" onClick={() => setRemoveConfirming(false)} disabled={deleteBusy}>Cancel</button></div>}
-      </div>
       <AssessmentBanner state={assessment} reasons={incident.assessment_reasons || []} />
       {exportError && <div className="form-error" role="alert"><Icon name="alert" size={14} /> {exportError}</div>}
       {deleteError && <div className="form-error" role="alert"><Icon name="alert" size={14} /> {deleteError}</div>}
@@ -62,9 +63,9 @@ export function InvestigationDetail({ incident, onFeedback, onDelete, onExport, 
           {lead.counter_evidence.length > 0 && <div className="counter-block"><span className="eyebrow">Counter-evidence</span><EvidenceList items={lead.counter_evidence} counter /></div>}
         </section>
 
-        <section className="feedback-panel panel"><h3>Was this useful?</h3><div className="feedback-actions">{incident.feedback.outcome ? <div className="feedback-recorded"><Icon name="check" size={15} /> Marked {incident.feedback.outcome}</div> : <><button type="button" className="button button-secondary" disabled={feedbackBusy} onClick={() => giveFeedback("incorrect")}><Icon name="close" size={15} /> Not this</button><button type="button" className="button button-secondary" disabled={feedbackBusy} onClick={() => giveFeedback("unknown")}><Icon name="clock" size={15} /> Not sure</button><button type="button" className="button button-primary" disabled={feedbackBusy} onClick={() => giveFeedback("correct", lead.event.id || undefined)}><Icon name="check" size={15} /> This helped</button></>}</div>{feedbackError && <div className="form-error" role="alert"><Icon name="alert" size={14} /> {feedbackError}</div>}</section>
+        <section className="feedback-panel panel"><h3>Was this useful?</h3><div className="feedback-actions">{incident.feedback.outcome ? <div className="feedback-recorded"><Icon name="check" size={15} /> Marked {incident.feedback.outcome}</div> : <><button type="button" className="button button-secondary" title={connected ? undefined : "Connect the local journal to save feedback"} disabled={!connected || feedbackBusy} onClick={() => giveFeedback("incorrect")}><Icon name="close" size={15} /> Not this</button><button type="button" className="button button-secondary" title={connected ? undefined : "Connect the local journal to save feedback"} disabled={!connected || feedbackBusy} onClick={() => giveFeedback("unknown")}><Icon name="clock" size={15} /> Not sure</button><button type="button" className="button button-primary" title={connected ? undefined : "Connect the local journal to save feedback"} disabled={!connected || feedbackBusy} onClick={() => giveFeedback("correct", lead.event.id || undefined)}><Icon name="check" size={15} /> This helped</button></>}</div>{feedbackError && <div className="form-error" role="alert"><Icon name="alert" size={14} /> {feedbackError}</div>}</section>
 
-        {incident.results.length > 1 && <section className="panel candidates-panel"><div className="section-heading"><div><h3>Other candidate changes</h3></div><span className="muted-count">{incident.results.length - 1} more</span></div><div className="candidate-list">{incident.results.slice(1).map((hypothesis, index) => <Candidate key={`${hypothesis.event.id}-${index}`} hypothesis={hypothesis} onFeedback={onFeedback} incidentId={incident.id} />)}</div></section>}
+        {incident.results.length > 1 && <section className="panel candidates-panel"><div className="section-heading"><div><h3>Other candidate changes</h3></div><span className="muted-count">{incident.results.length - 1} more</span></div><div className="candidate-list">{incident.results.slice(1).map((hypothesis, index) => <Candidate key={`${hypothesis.event.id}-${index}`} hypothesis={hypothesis} connected={connected} onFeedback={onFeedback} incidentId={incident.id} />)}</div></section>}
       </>}
     </div>
   );
@@ -100,7 +101,7 @@ function emptyBody(state: AssessmentState): string {
   return "The journal did not contain enough matching evidence to rank a likely cause.";
 }
 
-function Candidate({ hypothesis, onFeedback, incidentId }: { hypothesis: Hypothesis; onFeedback: Props["onFeedback"]; incidentId: string }) {
+function Candidate({ hypothesis, connected, onFeedback, incidentId }: { hypothesis: Hypothesis; connected: boolean; onFeedback: Props["onFeedback"]; incidentId: string }) {
   const [open, setOpen] = useState(false);
   const [feedbackBusy, setFeedbackBusy] = useState(false);
   const [feedbackError, setFeedbackError] = useState<string | null>(null);
@@ -111,7 +112,7 @@ function Candidate({ hypothesis, onFeedback, incidentId }: { hypothesis: Hypothe
     try { await onFeedback(incidentId, "correct", hypothesis.event.id || undefined); } catch (reason) { setFeedbackError(reason instanceof Error ? reason.message : "Feedback could not be saved."); } finally { setFeedbackBusy(false); }
   }
 
-  return <div className={`candidate ${open ? "is-open" : ""}`}><button type="button" className="candidate-toggle" onClick={() => setOpen((value) => !value)} aria-expanded={open}><span className={`confidence-mini confidence-${hypothesis.confidence.toLowerCase()}`}>{hypothesis.confidence}</span><span className="candidate-copy"><strong>{hypothesis.event.title}</strong><small>{subsystemLabel(hypothesis.event.subsystem)} · {relativeTime(hypothesis.event.occurred_at)}</small></span><Icon name="chevron" size={15} className={open ? "rotated" : ""} /></button>{open && <div className="candidate-body"><EvidenceList items={hypothesis.evidence} />{hypothesis.counter_evidence.length > 0 && <EvidenceList items={hypothesis.counter_evidence} counter />}<button type="button" className="quiet-link" disabled={feedbackBusy} aria-busy={feedbackBusy} onClick={() => void giveFeedback()}>{feedbackBusy ? "Saving feedback..." : "Mark this as the useful cause"} <Icon name={feedbackBusy ? "clock" : "arrow"} size={14} /></button>{feedbackError && <div className="form-error" role="alert"><Icon name="alert" size={14} /> {feedbackError}</div>}</div>}</div>;
+  return <div className={`candidate ${open ? "is-open" : ""}`}><button type="button" className="candidate-toggle" onClick={() => setOpen((value) => !value)} aria-expanded={open}><span className={`confidence-mini confidence-${hypothesis.confidence.toLowerCase()}`}>{hypothesis.confidence}</span><span className="candidate-copy"><strong>{hypothesis.event.title}</strong><small>{subsystemLabel(hypothesis.event.subsystem)} · {relativeTime(hypothesis.event.occurred_at)}</small></span><Icon name="chevron" size={15} className={open ? "rotated" : ""} /></button>{open && <div className="candidate-body"><EvidenceList items={hypothesis.evidence} />{hypothesis.counter_evidence.length > 0 && <EvidenceList items={hypothesis.counter_evidence} counter />}<button type="button" className="quiet-link" title={connected ? undefined : "Connect the local journal to save feedback"} disabled={!connected || feedbackBusy} aria-busy={feedbackBusy} onClick={() => void giveFeedback()}>{feedbackBusy ? "Saving feedback..." : "Mark this as the useful cause"} <Icon name={feedbackBusy ? "clock" : "arrow"} size={14} /></button>{feedbackError && <div className="form-error" role="alert"><Icon name="alert" size={14} /> {feedbackError}</div>}</div>}</div>;
 }
 
 async function copyText(value: string) {

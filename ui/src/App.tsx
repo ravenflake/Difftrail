@@ -93,7 +93,7 @@ export default function App() {
     } catch (reason) {
       setData(makePreviewBootstrap());
       setConnection("preview");
-      setLoadError(reason instanceof Error ? reason.message : "The local journal is not available.");
+      setLoadError(connectionErrorMessage(reason));
     } finally {
       setLoading(false);
     }
@@ -105,6 +105,11 @@ export default function App() {
     window.addEventListener("hashchange", onHashChange);
     return () => window.removeEventListener("hashchange", onHashChange);
   }, [refresh]);
+
+  useEffect(() => {
+    if (view !== "incidents" || selectedIncidentId || !data?.incidents.length) return;
+    setSelectedIncidentId(data.incidents[0].id);
+  }, [data?.incidents, selectedIncidentId, view]);
 
   useEffect(() => {
     if (connection !== "local") return;
@@ -299,9 +304,9 @@ export default function App() {
       {connection === "preview" && <div className="preview-notice" role="status"><Icon name="alert" size={15} /><span>Preview data is shown because the local journal is not connected{loadError ? ` · ${loadError}` : ""}.</span><button type="button" onClick={() => void refresh()}>Try again</button></div>}
       {view === "home" && <HomeView data={data} onNavigate={navigate} onOpenIncident={(incident) => { setSelectedIncidentId(incident.id); navigate("incidents"); }} />}
       {view === "timeline" && <TimelineView events={data.events} onLoad={handleLoadTimeline} />}
-      {view === "investigate" && <InvestigateView busy={false} onInvestigate={handleInvestigate} />}
-      {view === "incidents" && <IncidentsView incidents={data.incidents} selected={selectedIncident} onSelect={(incident) => { setDeleteError(null); setSelectedIncidentId(incident.id); }} onNavigate={() => navigate("investigate")} onFeedback={handleFeedback} onDelete={handleDeleteInvestigation} onExport={handleExportBundle} exportBusy={exportBusy} exportError={exportError} deleteBusy={deleteBusy} deleteError={deleteError} />}
-      {view === "health" && <HealthView data={data} onRecordOverhead={handleRecordOverhead} recording={recordingOverhead} error={overheadError} onExport={() => handleExportBundle()} exportBusy={exportBusy} exportError={exportError} />}
+      {view === "investigate" && <InvestigateView busy={false} connected={connection === "local"} onInvestigate={handleInvestigate} />}
+      {view === "incidents" && <IncidentsView incidents={data.incidents} selected={selectedIncident} connected={connection === "local"} onSelect={(incident) => { setDeleteError(null); setSelectedIncidentId(incident.id); }} onNavigate={() => navigate("investigate")} onFeedback={handleFeedback} onDelete={handleDeleteInvestigation} onExport={handleExportBundle} exportBusy={exportBusy} exportError={exportError} deleteBusy={deleteBusy} deleteError={deleteError} />}
+      {view === "health" && <HealthView data={data} connected={connection === "local"} onRecordOverhead={handleRecordOverhead} recording={recordingOverhead} error={overheadError} onExport={() => handleExportBundle()} exportBusy={exportBusy} exportError={exportError} />}
       {view === "automation" && <AutomationView automation={data.automation} connection={connection} busy={automationBusy} error={automationError} notice={automationNotice} onConfigSave={handleAutomationConfig} onWatcherAction={handleAutomationWatcher} onMarkRead={handleMarkAutomationRead} onNavigate={navigate} />}
     </AppShell>
   );
@@ -311,6 +316,12 @@ function formatInterval(seconds: number): string {
   if (seconds % 3600 === 0) return `${seconds / 3600} hour${seconds === 3600 ? "" : "s"}`;
   if (seconds % 60 === 0) return `${seconds / 60} minute${seconds === 60 ? "" : "s"}`;
   return `${seconds} seconds`;
+}
+
+function connectionErrorMessage(reason: unknown): string {
+  const message = reason instanceof Error ? reason.message : "The local journal is not available";
+  if (/failed to fetch/i.test(message)) return "The local API is not responding";
+  return message.replace(/[.!?]+$/, "");
 }
 
 function LoadingScreen() {

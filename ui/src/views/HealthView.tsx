@@ -5,6 +5,7 @@ import { Metric } from "../components/Metric";
 
 interface Props {
   data: Bootstrap;
+  connected: boolean;
   onRecordOverhead: () => Promise<void>;
   recording: boolean;
   error: string | null;
@@ -13,7 +14,7 @@ interface Props {
   exportError: string | null;
 }
 
-export function HealthView({ data, onRecordOverhead, recording, error, onExport, exportBusy, exportError }: Props) {
+export function HealthView({ data, connected, onRecordOverhead, recording, error, onExport, exportBusy, exportError }: Props) {
   const { status, validation, automation } = data;
   const ready = status.sources.filter((source) => source.initialized).length;
   const warnings = validation.scans.provider_error_count;
@@ -48,7 +49,7 @@ export function HealthView({ data, onRecordOverhead, recording, error, onExport,
     <div className="page-stack">
       <section className="view-header health-view-header">
         <div><h2>System health</h2><p>A quick machine snapshot plus the health of Difftrail&apos;s local monitoring.</p></div>
-        <button type="button" className="button button-secondary button-small" onClick={() => void onExport()} disabled={exportBusy} aria-busy={exportBusy}>{exportBusy ? "Preparing report…" : "Export diagnostic report"}</button>
+        <button type="button" className="button button-secondary button-small" title={connected ? undefined : "Connect the local journal to export a report"} onClick={() => void onExport()} disabled={!connected || exportBusy} aria-busy={exportBusy}>{exportBusy ? "Preparing report…" : "Export diagnostic report"}</button>
       </section>
       {exportError && <div className="form-error" role="alert"><Icon name="alert" size={14} /> {exportError}</div>}
 
@@ -99,7 +100,7 @@ export function HealthView({ data, onRecordOverhead, recording, error, onExport,
       <section className="panel overhead-panel">
         <div className="section-heading overhead-heading">
           <div><h3>Background scan footprint</h3><span className="section-subtitle">Measures one disposable watcher run on this PC. It is a diagnostic benchmark, not a process that stays resident.</span></div>
-          <div className="overhead-actions"><span className="muted-count">{validation.overhead.measurements} sample{validation.overhead.measurements === 1 ? "" : "s"}</span><button type="button" className="button button-secondary button-small" onClick={() => void onRecordOverhead()} disabled={recording} aria-busy={recording}>{recording ? "Measuring one scan…" : validation.overhead.measurements ? "Measure again" : "Measure one scan"}</button></div>
+          <div className="overhead-actions"><span className="muted-count">{validation.overhead.measurements} sample{validation.overhead.measurements === 1 ? "" : "s"}</span><button type="button" className="button button-secondary button-small" title={connected ? undefined : "Connect the local journal to measure a scan"} onClick={() => void onRecordOverhead()} disabled={!connected || recording} aria-busy={recording}>{recording ? "Measuring one scan…" : validation.overhead.measurements ? "Measure again" : "Measure one scan"}</button></div>
         </div>
         {validation.overhead.measurements ? <><div className="overhead-values"><div><strong>{number(validation.overhead.cpu_percent_mean, 2)}%</strong><span>CPU mean</span></div><div><strong>{number(validation.overhead.rss_mb_peak, 0)} MB</strong><span>memory peak</span></div><div><strong>{number(validation.overhead.disk_read_mb_total, 1)} MB</strong><span>disk read</span></div></div><p className="panel-footnote">Latest sample {relativeTime(validation.overhead.last_measured_at)}. Between scheduled scans, the watcher has no persistent process; only the small tray companion remains.</p></> : <div className="inline-empty"><Icon name="health" size={18} /><p>No scan-footprint sample recorded yet. This is optional and does not affect monitoring.</p></div>}
         {error && <div className="form-error" role="alert"><Icon name="alert" size={14} /> {error}</div>}

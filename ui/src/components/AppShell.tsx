@@ -178,7 +178,7 @@ export function AppShell({ view, status, version, connection, scanning, onNaviga
               <span className="connection-label-full">{connection === "local" ? "Local journal" : "Preview data"}</span>
               <span className="connection-label-compact">{connection === "local" ? "Local" : "Preview"}</span>
             </div>
-            <button type="button" className="button button-secondary scan-button" aria-label={scanning ? "Scanning" : "Scan now"} onClick={onScan} disabled={scanning}>
+            <button type="button" className="button button-secondary scan-button" aria-label={scanning ? "Scanning" : "Scan now"} title={connection === "preview" ? "Connect the local journal to scan" : scanning ? "Scanning" : "Scan now"} onClick={onScan} disabled={scanning || connection === "preview"}>
               <Icon name="refresh" size={15} className={scanning ? "spin" : ""} />
               {scanning ? "Scanning" : "Scan now"}
             </button>

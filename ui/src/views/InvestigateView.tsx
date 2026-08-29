@@ -5,10 +5,11 @@ import { subsystemLabel, subsystemOptions } from "../subsystems";
 
 interface Props {
   busy: boolean;
+  connected: boolean;
   onInvestigate: (input: InvestigationInput) => Promise<InvestigationResponse>;
 }
 
-export function InvestigateView({ busy, onInvestigate }: Props) {
+export function InvestigateView({ busy, connected, onInvestigate }: Props) {
   const [description, setDescription] = useState("");
   const [subsystem, setSubsystem] = useState("general");
   const [lookback, setLookback] = useState("7");
@@ -59,7 +60,7 @@ export function InvestigateView({ busy, onInvestigate }: Props) {
           </div>
           <label className="field-label onset-field"><span>When did it begin? <em>optional</em></span><input type="datetime-local" value={onset} onChange={(event) => setOnset(event.target.value)} /><small>Leave blank if it is happening now.</small></label>
           {error && <div className="form-error" role="alert"><Icon name="alert" size={15} /> {error}</div>}
-          <button type="submit" className="button button-primary investigate-submit" disabled={busy || submitting}>{busy || submitting ? <><span className="button-spinner" /> Reconstructing the window...</> : <>Investigate this problem <Icon name="arrow" size={16} /></>}</button>
+          <button type="submit" className="button button-primary investigate-submit" title={connected ? undefined : "Connect the local journal to investigate"} disabled={!connected || busy || submitting}>{busy || submitting ? <><span className="button-spinner" /> Reconstructing the window...</> : <>Investigate this problem <Icon name="arrow" size={16} /></>}</button>
         </section>
       </form>
     </div>
