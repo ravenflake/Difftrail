@@ -229,15 +229,23 @@ try {
     }
     $shell = New-Object -ComObject WScript.Shell
     $statusShortcut = $shell.CreateShortcut($statusStartupShortcut)
-    if ($statusShortcut.TargetPath -ine $installedStatusExecutable.FullName) {
-        throw "Difftrail notification-area startup shortcut targets the wrong executable"
+    $expectedStatusPath = [IO.Path]::GetFullPath($installedStatusExecutable.FullName)
+    $shortcutTargetPath = ([string]$statusShortcut.TargetPath).Trim().Trim('"')
+    $normalizedShortcutTarget = if ([string]::IsNullOrWhiteSpace($shortcutTargetPath)) {
+        ""
+    }
+    else {
+        [IO.Path]::GetFullPath($shortcutTargetPath)
+    }
+    if ($normalizedShortcutTarget -ine $expectedStatusPath) {
+        throw "Difftrail notification-area startup shortcut targets the wrong executable (expected '$expectedStatusPath', found '$shortcutTargetPath')"
     }
     # The startup shortcut is the portable fallback for current-user installs.
     # Some Windows images expose the per-user Run key through a different
     # registry view than the NSIS process. Accept either mechanism as long as
     # one verified startup path points at the installed companion.
     $registryStartupMatches = $statusCommand.Trim().Trim('"') -ieq $installedStatusExecutable.FullName
-    $shortcutStartupMatches = $statusShortcut.TargetPath -ieq $installedStatusExecutable.FullName
+    $shortcutStartupMatches = $normalizedShortcutTarget -ieq $expectedStatusPath
     if (-not ($registryStartupMatches -or $shortcutStartupMatches)) {
         throw "Silent installation did not register the Difftrail notification-area companion"
     }
