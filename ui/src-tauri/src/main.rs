@@ -308,7 +308,7 @@ fn terminate_backend(child: &mut Child) {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
-        if taskkill_result.is_ok() {
+        if taskkill_result.is_ok_and(|status| status.success()) {
             let _ = child.wait();
             return;
         }

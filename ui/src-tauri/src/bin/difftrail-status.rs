@@ -21,8 +21,12 @@ mod windows_app {
     use tao::event_loop::{ControlFlow, EventLoopBuilder};
     use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
     use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE};
-    use windows_sys::Win32::System::Threading::CreateMutexW;
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, STILL_ACTIVE,
+    };
+    use windows_sys::Win32::System::Threading::{
+        CreateMutexW, GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
 
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     const STATUS_ID: &str = "toggle-background-collection";
@@ -32,7 +36,6 @@ mod windows_app {
     const INTERVAL_STATE: &str = "watcher-interval.txt";
     const TASK_NAME: &str = "Difftrail Watcher";
     const STATUS_INTERVAL: Duration = Duration::from_secs(2);
-    const STALE_ACTIVE_MARKER: Duration = Duration::from_secs(120);
     const STARTUP_RETRY_INTERVAL: Duration = Duration::from_secs(5);
     const STARTUP_ATTEMPTS: u8 = 13;
 
@@ -105,17 +108,34 @@ mod windows_app {
             .unwrap_or_else(|| PathBuf::from("."))
     }
 
+    fn active_marker_path(root: &Path) -> PathBuf {
+        std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .map(|path| path.join("Difftrail").join(ACTIVE_MARKER))
+            .unwrap_or_else(|| root.join(ACTIVE_MARKER))
+    }
+
     fn watcher_is_active(root: &Path) -> bool {
-        let marker = root.join(ACTIVE_MARKER);
-        marker
-            .metadata()
-            .and_then(|metadata| metadata.modified())
-            .and_then(|modified| {
-                SystemTime::now()
-                    .duration_since(modified)
-                    .map_err(std::io::Error::other)
-            })
-            .is_ok_and(|age| age <= STALE_ACTIVE_MARKER)
+        let marker = active_marker_path(root);
+        let Ok(contents) = std::fs::read_to_string(marker) else {
+            return false;
+        };
+        let Ok(pid) = contents.trim().parse::<u32>() else {
+            return false;
+        };
+
+        let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if process.is_null() {
+            return false;
+        }
+
+        let mut exit_code = 0_u32;
+        let is_active = unsafe { GetExitCodeProcess(process, &mut exit_code) != 0 }
+            && exit_code == STILL_ACTIVE as u32;
+        unsafe {
+            CloseHandle(process);
+        }
+        is_active
     }
 
     fn watcher_is_enabled() -> bool {

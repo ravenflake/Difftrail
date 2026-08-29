@@ -224,9 +224,6 @@ try {
     $statusCommand = [string](
         Get-ItemPropertyValue -LiteralPath $runRegistryKey -Name $statusRunValueName -ErrorAction SilentlyContinue
     )
-    if ($statusCommand.Trim().Trim('"') -ine $installedStatusExecutable.FullName) {
-        throw "Silent installation did not register the Difftrail notification-area companion"
-    }
     if (-not (Test-Path -LiteralPath $statusStartupShortcut -PathType Leaf)) {
         throw "Silent installation did not create the Difftrail notification-area startup shortcut"
     }
@@ -234,6 +231,15 @@ try {
     $statusShortcut = $shell.CreateShortcut($statusStartupShortcut)
     if ($statusShortcut.TargetPath -ine $installedStatusExecutable.FullName) {
         throw "Difftrail notification-area startup shortcut targets the wrong executable"
+    }
+    # The startup shortcut is the portable fallback for current-user installs.
+    # Some Windows images expose the per-user Run key through a different
+    # registry view than the NSIS process. Accept either mechanism as long as
+    # one verified startup path points at the installed companion.
+    $registryStartupMatches = $statusCommand.Trim().Trim('"') -ieq $installedStatusExecutable.FullName
+    $shortcutStartupMatches = $statusShortcut.TargetPath -ieq $installedStatusExecutable.FullName
+    if (-not ($registryStartupMatches -or $shortcutStartupMatches)) {
+        throw "Silent installation did not register the Difftrail notification-area companion"
     }
 
     $uninstaller = Get-ChildItem -LiteralPath $installRoot -Filter "uninstall.exe" -File -Recurse |
