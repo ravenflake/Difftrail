@@ -83,6 +83,9 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn('DeleteRegValue HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Run" "Difftrail Status"', hooks)
         self.assertIn('CreateShortCut "$SMSTARTUP\\Difftrail Status.lnk"', hooks)
         self.assertIn('Delete "$SMSTARTUP\\Difftrail Status.lnk"', hooks)
+        self.assertIn("MUI_CUSTOMFUNCTION_GUIINIT DifftrailInstallerGuiInit", hooks)
+        self.assertIn("Function DifftrailInstallerGuiInit", hooks)
+        self.assertGreaterEqual(hooks.count("/IM difftrail-status.exe /T /F"), 2)
 
     def test_status_companion_menu_can_toggle_collection(self) -> None:
         from pathlib import Path
@@ -103,10 +106,13 @@ class ReleaseMetadataTests(unittest.TestCase):
     def test_installer_validation_covers_status_startup_fallback(self) -> None:
         from pathlib import Path
 
-        source = Path("scripts/validate-installer.ps1").read_text(encoding="utf-8")
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "scripts" / "validate-installer.ps1").read_text(encoding="utf-8")
         self.assertIn("$statusStartupShortcut", source)
         self.assertIn("notification-area startup shortcut targets the wrong executable", source)
         self.assertIn("startup shortcut in place", source)
+        self.assertIn("Reinstalling over the running isolated installation", source)
+        self.assertIn("In-place reinstall left the previous desktop process running", source)
 
     def test_release_workflow_reuses_metadata_checker(self) -> None:
         from pathlib import Path
@@ -135,7 +141,8 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("Stamp development build version", workflow)
         self.assertIn('--pr-number "$env:PR_NUMBER"', workflow)
         self.assertIn("--channel main", workflow)
-        self.assertIn('--build-number "$env:BUILD_NUMBER"', workflow)
+        self.assertIn('BUILD_ID: ${{ github.run_id }}', workflow)
+        self.assertEqual(workflow.count('--build-id "$env:BUILD_ID"'), 2)
         self.assertIn("Build versioned development UI", workflow)
         self.assertIn("--config src-tauri/tauri.build.conf.json", workflow)
         self.assertIn("steps.stamp_build.outputs.artifact_name", workflow)

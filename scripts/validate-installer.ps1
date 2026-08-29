@@ -11,6 +11,7 @@ if ([IO.Path]::GetExtension($installer) -ine ".exe") {
 
 $smokeRoot = $null
 $installRoot = $null
+$desktopProcess = $null
 $installerTimeoutMilliseconds = 120000
 $processTreeWaitMilliseconds = 5000
 $uninstallCleanupTimeoutMilliseconds = 30000
@@ -266,6 +267,33 @@ try {
         throw "Silent installation did not register the Difftrail notification-area companion"
     }
 
+    Write-Host "Launching the isolated installation before an in-place reinstall"
+    $desktopStartInfo = [Diagnostics.ProcessStartInfo]::new()
+    $desktopStartInfo.FileName = $installedExecutable.FullName
+    $desktopStartInfo.UseShellExecute = $false
+    $desktopStartInfo.CreateNoWindow = $true
+    $desktopStartInfo.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
+    $desktopProcess = [Diagnostics.Process]::Start($desktopStartInfo)
+    Start-Sleep -Seconds 2
+    $desktopProcess.Refresh()
+    if ($desktopProcess.HasExited) {
+        throw "Installed desktop exited before the in-place reinstall test"
+    }
+
+    Write-Host "Reinstalling over the running isolated installation"
+    Invoke-Installer -FilePath $installer -RawArguments "/S /D=$installRoot"
+    if (-not (Test-Path -LiteralPath $installedExecutable.FullName -PathType Leaf)) {
+        throw "In-place reinstall did not restore the application executable"
+    }
+    if ($null -ne (Get-Process -Id $desktopProcess.Id -ErrorAction SilentlyContinue)) {
+        throw "In-place reinstall left the previous desktop process running"
+    }
+    $desktopProcess.Dispose()
+    $desktopProcess = $null
+    if (-not (Test-Path -LiteralPath $statusStartupShortcut -PathType Leaf)) {
+        throw "In-place reinstall did not restore the notification-area startup shortcut"
+    }
+
     $uninstaller = Get-ChildItem -LiteralPath $installRoot -Filter "uninstall.exe" -File -Recurse |
         Select-Object -First 1
     if ($null -eq $uninstaller) {
@@ -294,6 +322,23 @@ catch {
     $failure = $_
 }
 finally {
+    if ($null -ne $desktopProcess) {
+        try {
+            if (-not $desktopProcess.HasExited) {
+                Stop-InstallerProcess -Process $desktopProcess
+            }
+            $desktopProcess.Dispose()
+        }
+        catch {
+            $cleanupMessage = "Installer smoke-test desktop cleanup failed: $($_.Exception.Message)"
+            if ($null -eq $failure) {
+                $failure = $_
+            }
+            else {
+                Write-Warning "$cleanupMessage (preserving the original installer failure)"
+            }
+        }
+    }
     if ($null -ne $installRoot) {
         try {
             Remove-SmokeInstallerState -ExpectedInstallRoot $installRoot

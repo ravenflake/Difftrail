@@ -15,7 +15,7 @@ _STABLE_VERSION_PATTERN = re.compile(
 )
 _DEVELOPMENT_VERSION_PATTERN = re.compile(
     r"^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
-    r"-dev\.(?:[1-9]\d*|main\.[1-9]\d*)\+[0-9A-Za-z-]+$"
+    r"-preview\.[1-9]\d*\.(?:main|pr\.[1-9]\d*)\+[0-9A-Za-z-]+$"
 )
 _COMMIT_SHA_PATTERN = re.compile(r"^[0-9a-fA-F]+$")
 _PR_NUMBER_PATTERN = re.compile(r"^[1-9]\d*$")
@@ -60,24 +60,46 @@ def validate_pull_request_number(pr_number: str | int) -> str:
     return candidate
 
 
-def development_version(next_version: str, pr_number: str | int, commit_sha: str) -> str:
-    """Build the disposable SemVer used by pull-request installers."""
+def validate_build_id(build_id: str | int) -> str:
+    """Return a normalized, globally increasing CI build identifier."""
+
+    candidate = str(build_id).strip()
+    if not _PR_NUMBER_PATTERN.fullmatch(candidate):
+        raise ValueError(f"Build ID must be positive, got {build_id!r}")
+    return candidate
+
+
+def development_version(
+    next_version: str,
+    pr_number: str | int,
+    build_id: str | int,
+    commit_sha: str,
+) -> str:
+    """Build the disposable SemVer used by pull-request installers.
+
+    The globally increasing run ID appears before the channel label so newer
+    builds compare newer across both main and pull-request workflows. The
+    ``preview`` prefix also sorts after the legacy ``dev`` scheme, allowing an
+    installed development snapshot to upgrade to the first build using this
+    format.
+    """
 
     base = validate_stable_version(next_version)
     pull_request = validate_pull_request_number(pr_number)
-    return f"{base}-dev.{pull_request}+{short_commit_sha(commit_sha)}"
+    build = validate_build_id(build_id)
+    return f"{base}-preview.{build}.pr.{pull_request}+{short_commit_sha(commit_sha)}"
 
 
 def main_snapshot_version(
     next_version: str,
-    build_number: str | int,
+    build_id: str | int,
     commit_sha: str,
 ) -> str:
     """Build the disposable SemVer used by main-branch snapshot installers."""
 
     base = validate_stable_version(next_version)
-    build = validate_pull_request_number(build_number)
-    return f"{base}-dev.main.{build}+{short_commit_sha(commit_sha)}"
+    build = validate_build_id(build_id)
+    return f"{base}-preview.{build}.main+{short_commit_sha(commit_sha)}"
 
 
 def artifact_name(pr_number: str | int, commit_sha: str) -> str:

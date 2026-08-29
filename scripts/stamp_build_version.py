@@ -12,6 +12,7 @@ if __package__:
         main_snapshot_version,
         read_next_version,
         short_commit_sha,
+        validate_build_id,
         validate_pull_request_number,
         write_build_stamp,
     )
@@ -23,6 +24,7 @@ else:  # pragma: no cover - used when executed as a script path
         main_snapshot_version,
         read_next_version,
         short_commit_sha,
+        validate_build_id,
         validate_pull_request_number,
         write_build_stamp,
     )
@@ -44,23 +46,20 @@ def main(argv: list[str] | None = None) -> int:
     build = parser.add_mutually_exclusive_group(required=True)
     build.add_argument("--pr-number")
     build.add_argument("--channel", choices=("main",))
-    parser.add_argument("--build-number")
+    parser.add_argument("--build-id", required=True)
     parser.add_argument("--commit-sha", required=True)
     args = parser.parse_args(argv)
 
     root = args.root.resolve()
     next_version = read_next_version(root)
+    build_id = validate_build_id(args.build_id)
     if args.pr_number is not None:
-        if args.build_number is not None:
-            parser.error("--build-number is only valid with --channel main")
         pr_number = validate_pull_request_number(args.pr_number)
-        version = development_version(next_version, pr_number, args.commit_sha)
+        version = development_version(next_version, pr_number, build_id, args.commit_sha)
         artifact = artifact_name(pr_number, args.commit_sha)
         build_label = f"pull-request #{pr_number}"
     else:
-        if args.build_number is None:
-            parser.error("--build-number is required with --channel main")
-        version = main_snapshot_version(next_version, args.build_number, args.commit_sha)
+        version = main_snapshot_version(next_version, build_id, args.commit_sha)
         artifact = main_artifact_name(args.commit_sha)
         build_label = "main snapshot"
     write_build_stamp(root, version)

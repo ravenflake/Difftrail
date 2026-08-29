@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Made disposable Windows build versions monotonic across main and pull-request
+  artifacts, and hardened in-place setup so running Difftrail processes cannot
+  block the previous uninstaller.
 - Added per-launch authentication for the installed desktop's loopback API.
 - Remove the opt-in watcher task when the desktop application is uninstalled,
   while preserving the local journal.
