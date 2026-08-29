@@ -26,8 +26,10 @@ Validation gaps are in [docs/v0.1.4-field-validation.md](docs/v0.1.4-field-valid
 
 ## Non-negotiable invariants
 
-- Keep collection read-only. Difftrail observes and suggests safe diagnostic
-  targets; it does not roll back, uninstall, disable, repair, or change Windows.
+- Keep collection read-only. Difftrail observes Windows state and suggests safe
+  diagnostic targets; collection never remediates, rolls back, uninstalls,
+  disables, repairs, or otherwise changes the observed system state. Opt-in
+  automation may manage Difftrail's own scheduled task and local processes.
 - Keep data local by default. Never add network upload, accounts, or cloud
   dependencies without an explicitly reviewed architecture/product change.
 - Redact profile paths and sensitive text before storage, UI responses, logs,
@@ -126,8 +128,10 @@ silently installs/uninstalls. CI is the authoritative full packaging check.
 - **UI:** update shared types and API adapters with views; keep preview data
   clearly synthetic and controls unavailable without the real API. Run UI tests,
   typecheck, production build, and relevant Rust shell tests.
-- **Automation:** keep collection opt-in and observation-only; validate the exact
-  scheduled executable/arguments/interval and preserve retry/idempotency behavior.
+- **Automation:** keep collection opt-in and observation-only. Task and process
+  management is limited to Difftrail's own scheduled task and local companions;
+  validate the exact scheduled executable/arguments/interval and preserve
+  retry/idempotency behavior.
 - **Packaging/Tauri:** keep the desktop responsible for token generation and
   backend lifetime. The current-user uninstaller removes processes/tasks but
   deliberately preserves the local journal. Test installer changes in isolation.

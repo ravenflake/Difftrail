@@ -75,7 +75,17 @@ Start-ScheduledTask -TaskName $taskName
 # companion can re-enable collection without silently resetting a custom value.
 try {
     if ($DatabasePath) {
-        $intervalStateRoot = Split-Path -Parent $DatabasePath
+        # The scheduled task resolves a relative database path from its working
+        # directory. Resolve it the same way here so a filename-only path still
+        # gets a usable preference location.
+        $databasePathForState = $DatabasePath
+        if (-not [System.IO.Path]::IsPathRooted($databasePathForState)) {
+            $databasePathForState = Join-Path $WorkingDirectory $databasePathForState
+        }
+        $intervalStateRoot = Split-Path -Parent $databasePathForState
+        if (-not $intervalStateRoot) {
+            $intervalStateRoot = $WorkingDirectory
+        }
     } elseif ($env:LOCALAPPDATA) {
         $intervalStateRoot = Join-Path $env:LOCALAPPDATA "Difftrail"
     } else {
