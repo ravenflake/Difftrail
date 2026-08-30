@@ -5,36 +5,37 @@
 [![License: GPL-3.0-only](https://img.shields.io/github/license/ravenflake/Difftrail)](LICENSE)
 
 Difftrail is an open-source, Windows-first, local-first change journal and
-evidence-backed incident investigator. It answers:
+evidence-review tool. It helps answer:
 
 > My PC was fine yesterday. What changed?
 
 Windows troubleshooting often starts after the useful context has disappeared:
 an update, driver replacement, service change, or device transition happened,
 then the crash or failure appeared later. Difftrail keeps a quiet local history
-of those meaningful changes so a user can compare an incident with what actually
-changed around its onset.
+of filtered, normalized state changes so a user can compare a problem window
+with what was recorded around its onset.
 
-The core diagnostic engine is deterministic and works without AI, an account,
-cloud access, or network upload. SQLite is the local source of truth. Difftrail
-does not collect screenshots or document contents and does not automatically
-change Windows settings.
+The evidence-ranking engine is deterministic and works without AI, an account,
+cloud access, or network upload. It orders recorded changes as leads; it does
+not diagnose a root cause. SQLite is the local source of truth. Difftrail does
+not collect screenshots or document contents and does not automatically change
+Windows settings.
 
 The current MVP focuses on one useful loop:
 
 1. Build a quiet baseline from read-only Windows snapshots.
-2. Record meaningful changes instead of raw telemetry.
+2. Record filtered state changes instead of raw telemetry.
 3. Ingest crash, hang, reset, restart, and shutdown symptoms.
 4. Let a user describe a problem and choose its onset.
-5. Rank candidate changes with reproducible evidence signals.
+5. Rank recorded changes as review leads with reproducible evidence signals.
 6. Show supporting evidence, counter-evidence, a conservative next step, and a read-only Windows diagnostic target.
 
-Normalized change history is kept locally for diagnosis. Raw Event Log message text is retained for the configured retention period (30 days by default) and then removed while the compact symptom event remains.
+Normalized change history is kept locally for later problem review. Raw Event Log message text is retained for the configured retention period (30 days by default) and then removed while the compact symptom event remains.
 
 > [!IMPORTANT]
 > **Project status:** Difftrail is an early pre-1.0 MVP. The current release is
 > usable for local exploration and the automated Windows installer path is
-> tested in CI, but real-world diagnostic accuracy, multi-day watcher evidence,
+> tested in CI, but real-world evidence usefulness, multi-day watcher evidence,
 > and installed-runtime field validation remain open work. See the
 > [roadmap](ROADMAP.md) and [v0.1.4 validation gate](docs/v0.1.4-field-validation.md).
 
@@ -119,7 +120,7 @@ standalone browser development, set `DIFFTRAIL_API_TOKEN` for the Python process
 and `VITE_DIFFTRAIL_API_TOKEN` for Vite to the same random value of at least 32
 characters when token-protected behavior needs to match the installed app.
 
-The current interface includes Overview, Timeline, Investigate, Incidents, System health, and Automation. The important user path is: review meaningful changes, describe a symptom, inspect ranked evidence and counter-evidence, then optionally label whether a candidate was useful. The UI does not claim causality beyond the deterministic evidence available in the local journal. Appearance follows the Windows system theme by default; the Appearance control can set a persistent light/dark preference or return to system behavior.
+The current interface includes Overview, Evidence timeline, Review a problem, Saved reviews, Collection & system, and Background scans. The important user path is: review recorded changes, describe a symptom and onset, inspect ranked support and counter-signals, follow a safe read-only check, then optionally label whether a lead was useful. The UI distinguishes recorded facts from ranked leads and does not claim causality beyond the deterministic evidence in the local journal. Appearance follows the Windows system theme by default; the Appearance control can set a persistent light/dark preference or return to system behavior.
 
 The desktop shell keeps navigation and top-level status chrome fixed while the main content column scrolls.
 
@@ -154,7 +155,7 @@ python -m difftrail --db "$env:LOCALAPPDATA\Difftrail\difftrail.db" scan
 
 The foreground `watch` command remains available for CLI diagnostics; the desktop app uses the hidden periodic Task Scheduler worker.
 
-The watcher snapshots applications, Windows updates, installed driver associations, services, scheduled tasks, startup entries, and present devices. The first successful snapshot of each source is a quiet baseline; later durable state transitions become journal events. Driver inventory is independent from live device presence so one disconnect is not reported twice as both a device removal and a driver uninstall. Normal service/task runtime state, healthy device status, and localized app/driver display text are retained as context but do not create changes by themselves. NVIDIA/AMD display-container service package-path changes are classified as graphics evidence, while the Studio/Game Ready branch is not inferred unless Windows exposes explicit branch metadata. Event Log collection covers common application crashes/hangs, display-driver resets, unexpected restarts, and unexpected shutdowns.
+The watcher snapshots applications, Windows updates, installed driver associations, services, scheduled tasks, startup entries, and present devices. The first successful snapshot of each source is a quiet baseline; later durable state transitions become journal events. A state-change timestamp is when a scan detected the difference, not necessarily when Windows changed it; Event Log symptoms retain their source timestamp. Driver inventory is independent from live device presence so one disconnect is not reported twice as both a device removal and a driver uninstall. Normal service/task runtime state, healthy device status, and localized app/driver display text are retained as context but do not create changes by themselves. NVIDIA/AMD display-container service package-path changes are classified as graphics evidence, while the Studio/Game Ready branch is not inferred unless Windows exposes explicit branch metadata. Event Log collection covers common application crashes/hangs, display-driver resets, unexpected restarts, and unexpected shutdowns.
 
 The desktop app's Automation screen manages a hidden, periodic Windows Task Scheduler job, runs a scan on demand, stores local notifications for high-value signals and provider warnings, and creates reviewable investigation drafts. Each scheduled run is a short headless worker rather than a visible terminal process; Task Scheduler handles logon startup, missed runs, and restart-on-failure. These automations observe and prepare evidence; they do not change Windows settings or apply remediation.
 
@@ -195,14 +196,14 @@ python -m difftrail --db "$env:LOCALAPPDATA\Difftrail\difftrail.db" overhead --r
 When an investigation has a known outcome, record it locally. The human investigation output and JSON both expose the opaque event ID needed for this command:
 
 ```powershell
-python -m difftrail --db "$env:LOCALAPPDATA\Difftrail\difftrail.db" feedback <incident-id> --outcome correct --event-id <event-id>
+python -m difftrail --db "$env:LOCALAPPDATA\Difftrail\difftrail.db" feedback <incident-id> --outcome helpful --event-id <event-id>
 ```
 
-Only explicitly labeled `correct` investigations contribute to the report's top-three measurement; `incorrect` and `unknown` remain separate outcomes.
+Only explicitly labeled `helpful` reviews contribute to the report's top-three usefulness measurement; `not_helpful` and `unsure` remain separate outcomes. Older journals retain their compatible internal feedback values during upgrade.
 
 ## Validation
 
-The deterministic ground-truth harness creates known-cause scenarios with nearby distractors, missing evidence, counter-evidence, no-cause cases, and post-onset changes:
+The deterministic ground-truth harness creates scenarios with an explicit expected lead, nearby distractors, missing evidence, counter-evidence, no-relevant-change cases, and post-onset changes:
 
 ```powershell
 python -m difftrail validate
@@ -224,7 +225,7 @@ The scenarios cover:
 - a Windows Update transition followed by an unexpected restart; and
 - a graphics driver change mixed with unrelated application and persistence changes.
 
-Each run checks that the baseline is quiet, the expected transitions are captured, the expected evidence appears in the top three, no unrelated change receives High confidence, and the evidence includes a safe diagnostic target. The audio scenario validates endpoint presence changes; the current Windows collector does not claim to observe the user's default-output setting itself.
+Each run checks that the baseline is quiet, the expected transitions are captured, the expected evidence appears in the top three, no unrelated change receives strong support, and the evidence includes a safe diagnostic target. The audio scenario validates endpoint presence changes; the current Windows collector does not claim to observe the user's default-output setting itself.
 
 The resource validator measures the real watcher process and collector children during startup and steady state. It requires the optional psutil package only for this validation command; the application itself still has no third-party runtime dependency.
 
@@ -235,7 +236,7 @@ python -m difftrail overhead --interval 15 --warmup 8 --duration 10 --json
 
 The report separates startup CPU/disk activity from steady-state CPU/RSS/disk activity. It measures the watcher process tree, not system-wide load.
 
-The validation commands report top-1/top-3 ranking and no-false-High metrics for the synthetic suite. Those results measure deterministic behavior against known inputs; they are not a claim of real-world causal accuracy. Host-validation and overhead results are machine-specific, so collect them with the commands above when comparing real installations.
+The validation commands report top-1/top-3 ranking and no-false-strong-support metrics for the synthetic suite. Those results measure deterministic behavior against known inputs; they are not a claim of real-world causal accuracy. Host-validation and overhead results are machine-specific, so collect them with the commands above when comparing real installations.
 
 Before field testing a release candidate, follow the [v0.1.4 field-validation checklist](docs/v0.1.4-field-validation.md). It separates automated evidence from the Windows-only install, watcher, privacy, and real-incident checks that still need a host.
 
@@ -251,8 +252,8 @@ Important boundaries:
 
 - difftrail/collectors/windows.py contains Windows-specific reads only.
 - difftrail/db.py stores normalized state and redacted evidence locally.
-- difftrail/correlation.py is deterministic and explainable. Its score orders results internally; users see High/Medium/Low plus evidence, not fake probability.
-- difftrail/validation.py measures diagnosis behavior against explicit ground truth.
+- difftrail/correlation.py is deterministic and explainable. Its score orders results internally; users see Strong/Moderate/Weak evidence support plus the contributing signals, not a probability of cause.
+- difftrail/validation.py measures deterministic ranking behavior against explicit synthetic ground truth.
 - difftrail/simulation.py contains safe Windows-shaped fixture replays for end-to-end validation; it does not invoke PowerShell.
 - difftrail/host_validation.py builds aggregate local validation reports without exporting journal content.
 - difftrail/overhead.py measures watcher resource use without changing system state.
@@ -310,13 +311,13 @@ journal.
 
 ## Current limits and next validation
 
-App lifecycle history is inferred from current inventory snapshots, so events that happen entirely between scans cannot be recovered yet. Windows Update and driver history currently come from state snapshots rather than a complete historical provider. The validation suite is synthetic and proves ranking behavior under known inputs; it does not yet prove real-world causal accuracy.
+App lifecycle history is inferred from current inventory snapshots, so events that happen entirely between scans cannot be recovered yet. Windows Update and driver history currently come from state snapshots rather than a complete historical provider. The validation suite is synthetic and proves ranking behavior under known inputs; it does not yet prove that the leads will be useful for real incidents.
 
-The safe scanner-backed scenarios cover the first controlled MVP cases without changing Windows state. The `validate-host` report makes passive real-host validation measurable, and the replacement interface has a working local desktop path with focused UI/API checks. Broader end-to-end and accessibility coverage, real-world causal accuracy, longer/cross-machine overhead, install/uninstall noise, and installed-runtime behavior still require evidence from actual use.
+The safe scanner-backed scenarios cover the first controlled MVP cases without changing Windows state. The `validate-host` report makes passive real-host validation measurable, and the browser/API path has been exercised across desktop and mobile layouts with accessibility audits. Packaged-desktop first-run and accessibility behavior, real-world lead usefulness, longer/cross-machine overhead, install/uninstall noise, and installed-runtime behavior still require evidence from actual use.
 
 ## Release status
 
-This is an early Windows-first MVP foundation with a usable local desktop interface. A current-user NSIS installer and bundled backend/watcher are buildable, while real-world causal accuracy, longer and cross-machine overhead, and installed-runtime behavior remain open validation work. The project does not make automatic system changes. Investigation output may name a Windows diagnostic surface to open manually; Difftrail never launches it or performs rollback, uninstall, disable, or repair actions.
+This is an early Windows-first MVP foundation with a usable local desktop interface. A current-user NSIS installer and bundled backend/watcher are buildable, while real-world lead usefulness, longer and cross-machine overhead, and installed-runtime behavior remain open validation work. The project does not make automatic system changes. Investigation output may name a Windows diagnostic surface to open manually; Difftrail never launches it or performs rollback, uninstall, disable, or repair actions.
 
 Release notes are tracked in [`CHANGELOG.md`](CHANGELOG.md).
 
@@ -329,7 +330,7 @@ Difftrail follows [Semantic Versioning 2.0.0](https://semver.org/) for user-visi
 - `PATCH` contains backward-compatible fixes and maintenance.
 - Pre-releases use SemVer suffixes such as `-alpha.1`, `-beta.1`, and `-rc.1`.
 
-Release tags use the `vMAJOR.MINOR.PATCH` form, with optional SemVer prerelease suffixes such as `-alpha.1`, `-beta.1`, and `-rc.1`. The Python package, UI package, Tauri configuration, and desktop shell metadata must carry the same base release version. A pre-1.0 build is not a claim of stable real-world diagnostic accuracy.
+Release tags use the `vMAJOR.MINOR.PATCH` form, with optional SemVer prerelease suffixes such as `-alpha.1`, `-beta.1`, and `-rc.1`. The Python package, UI package, Tauri configuration, and desktop shell metadata must carry the same base release version. A pre-1.0 build is not a claim of proven real-world investigation accuracy.
 
 The tag-triggered release workflow validates the tag format and release metadata before attaching the Windows installer to a GitHub Release. `v0.1.0` receives the title `Difftrail v0.1.0 — MVP Foundation`; other releases use the default `Difftrail vX.Y.Z` title, and prerelease tags are marked as prereleases.
 

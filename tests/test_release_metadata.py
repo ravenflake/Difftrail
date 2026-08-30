@@ -96,7 +96,7 @@ class ReleaseMetadataTests(unittest.TestCase):
         )
         self.assertIn('const STATUS_ID: &str = "toggle-background-collection";', source)
         self.assertIn('MenuItem::with_id(STATUS_ID, initial_status.menu_text(), true, None)', source)
-        self.assertIn('MenuItem::with_id(EXIT_ID, "Exit Difftrail", true, None)', source)
+        self.assertIn('MenuItem::with_id(EXIT_ID, "Exit status icon", true, None)', source)
         self.assertIn('run_watcher_script(root, "uninstall-watcher.ps1", &[])', source)
         self.assertIn('"install-watcher.ps1"', source)
         self.assertIn("-Verb RunAs", source)

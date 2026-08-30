@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Reframed problem review around ranked evidence leads instead of root-cause
+  claims: support labels now describe the recorded signals, ambiguity and
+  counter-evidence reduce support, and next steps stay read-only.
+- Expanded the reduced public event context, per-source collection recency, and
+  scan coverage reporting while preserving redaction and local-only boundaries.
+- Made scan-detection time versus Windows source time explicit and retained
+  source-specific failure metadata without exposing provider exception text.
+- Replaced public ranking scores and confidence fields with Strong, Moderate,
+  or Weak evidence-support levels in the UI, CLI JSON, API, and report bundles.
+- Reworked the desktop information architecture, problem-review explanations,
+  feedback vocabulary, limited-data states, scan feedback, and production
+  backend failure state so every screen distinguishes facts, leads, limits, and
+  next actions.
 - Made disposable Windows build versions monotonic across main and pull-request
   artifacts, and hardened in-place setup so running Difftrail processes cannot
   block the previous uninstaller.

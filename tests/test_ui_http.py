@@ -117,6 +117,10 @@ class UiHttpTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertIn("days", payload["error"])
 
+        status, payload = self.request("GET", f"/api/timeline?search={'x' * 201}")
+        self.assertEqual(status, 400)
+        self.assertIn("200 characters or fewer", payload["error"])
+
         status, payload = self.request("POST", "/api/validate-bundle", ["not", "an", "object"])
         self.assertEqual(status, 400)
         self.assertIn("JSON object", payload["error"])
@@ -360,7 +364,10 @@ class UiHttpTests(unittest.TestCase):
 
         status, payload = self.request("GET", "/api/incidents")
         self.assertEqual(status, 200)
-        self.assertEqual(payload[0]["results"][0]["score"], 0)
+        result = payload[0]["results"][0]
+        self.assertEqual(result["support_level"], "strong")
+        self.assertNotIn("score", result)
+        self.assertNotIn("confidence", result)
         self.assertEqual(payload[0]["coverage"]["scan_count"], 0)
         encoded = json.dumps(payload)
         for secret in ("Alice", r"C:\Users", r"C:\Program Files", "private raw collector", "private evidence payload"):
@@ -391,10 +398,20 @@ class UiHttpTests(unittest.TestCase):
         status, feedback = self.request(
             "POST",
             f"/api/incidents/{incident_id}/feedback",
+            {"outcome": "unsure"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(feedback["incident"]["feedback"]["outcome"], "unsure")
+
+        # Old local clients may still send the storage vocabulary during an
+        # in-place upgrade, but the public response remains non-causal.
+        status, feedback = self.request(
+            "POST",
+            f"/api/incidents/{incident_id}/feedback",
             {"outcome": "unknown"},
         )
         self.assertEqual(status, 200)
-        self.assertEqual(feedback["incident"]["feedback"]["outcome"], "unknown")
+        self.assertEqual(feedback["incident"]["feedback"]["outcome"], "unsure")
 
         status, payload = self.request(
             "POST",

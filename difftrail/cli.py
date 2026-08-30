@@ -19,6 +19,46 @@ from .models import IncidentRequest, iso_datetime, parse_datetime, utc_now
 from .simulation import run_controlled_fixture_suite, simulate_nvidia_driver_switch
 
 
+_FEEDBACK_TO_STORED = {
+    "helpful": "correct",
+    "not_helpful": "incorrect",
+    "unsure": "unknown",
+    # Keep pre-v0.1.4 command lines working while presenting the clearer terms.
+    "correct": "correct",
+    "incorrect": "incorrect",
+    "unknown": "unknown",
+}
+_STORED_TO_FEEDBACK = {
+    "correct": "helpful",
+    "incorrect": "not_helpful",
+    "unknown": "unsure",
+}
+
+
+def _feedback_outcome(value: str) -> str:
+    normalized = value.casefold().replace("-", "_")
+    if normalized not in _FEEDBACK_TO_STORED:
+        raise argparse.ArgumentTypeError("outcome must be helpful, not_helpful, or unsure")
+    return normalized
+
+
+def _support_label(confidence: str) -> str:
+    return {
+        "High": "Strong support",
+        "Medium": "Moderate support",
+        "Low": "Weak support",
+    }.get(confidence, "Weak support")
+
+
+def _assessment_label(state: str) -> str:
+    return {
+        "candidate_found": "reviewable lead",
+        "insufficient_evidence": "insufficient evidence",
+        "no_recent_changes": "no recorded changes",
+        "limited_coverage": "limited coverage",
+    }.get(state, "insufficient evidence")
+
+
 def default_database_path() -> Path:
     if os.name == "nt":
         root = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
@@ -102,9 +142,11 @@ def command_timeline(args: argparse.Namespace) -> int:
     with _database(args) as database:
         events = database.list_events(limit=args.limit, kind=args.kind, subsystem=args.subsystem)
         if args.json:
-            _print_json([event.as_dict() for event in events])
+            from .ui_api import public_event
+
+            _print_json([public_event(event.as_dict()) for event in events])
         else:
-            print("TIME (UTC)           KIND     SUBSYSTEM       EVENT")
+            print("RECORDED (UTC)       KIND     SUBSYSTEM       EVENT")
             print("-" * 86)
             for event in events:
                 print(_format_event(event))
@@ -137,19 +179,24 @@ def command_investigate(args: argparse.Namespace) -> int:
         assessment = run.assessment
         summary = run.summary
         if args.json:
-            summary["incident_id"] = incident.id
-            _print_json(summary)
+            # The CLI JSON is a public contract too: keep internal ordering
+            # scores and confidence vocabulary behind the evidence-support view.
+            from .ui_api import public_investigation_summary
+
+            public_summary = public_investigation_summary(summary)
+            public_summary["incident_id"] = incident.id
+            _print_json(public_summary)
         else:
-            print(f"Investigation {incident.id}")
+            print(f"Evidence review {incident.id}")
             print(f"Area: {subsystem} | Onset: {iso_datetime(onset_start)}")
-            print(f"Assessment: {assessment.state}")
+            print(f"Assessment: {_assessment_label(assessment.state)}")
             for reason in assessment.reasons:
                 print(f"- {reason}")
-            print("Method: deterministic evidence signals; no AI causal inference")
+            print("Method: deterministic ranking of recorded changes; not a diagnosis or proof of cause")
             if not hypotheses:
-                print("No candidate changes were found in the selected lookback window.")
+                print("No recorded changes were available as leads in the selected lookback window.")
             for index, hypothesis in enumerate(hypotheses, start=1):
-                print(f"\n{index}. [{hypothesis.confidence}] {hypothesis.event.title}")
+                print(f"\n{index}. [{_support_label(hypothesis.confidence)}] {hypothesis.event.title}")
                 for evidence in hypothesis.evidence:
                     print(f"   + {evidence.signal}: {evidence.explanation}")
                 for evidence in hypothesis.counter_evidence:
@@ -164,15 +211,16 @@ def command_investigate(args: argparse.Namespace) -> int:
 
 
 def command_feedback(args: argparse.Namespace) -> int:
+    stored_outcome = _FEEDBACK_TO_STORED[args.outcome]
     with _database(args) as database:
         incident = database.record_incident_feedback(
             args.incident_id,
-            args.outcome,
+            stored_outcome,
             event_id=args.event_id,
         )
         result = {
             "incident_id": incident["id"],
-            "outcome": incident["feedback"]["outcome"],
+            "outcome": _STORED_TO_FEEDBACK[incident["feedback"]["outcome"]],
             "event_id": incident["feedback"]["event_id"],
             "recorded_at": incident["feedback"]["recorded_at"],
         }
@@ -288,13 +336,15 @@ def command_validate(args: argparse.Namespace) -> int:
         _print_json(report)
     else:
         print(
-            f"Ground-truth suite: {'PASS' if report['passed'] else 'FAIL'} | "
-            f"top-1 {report['top1_accuracy']:.0%} | top-3 {report['top3_accuracy']:.0%} | "
-            f"no false High {report['no_false_high_rate']:.0%} | "
+            f"Synthetic ranking suite: {'PASS' if report['passed'] else 'FAIL'} | "
+            f"expected lead top-1 {report['expected_lead_top1_rate']:.0%} | "
+            f"expected lead top-3 {report['expected_lead_top3_rate']:.0%} | "
+            f"no false Strong support {report['no_false_strong_support_rate']:.0%} | "
             f"assessment {report['assessment_pass_rate']:.0%} | "
             f"determinism {'PASS' if report['determinism']['passed'] else 'FAIL'} | "
-            f"stress top-1 {report['perturbation']['top1_accuracy']:.0%}"
+            f"stress expected lead top-1 {report['perturbation']['expected_lead_top1_rate']:.0%}"
         )
+        print("Scope: synthetic fixtures verify deterministic ordering; they do not measure real-world causal accuracy.")
         for scenario in report["scenarios"]:
             print(f"{'PASS' if scenario['passed'] else 'FAIL':4} {scenario['name']} (rank={scenario['rank']})")
     return 0 if report["passed"] else 1
@@ -311,7 +361,7 @@ def command_validate_scenarios(args: argparse.Namespace) -> int:
             f"{report['scenario_count']} scenarios | "
             f"capture {'PASS' if checks['capture'] else 'FAIL'} | "
             f"ranking {'PASS' if checks['ranking'] else 'FAIL'} | "
-            f"no false High {'PASS' if checks['no_false_high'] else 'FAIL'} | "
+            f"no false Strong support {'PASS' if checks['no_false_strong_support'] else 'FAIL'} | "
             f"evidence {'PASS' if checks['evidence'] else 'FAIL'}"
         )
         for scenario in report["scenarios"]:
@@ -384,12 +434,14 @@ def command_validate_host(args: argparse.Namespace) -> int:
         else:
             print("Overhead: no recorded measurements. Use `overhead --record` to add one.")
         feedback = investigations["with_feedback"]
-        top3_rate = investigations["correct_cause_top3_rate"]
+        top3_rate = investigations["helpful_lead_top3_rate"]
         top3_text = "n/a" if top3_rate is None else f"{top3_rate:.1%}"
         print(
-            f"Investigations: {investigations['total']} | feedback {feedback} | "
-            f"correct-cause top-3 {investigations['correct_cause_top3_hits']}/{investigations['outcomes']['correct']} ({top3_text})."
+            f"Evidence reviews: {investigations['total']} | feedback {feedback} | "
+            f"helpful lead in top 3 {investigations['helpful_lead_top3_hits']}/"
+            f"{investigations['outcomes']['helpful']} ({top3_text})."
         )
+        print("Interpretation: user-labeled lead usefulness, not causal accuracy.")
         print("Privacy: aggregate local report; raw evidence and paths are omitted.")
     return 0
 
@@ -402,7 +454,7 @@ def command_ui(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="difftrail", description="Local-first Windows change journal and investigator")
+    parser = argparse.ArgumentParser(prog="difftrail", description="Local-first Windows change journal and evidence review tool")
     parser.add_argument("--db", help=f"SQLite path (default: {default_database_path()})")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -427,7 +479,7 @@ def build_parser() -> argparse.ArgumentParser:
     timeline.add_argument("--json", action="store_true")
     timeline.set_defaults(func=command_timeline)
 
-    investigate = subparsers.add_parser("investigate", help="Rank likely changes for a reported problem")
+    investigate = subparsers.add_parser("investigate", help="Rank recorded changes as leads for a reported problem")
     investigate.add_argument("description")
     investigate.add_argument(
         "--onset",
@@ -460,10 +512,15 @@ def build_parser() -> argparse.ArgumentParser:
     investigate.add_argument("--json", action="store_true")
     investigate.set_defaults(func=command_investigate)
 
-    feedback = subparsers.add_parser("feedback", help="Record whether an investigation's selected cause was correct")
+    feedback = subparsers.add_parser("feedback", help="Record whether a ranked lead was useful")
     feedback.add_argument("incident_id")
-    feedback.add_argument("--outcome", choices=["correct", "incorrect", "unknown"], required=True)
-    feedback.add_argument("--event-id", help="Event ID for the cause judged correct; required for --outcome correct")
+    feedback.add_argument(
+        "--outcome",
+        type=_feedback_outcome,
+        metavar="{helpful,not_helpful,unsure}",
+        required=True,
+    )
+    feedback.add_argument("--event-id", help="Event ID for the useful lead; required for --outcome helpful")
     feedback.add_argument("--json", action="store_true")
     feedback.set_defaults(func=command_feedback)
 
@@ -492,7 +549,7 @@ def build_parser() -> argparse.ArgumentParser:
     watch.add_argument("--interval", type=int, default=300)
     watch.set_defaults(func=command_watch)
 
-    validate = subparsers.add_parser("validate", help="Run deterministic ground-truth diagnosis scenarios")
+    validate = subparsers.add_parser("validate", help="Run deterministic ground-truth ranking scenarios")
     validate.add_argument("--json", action="store_true")
     validate.set_defaults(func=command_validate)
 
@@ -513,7 +570,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     validate_host = subparsers.add_parser(
         "validate-host",
-        help="Build an aggregate local report from real scans, overhead samples, and labeled investigations",
+        help="Build an aggregate local report from real scans, overhead samples, and labeled evidence reviews",
     )
     validate_host.add_argument("--days", type=int, default=7)
     validate_host.add_argument("--json", action="store_true")

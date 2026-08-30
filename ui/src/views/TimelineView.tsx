@@ -14,34 +14,44 @@ export function TimelineView({ events, onLoad }: Props) {
   const [filters, setFilters] = useState<TimelineFilters>({ kind: "all", subsystem: "all", search: "" });
   const [visibleEvents, setVisibleEvents] = useState(events);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
-  useEffect(() => setVisibleEvents(events), [events]);
   useEffect(() => {
+    let cancelled = false;
     const timer = window.setTimeout(async () => {
       setLoading(true);
-      try { setVisibleEvents(await onLoad(filters)); } finally { setLoading(false); }
+      setLoadError(null);
+      try {
+        const next = await onLoad(filters);
+        if (!cancelled) setVisibleEvents(next);
+      } catch (reason) {
+        if (!cancelled) setLoadError(reason instanceof Error ? reason.message : "The evidence timeline could not be updated.");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
     }, 180);
-    return () => window.clearTimeout(timer);
-  }, [filters, onLoad]);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [events, filters, onLoad]);
 
   const grouped = groupByDay(visibleEvents);
   const burstCount = Object.values(grouped).reduce((total, dayEvents) => total + groupBursts(dayEvents).filter((group) => group.length > 1).length, 0);
   return (
     <div className="page-stack">
-      <section className="view-header split-intro"><div><h2>Timeline</h2><p>Changes and symptoms recorded by the local journal.</p></div><div className="intro-aside"><span className="intro-aside-number">{visibleEvents.length}</span><span>events in view</span>{burstCount > 0 && <small>{burstCount} crash burst{burstCount === 1 ? "" : "s"} grouped</small>}</div></section>
+      <section className="view-header split-intro"><div><h2>Evidence timeline</h2><p>Read-only records from Windows sources. Inventory changes use scan-detection time; Windows signals use their source timestamp. Proximity is context, not proof of cause.</p></div><div className="intro-aside"><span className="intro-aside-number">{visibleEvents.length}</span><span>recorded events in view</span>{burstCount > 0 && <small>{burstCount} repeated symptom group{burstCount === 1 ? "" : "s"}</small>}</div></section>
       <section className="panel timeline-toolbar">
-        <div className="filter-tabs" aria-label="Event type">
+        <div className="filter-tabs" role="group" aria-label="Event type">
           {(["all", "change", "symptom"] as const).map((kind) => <button type="button" aria-pressed={filters.kind === kind} className={filters.kind === kind ? "is-selected" : ""} key={kind} onClick={() => setFilters((current) => ({ ...current, kind }))}>{kind === "all" ? "Everything" : kind === "change" ? "Changes" : "Symptoms"}</button>)}
         </div>
         <div className="toolbar-fields">
-          <label className="search-field"><Icon name="search" size={16} /><span className="sr-only">Search timeline</span><input value={filters.search} onChange={(event) => setFilters((current) => ({ ...current, search: event.target.value }))} placeholder="Search the journal" /></label>
+          <label className="search-field"><Icon name="search" size={16} /><span className="sr-only">Search timeline</span><input value={filters.search} maxLength={200} onChange={(event) => setFilters((current) => ({ ...current, search: event.target.value }))} placeholder="Search the journal" /></label>
           <label className="select-field"><Icon name="filter" size={15} /><span className="sr-only">Filter by subsystem</span><select value={filters.subsystem} onChange={(event) => setFilters((current) => ({ ...current, subsystem: event.target.value }))}>{timelineSubsystemOptions.map((subsystem) => <option key={subsystem} value={subsystem}>{subsystem === "all" ? "All areas" : subsystemLabel(subsystem)}</option>)}</select></label>
         </div>
       </section>
       <section className="timeline-stream" aria-live="polite">
         {loading && <div className="loading-line"><span className="loading-bar" /> Updating the journal…</div>}
+        {loadError && <div className="form-error timeline-error" role="alert"><Icon name="alert" size={14} /><span><strong>Could not refresh this view.</strong> {loadError} The last available results remain visible.</span></div>}
         {Object.entries(grouped).map(([day, dayEvents]) => <div className="timeline-day" key={day}><div className="day-label"><span>{day}</span><span className="day-rule" /></div><div className="timeline-events">{groupBursts(dayEvents).map((group) => <EventRow key={group[0].id || `${group[0].occurred_at}-${group[0].title}`} event={group[0]} groupedEvents={group.length > 1 ? group : undefined} />)}</div></div>)}
-        {!visibleEvents.length && !loading && <div className="large-empty"><div className="empty-icon"><Icon name="timeline" size={22} /></div><h3>No events match that view.</h3><p>Try a broader area or run another scan when you expect something to have changed.</p></div>}
+        {!visibleEvents.length && !loading && !loadError && <div className="large-empty"><div className="empty-icon"><Icon name="timeline" size={22} /></div><h3>{events.length ? "No recorded events match these filters." : "No changes or symptoms have been recorded yet."}</h3><p>{events.length ? "Clear the search or choose a broader event type and area." : "The first valid scan establishes quiet baselines. Future scans can then record differences; they cannot reconstruct changes that happened before collection began."}</p></div>}
       </section>
     </div>
   );

@@ -1,7 +1,7 @@
 # Architecture and trust boundaries
 
-Difftrail separates collection, storage, diagnosis, and presentation so the
-diagnostic result remains local and reproducible. The Python engine is the
+Difftrail separates collection, storage, evidence review, and presentation so
+the result remains local and reproducible. The Python engine is the
 source of truth; the desktop interface is a client of a narrow local API.
 
 ```mermaid
@@ -20,7 +20,7 @@ flowchart TD
 | --- | --- | --- |
 | `difftrail/collectors/` | Read Windows inventory and Event Log providers, then normalize records | Provider failures must remain visible; collectors do not remediate |
 | `difftrail/db.py` | Versioned SQLite schema, snapshots, semantic events, investigations, retention | Writes are parameterized and migrations are transactional |
-| `difftrail/correlation.py` | Rank candidate changes using explicit evidence and counter-evidence | Scores are deterministic ordering signals, not probabilities or proof of causality |
+| `difftrail/correlation.py` | Rank recorded changes as leads using explicit evidence and counter-evidence | Scores are deterministic ordering signals, not probabilities or proof of causality |
 | `difftrail/privacy.py` | Redact profile paths and extract safe application labels | Redaction happens before normalized data crosses storage/UI/export boundaries |
 | `difftrail/bundles.py` | Produce and validate one-way diagnostic reports | Raw messages, absolute paths, process IDs, and the SQLite file are excluded |
 | `difftrail/ui_api.py` | Present a UI-safe local JSON contract and perform bounded mutations | Loopback bind, Host/Origin checks, request limits, and optional per-launch token |
@@ -31,14 +31,15 @@ flowchart TD
 
 1. A scan reads supported Windows providers and reports any unavailable source.
 2. The first successful source snapshot becomes a quiet baseline.
-3. Later durable state differences become normalized change events. Supported
-   Event Log records become symptom events.
+3. Later durable state differences become normalized change events timestamped
+   when a scan detects them; Windows may not expose the actual change time.
+   Supported Event Log records become symptom events with their source time.
 4. SQLite stores normalized/redacted state locally. Raw Event Log message text
    is removed after the configured retention period while the compact event
    remains.
 5. An investigation compares the reported onset with nearby changes and
    symptoms. Stable tie-breaking and explicit evidence produce reproducible
-   output.
+   leads to review, not a root-cause diagnosis.
 6. The UI receives a reduced public representation. Raw event details never
    cross the loopback API merely to render the interface.
 7. An explicit export builds a new redacted JSON structure and validates it
@@ -87,5 +88,5 @@ argument construction, bundle validation, and release metadata. Windows CI also
 builds and silently installs/uninstalls the NSIS package.
 
 Synthetic validation demonstrates behavior for known inputs. It is not evidence
-of real-world diagnostic accuracy. The remaining host evidence is tracked in the
+of real-world investigation accuracy. The remaining host evidence is tracked in the
 [v0.1.4 field-validation checklist](v0.1.4-field-validation.md).

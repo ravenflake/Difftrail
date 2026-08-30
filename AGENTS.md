@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Difftrail is a Windows-first, local-first change journal and incident investigator.
+Difftrail is a Windows-first, local-first change journal and incident evidence-review tool.
 It ranks normalized SQLite evidence deterministically without AI, cloud, or remediation.
 
 Read [README.md](README.md) for behavior, [docs/architecture.md](docs/architecture.md) for
@@ -14,7 +14,7 @@ Validation gaps are in [docs/v0.1.4-field-validation.md](docs/v0.1.4-field-valid
 - `difftrail/`: dependency-free Python 3.11+ engine and CLI; the source of truth.
 - `difftrail/collectors/`: read-only Windows and PowerShell collection plus normalization.
 - `difftrail/db.py`: SQLite schema, migrations, snapshots, retention, and journal queries.
-- `difftrail/correlation.py`, `assessment.py`, `investigation.py`: deterministic diagnosis.
+- `difftrail/correlation.py`, `assessment.py`, `investigation.py`: deterministic evidence ranking.
 - `difftrail/privacy.py`, `public_data.py`, `bundles.py`: safe public/export contracts.
 - `difftrail/ui_api.py`: bounded loopback-only HTTP/JSON adapter for the UI.
 - `difftrail/automation.py`, `watcher.py`: opt-in Task Scheduler collection and notifications.
@@ -38,9 +38,9 @@ Validation gaps are in [docs/v0.1.4-field-validation.md](docs/v0.1.4-field-valid
   Never interpret a failed/incomplete provider read as an empty clean snapshot.
 - The first valid snapshot for a source is a quiet baseline. Preserve stable
   identities and noise filtering so representation churn does not create events.
-- Ranking is deterministic and explainable. Scores order candidates; they are
-  not probabilities or proof of causality. Preserve stable tie-breaking,
-  counter-evidence, conservative confidence, and insufficient-evidence states.
+- Ranking is deterministic and explainable. Scores order leads; they are not
+  probabilities or proof of causality. Preserve stable tie-breaking,
+  counter-evidence, conservative support labels, and insufficient-evidence states.
 - SQLite is the journal source of truth. Migrations are numbered, transactional,
   and safe to retry; journal writes stay in `Database`.
 - The UI receives a reduced public representation only. Do not expose raw Event

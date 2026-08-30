@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { AutomationConfig, AutomationNotification, AutomationSummary, View } from "../types";
+import type { AutomationConfig, AutomationNotification, AutomationSummary } from "../types";
 import { formatDateTime, relativeTime } from "../format";
 import { Icon } from "../components/Icon";
 
@@ -12,7 +12,7 @@ interface Props {
   onConfigSave: (config: AutomationConfig) => Promise<void>;
   onWatcherAction: (action: "enable" | "disable" | "run", intervalSeconds?: number) => Promise<boolean>;
   onMarkRead: () => Promise<void>;
-  onNavigate: (view: View) => void;
+  onOpenReview: (incidentId: string) => void;
 }
 
 const intervalOptions = [
@@ -27,7 +27,7 @@ const intervalOptions = [
   { value: 86400, label: "Every day" },
 ];
 
-export function AutomationView({ automation, connection, busy, error, notice, onConfigSave, onWatcherAction, onMarkRead, onNavigate }: Props) {
+export function AutomationView({ automation, connection, busy, error, notice, onConfigSave, onWatcherAction, onMarkRead, onOpenReview }: Props) {
   const [draft, setDraft] = useState<AutomationConfig>(automation.config);
   const [intervalApplied, setIntervalApplied] = useState(false);
   const intervalDoneTimer = useRef<number | null>(null);
@@ -41,6 +41,7 @@ export function AutomationView({ automation, connection, busy, error, notice, on
   const watcherRunning = watcherInstalled && watcher.running;
   const watcherAttention = watcherInstalled && (watcher.needs_repair || (!watcherRunning && watcher.last_task_result !== null && watcher.last_task_result !== 0));
   const watcherNeedsSetup = !watcherInstalled || watcher.needs_repair;
+  const watcherActionLabel = watcher.needs_repair ? "Update watcher" : !watcherInstalled ? "Enable watcher" : "Save interval";
   const canControl = connection === "local" && watcher.supported;
   const intervalChanged = draft.interval_seconds !== automation.config.interval_seconds;
   const rulesDirty = JSON.stringify({ ...draft, interval_seconds: automation.config.interval_seconds }) !== JSON.stringify(automation.config);
@@ -76,8 +77,8 @@ export function AutomationView({ automation, connection, busy, error, notice, on
   return (
     <div className="page-stack">
       <section className="view-header">
-        <h2>Automation</h2>
-        <p>Keep the evidence loop running in the background and bring only meaningful signals back to you.</p>
+        <h2>Background scans</h2>
+        <p>Schedule read-only snapshots and choose which fixed rule matches appear locally for review.</p>
       </section>
       {error && <div className="form-error automation-feedback" role="alert"><Icon name="alert" size={14} /> {error}</div>}
       {notice && <div className="automation-run-notice automation-feedback" role="status"><Icon name="check" size={14} /> {notice}</div>}
@@ -85,7 +86,7 @@ export function AutomationView({ automation, connection, busy, error, notice, on
       <div className="automation-grid">
         <section className="panel automation-panel automation-watcher-panel">
           <div className="section-heading">
-            <div><h3>Background watcher</h3><span className="section-subtitle">The existing read-only collector, managed through Windows Task Scheduler.</span></div>
+            <div><h3>Scheduled snapshots</h3><span className="section-subtitle">Difftrail&apos;s read-only collector, managed through its own Windows scheduled task.</span></div>
             <span className={`automation-badge ${watcherAttention ? "is-attention" : watcherInstalled ? "is-enabled" : ""}`}><span className="status-dot" />{statusLabel}</span>
           </div>
 
@@ -104,12 +105,13 @@ export function AutomationView({ automation, connection, busy, error, notice, on
 
           <div className="automation-meta-grid">
             <AutomationMeta label="Interval" value={formatInterval(automation.config.interval_seconds)} />
-            <AutomationMeta label="Last background scan" value={watcher.last_run_at ? relativeTime(watcher.last_run_at) : "Not recorded"} detail={watcher.last_run_at ? formatDateTime(watcher.last_run_at) : undefined} />
-            <AutomationMeta label="Next background scan" value={watcher.next_run_at ? relativeTime(watcher.next_run_at) : "At next logon"} detail={watcher.next_run_at ? formatDateTime(watcher.next_run_at) : undefined} />
+            <AutomationMeta label={watcher.needs_repair ? "Registered task last run" : "Last background scan"} value={watcher.last_run_at ? relativeTime(watcher.last_run_at) : "Not recorded"} detail={watcher.last_run_at ? formatDateTime(watcher.last_run_at) : undefined} />
+            <AutomationMeta label={watcher.needs_repair ? "Registered task next run" : "Next background scan"} value={watcher.next_run_at ? relativeTime(watcher.next_run_at) : "At next logon"} detail={watcher.next_run_at ? formatDateTime(watcher.next_run_at) : undefined} />
           </div>
+          {watcher.needs_repair && <p className="panel-footnote">These times belong to the registered Windows task. Update the watcher before treating them as activity for this journal.</p>}
 
           <div className="automation-actions">
-            <button type="button" className="button button-primary" onClick={() => void handleIntervalApply()} disabled={!canControl || (!intervalChanged && !watcherNeedsSetup) || intervalApplied || busy !== null} aria-busy={busy === "enable"}>{busy === "enable" ? (watcherNeedsSetup ? "Enabling..." : "Saving...") : intervalApplied ? "Saved" : watcherNeedsSetup ? "Enable watcher" : "Save interval"}</button>
+            <button type="button" className="button button-primary" onClick={() => void handleIntervalApply()} disabled={!canControl || (!intervalChanged && !watcherNeedsSetup) || intervalApplied || busy !== null} aria-busy={busy === "enable"}>{busy === "enable" ? (watcher.needs_repair ? "Updating..." : watcherNeedsSetup ? "Enabling..." : "Saving...") : intervalApplied ? "Saved" : watcherActionLabel}</button>
             <button type="button" className="button button-secondary" onClick={() => void onWatcherAction("run")} disabled={!canControl || busy !== null} aria-busy={busy === "run"}>{busy === "run" ? "Scanning..." : "Scan now"}</button>
             {watcherInstalled && <button type="button" className="button button-tertiary" onClick={() => void onWatcherAction("disable")} disabled={!canControl || busy !== null} aria-busy={busy === "disable"}>{busy === "disable" ? "Disabling..." : "Disable"}</button>}
           </div>
@@ -117,27 +119,27 @@ export function AutomationView({ automation, connection, busy, error, notice, on
         </section>
 
         <section className="panel automation-panel automation-rules-panel">
-          <div className="section-heading"><div><h3>Rules</h3><span className="section-subtitle">Choose what earns a notification or a draft.</span></div></div>
+          <div className="section-heading"><div><h3>Signals and draft reviews</h3><span className="section-subtitle">Choose which fixed rule matches create a local notification or saved evidence review.</span></div></div>
           <fieldset className="automation-fieldset automation-rules">
             <legend>Automation rules</legend>
-            <RuleToggle checked={draft.notifications_enabled} onChange={() => setBoolean("notifications_enabled")} label="Show local notifications" note="Keep a small inbox of actionable signals." />
+            <RuleToggle checked={draft.notifications_enabled} onChange={() => setBoolean("notifications_enabled")} label="Show local notifications" note="Keep a small inbox of selected signals to review." />
             <RuleToggle checked={draft.notify_on_crashes} onChange={() => setBoolean("notify_on_crashes")} label="High-severity symptoms" note="Crashes, hangs, resets, and similar signals." disabled={!draft.notifications_enabled} />
-            <RuleToggle checked={draft.notify_on_changes} onChange={() => setBoolean("notify_on_changes")} label="Meaningful system changes" note="High-impact changes only; routine churn stays quiet." disabled={!draft.notifications_enabled} />
+            <RuleToggle checked={draft.notify_on_changes} onChange={() => setBoolean("notify_on_changes")} label="Selected system changes" note="Fixed high-impact categories only; routine churn stays quiet." disabled={!draft.notifications_enabled} />
             <RuleToggle checked={draft.notify_on_warnings} onChange={() => setBoolean("notify_on_warnings")} label="Scan warnings" note="Provider coverage problems and partial scans." disabled={!draft.notifications_enabled} />
-            <RuleToggle checked={draft.draft_investigations} onChange={() => setBoolean("draft_investigations")} label="Draft investigations" note="Prepare a reviewable incident for high-severity symptoms." />
+            <RuleToggle checked={draft.draft_investigations} onChange={() => setBoolean("draft_investigations")} label="Draft evidence reviews" note="Save a problem window around a high-severity symptom. Drafts are not diagnoses." />
           </fieldset>
           <div className="automation-actions"><button type="button" className="button button-primary" onClick={() => void onConfigSave({ ...draft, interval_seconds: automation.config.interval_seconds })} disabled={!canControl || !rulesDirty || intervalChanged || busy !== null} aria-busy={busy === "config"}>{busy === "config" ? "Saving..." : "Save rules"}</button><span className="muted-count">{intervalChanged ? "Apply interval first" : rulesDirty ? "Unsaved changes" : "Saved"}</span></div>
         </section>
 
         <section className="panel automation-panel automation-inbox-panel">
           <div className="section-heading">
-            <div><h3>Automation inbox</h3><span className="section-subtitle">{automation.notifications.unread ? `${automation.notifications.unread} unread notification${automation.notifications.unread === 1 ? "" : "s"}.` : "No unread notifications."} Showing the latest {automation.notifications.recent.length}.</span></div>
-            <div className="automation-inbox-actions"><span className="muted-count">{automation.drafts} draft{automation.drafts === 1 ? "" : "s"}</span>{automation.notifications.unread > 0 && <button type="button" className="quiet-link" onClick={() => void onMarkRead()} disabled={busy !== null}>{busy === "read" ? "Marking read..." : "Mark all read"}</button>}</div>
+            <div><h3>Signals inbox</h3><span className="section-subtitle">{automation.notifications.unread ? `${automation.notifications.unread} unread signal${automation.notifications.unread === 1 ? "" : "s"}.` : "No unread signals."} A signal invites evidence review; it does not identify a cause.</span></div>
+            <div className="automation-inbox-actions"><span className="muted-count">{automation.drafts} draft review{automation.drafts === 1 ? "" : "s"}</span>{automation.notifications.unread > 0 && <button type="button" className="quiet-link" onClick={() => void onMarkRead()} disabled={busy !== null}>{busy === "read" ? "Marking read..." : "Mark all read"}</button>}</div>
           </div>
-          {automation.notifications.recent.length ? <div className="automation-notification-list">{automation.notifications.recent.map((notification) => <NotificationRow key={notification.id} notification={notification} onNavigate={onNavigate} />)}</div> : <div className="inline-empty"><Icon name="check" size={18} /><p>The inbox is clear. New high-value signals will appear here after a scan.</p></div>}
+          {automation.notifications.recent.length ? <div className="automation-notification-list">{automation.notifications.recent.map((notification) => <NotificationRow key={notification.id} notification={notification} onOpenReview={onOpenReview} />)}</div> : <div className="inline-empty"><Icon name="check" size={18} /><p>No rule-matched signals yet. Scheduled scans continue to record evidence even when this inbox stays quiet.</p></div>}
         </section>
       </div>
-      <p className="panel-footnote automation-boundary">Automation observes, records, and drafts. It does not change Windows settings or apply remediation without your action.</p>
+      <p className="panel-footnote automation-boundary">Collection only observes Windows state. These controls manage Difftrail&apos;s own scheduled task and local notifications; they do not repair, roll back, or change the observed system.</p>
     </div>
   );
 }
@@ -150,9 +152,9 @@ function RuleToggle({ checked, onChange, label, note, disabled = false }: { chec
   return <label className={`automation-rule ${disabled ? "is-disabled" : ""}`}><input type="checkbox" checked={checked} onChange={onChange} disabled={disabled} /><span className="automation-rule-copy"><strong>{label}</strong><small>{note}</small></span></label>;
 }
 
-function NotificationRow({ notification, onNavigate }: { notification: AutomationNotification; onNavigate: (view: View) => void }) {
+function NotificationRow({ notification, onOpenReview }: { notification: AutomationNotification; onOpenReview: (incidentId: string) => void }) {
   const icon = notification.kind === "warning" ? "alert" : notification.kind === "change" ? "change" : "symptom";
-  return <article className={`automation-notification ${notification.read_at ? "" : "is-unread"}`}><span className="automation-notification-icon"><Icon name={icon} size={16} /></span><div className="automation-notification-copy"><div><strong>{notification.title}</strong>{!notification.read_at && <span className="automation-unread">New</span>}</div><p>{notification.body}</p><small>{relativeTime(notification.created_at)} · {formatDateTime(notification.created_at)}</small></div>{notification.incident_id && <button type="button" className="quiet-link" onClick={() => onNavigate("incidents")}>Review draft <Icon name="arrow" size={13} /></button>}</article>;
+  return <article className={`automation-notification ${notification.read_at ? "" : "is-unread"}`}><span className="automation-notification-icon"><Icon name={icon} size={16} /></span><div className="automation-notification-copy"><div><strong>{notification.title}</strong>{!notification.read_at && <span className="automation-unread">New</span>}</div><p>{notification.body}</p><small>{relativeTime(notification.created_at)} · {formatDateTime(notification.created_at)}</small></div>{notification.incident_id && <button type="button" className="quiet-link" onClick={() => onOpenReview(notification.incident_id!)}>Open draft review <Icon name="arrow" size={13} /></button>}</article>;
 }
 
 function formatInterval(seconds: number): string {

@@ -8,6 +8,7 @@ from .assessment import NEUTRAL_ASSESSMENT
 from .db import Database
 from .models import ensure_utc, iso_datetime, utc_now
 from .privacy import error_bucket, redact_public_text
+from .public_data import public_feedback_outcome
 
 
 MAX_VALIDATION_DAYS = 3650
@@ -74,16 +75,16 @@ def _investigation_metrics(incidents: list[dict[str, Any]]) -> dict[str, Any]:
         str(incident.get("assessment", NEUTRAL_ASSESSMENT)) for incident in incidents
     )
     outcomes = Counter(
-        incident["feedback"]["outcome"]
+        public_feedback_outcome(incident["feedback"]["outcome"])
         for incident in incidents
-        if incident["feedback"]["outcome"] in {"correct", "incorrect", "unknown"}
+        if public_feedback_outcome(incident["feedback"]["outcome"]) is not None
     )
-    correct_total = outcomes["correct"]
+    helpful_total = outcomes["helpful"]
     top3_hits = 0
     rank_counts: Counter[str] = Counter()
     for incident in incidents:
         feedback = incident["feedback"]
-        if feedback["outcome"] != "correct":
+        if public_feedback_outcome(feedback["outcome"]) != "helpful":
             continue
         selected_event_id = feedback["event_id"]
         rank: int | None = None
@@ -102,13 +103,13 @@ def _investigation_metrics(incidents: list[dict[str, Any]]) -> dict[str, Any]:
         "total": len(incidents),
         "with_feedback": sum(outcomes.values()),
         "outcomes": {
-            "correct": outcomes["correct"],
-            "incorrect": outcomes["incorrect"],
-            "unknown": outcomes["unknown"],
+            "helpful": outcomes["helpful"],
+            "not_helpful": outcomes["not_helpful"],
+            "unsure": outcomes["unsure"],
         },
-        "correct_cause_top3_hits": top3_hits,
-        "correct_cause_top3_rate": _rate(top3_hits, correct_total),
-        "correct_cause_rank_distribution": {
+        "helpful_lead_top3_hits": top3_hits,
+        "helpful_lead_top3_rate": _rate(top3_hits, helpful_total),
+        "helpful_lead_rank_distribution": {
             "rank_1": rank_counts["rank_1"],
             "rank_2": rank_counts["rank_2"],
             "rank_3": rank_counts["rank_3"],
@@ -196,7 +197,7 @@ def build_host_validation_report(
         "investigations": _investigation_metrics(incidents),
         "limits": [
             "This report measures collection behavior and user-labeled outcomes; it does not establish causality by itself.",
-            "Top-three accuracy is calculated only for investigations explicitly labeled correct with an event ID.",
+            "The top-three helpful-lead rate includes only reviews explicitly labeled helpful with an event ID; it is not a causal-accuracy measurement.",
             "A longer window and multiple hosts are needed before treating overhead or ranking results as general guarantees.",
         ],
     }

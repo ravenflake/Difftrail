@@ -665,6 +665,162 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(coverage["scan_count"], 2)
             self.assertEqual(coverage["provider_warning_count"], 1)
             self.assertEqual(coverage["scan_status_counts"], {"ok": 1, "partial": 1})
+            self.assertIn("eventlog", coverage["sources"])
+            self.assertIn("eventlog", coverage["uninitialized_sources"])
+
+    def test_running_scan_does_not_establish_investigation_coverage(self) -> None:
+        with Database(":memory:") as database:
+            now = utc_now()
+            database.start_scan(now - timedelta(minutes=1))
+
+            coverage = database.investigation_coverage(
+                "graphics",
+                since=now - timedelta(days=1),
+                until=now,
+            )
+
+        self.assertFalse(coverage["known"])
+        self.assertEqual(coverage["scan_count"], 0)
+
+    def test_scan_finishing_after_onset_does_not_establish_prior_coverage(self) -> None:
+        with Database(":memory:") as database:
+            onset = utc_now()
+            scan_id = database.start_scan(onset - timedelta(minutes=1))
+            database.finish_scan(
+                scan_id,
+                onset + timedelta(minutes=1),
+                "ok",
+                {
+                    "collected_sources": ["drivers", "devices", "updates", "eventlog"],
+                    "errors": [],
+                },
+            )
+
+            coverage = database.investigation_coverage(
+                "graphics",
+                since=onset - timedelta(days=1),
+                until=onset,
+            )
+
+        self.assertFalse(coverage["known"])
+        self.assertEqual(coverage["scan_count"], 0)
+
+    def test_unrelated_provider_warning_does_not_limit_specific_coverage(self) -> None:
+        with Database(":memory:") as database:
+            now = utc_now()
+            scan_id = database.start_scan(now - timedelta(minutes=2))
+            database.finish_scan(
+                scan_id,
+                now - timedelta(minutes=1),
+                "partial",
+                {
+                    "collected_sources": ["drivers", "devices", "updates", "eventlog"],
+                    "failed_sources": ["services"],
+                    "errors": ["services: provider unavailable"],
+                },
+            )
+
+            coverage = database.investigation_coverage(
+                "graphics",
+                since=now - timedelta(days=1),
+                until=now,
+            )
+
+        self.assertFalse(coverage["limited"])
+        self.assertEqual(coverage["provider_warning_count"], 0)
+        self.assertEqual(coverage["warning_sources"], [])
+
+    def test_relevant_provider_warning_names_the_incomplete_source(self) -> None:
+        with Database(":memory:") as database:
+            now = utc_now()
+            scan_id = database.start_scan(now - timedelta(minutes=2))
+            database.finish_scan(
+                scan_id,
+                now - timedelta(minutes=1),
+                "partial",
+                {
+                    "collected_sources": ["devices", "updates", "eventlog"],
+                    "failed_sources": ["drivers"],
+                    "errors": ["drivers: provider unavailable"],
+                },
+            )
+
+            coverage = database.investigation_coverage(
+                "graphics",
+                since=now - timedelta(days=1),
+                until=now,
+            )
+
+        self.assertTrue(coverage["limited"])
+        self.assertEqual(coverage["provider_warning_count"], 1)
+        self.assertEqual(coverage["warning_sources"], ["drivers"])
+        self.assertEqual(coverage["uninitialized_sources"], ["drivers"])
+
+    def test_scan_far_before_onset_reports_a_recency_gap(self) -> None:
+        with Database(":memory:") as database:
+            onset = utc_now()
+            finished = onset - timedelta(days=2)
+            scan_id = database.start_scan(finished - timedelta(minutes=1))
+            database.finish_scan(
+                scan_id,
+                finished,
+                "ok",
+                {
+                    "collected_sources": ["drivers", "devices", "updates", "eventlog"],
+                    "failed_sources": [],
+                    "errors": [],
+                },
+            )
+
+            coverage = database.investigation_coverage(
+                "graphics",
+                since=onset - timedelta(days=7),
+                until=onset,
+            )
+
+        self.assertTrue(coverage["limited"])
+        self.assertEqual(coverage["gap_to_onset_seconds"], 2 * 24 * 60 * 60)
+        self.assertEqual(coverage["latest_scan_at"], finished.isoformat(timespec="seconds").replace("+00:00", "Z"))
+        self.assertTrue(any("later changes may be missing" in reason for reason in coverage["reasons"]))
+
+    def test_investigation_coverage_uses_sources_read_by_onset_not_current_status(self) -> None:
+        with Database(":memory:") as database:
+            now = utc_now()
+            before_onset = database.start_scan(now - timedelta(hours=3))
+            database.finish_scan(
+                before_onset,
+                now - timedelta(hours=2, minutes=59),
+                "ok",
+                {"collected_sources": ["drivers"], "errors": []},
+            )
+            database.apply_snapshot("devices", [], occurred_at=now)
+            database.apply_snapshot("updates", [], occurred_at=now)
+            database.set_meta("symptoms:cursor", now.isoformat())
+
+            coverage = database.investigation_coverage(
+                "graphics",
+                since=now - timedelta(days=1),
+                until=now - timedelta(hours=1),
+            )
+
+        self.assertTrue(coverage["known"])
+        self.assertTrue(coverage["limited"])
+        self.assertNotIn("drivers", coverage["uninitialized_sources"])
+        self.assertEqual(
+            coverage["uninitialized_sources"],
+            ["devices", "eventlog", "updates"],
+        )
+
+    def test_empty_successful_source_snapshot_records_collection_freshness(self) -> None:
+        with Database(":memory:") as database:
+            now = utc_now()
+            database.apply_snapshot("apps", [], occurred_at=now)
+            source = next(item for item in database.source_status() if item["source"] == "apps")
+
+        self.assertTrue(source["initialized"])
+        self.assertEqual(source["item_count"], 0)
+        self.assertIsNone(source["last_seen_at"])
+        self.assertEqual(source["last_successful_at"], now.isoformat(timespec="seconds").replace("+00:00", "Z"))
 
     def test_first_snapshot_is_quiet_and_second_snapshot_emits_transition(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

@@ -22,7 +22,7 @@ class SimulationTests(unittest.TestCase):
         self.assertEqual(report["checks"], {
             "capture": True,
             "ranking": True,
-            "no_false_high": True,
+            "no_false_strong_support": True,
             "evidence": True,
         })
         for scenario in report["scenarios"]:
@@ -41,7 +41,7 @@ class SimulationTests(unittest.TestCase):
             ["apps", "drivers", "services", "startup", "tasks"],
         )
         self.assertEqual(scenario["top"]["event"]["source"], "drivers")
-        self.assertEqual(scenario["checks"]["no_false_high"], True)
+        self.assertEqual(scenario["checks"]["no_false_strong_support"], True)
 
     def test_nvidia_driver_switch_replay_uses_snapshot_diff_and_ranks_driver(self) -> None:
         with Database(":memory:") as database:

@@ -118,13 +118,15 @@ class HostValidationTests(unittest.TestCase):
         self.assertEqual(report["journal"]["changes"], 2)
         self.assertEqual(report["journal"]["changes_by_source"], {"apps": 1, "drivers": 1})
         self.assertEqual(report["overhead"]["measurements"], 1)
-        self.assertEqual(report["investigations"]["correct_cause_top3_hits"], 1)
-        self.assertEqual(report["investigations"]["correct_cause_top3_rate"], 1.0)
+        self.assertEqual(report["investigations"]["helpful_lead_top3_hits"], 1)
+        self.assertEqual(report["investigations"]["helpful_lead_top3_rate"], 1.0)
+        self.assertEqual(report["investigations"]["outcomes"]["helpful"], 1)
+        self.assertNotIn("correct_cause", json.dumps(report))
         self.assertEqual(report["investigations"]["assessment_distribution"], {"candidate_found": 1})
         self.assertNotIn("Display driver updated", json.dumps(report))
         self.assertNotIn("provider unavailable", json.dumps(report))
 
-    def test_feedback_requires_a_real_event_for_correct_outcome(self) -> None:
+    def test_helpful_feedback_requires_a_ranked_lead(self) -> None:
         with Database(":memory:") as database:
             now = utc_now()
             incident = database.create_incident(IncidentRequest("a problem", now, now, "general", 7))
@@ -132,3 +134,31 @@ class HostValidationTests(unittest.TestCase):
                 database.record_incident_feedback(incident.id, "correct")
             with self.assertRaises(ValueError):
                 database.record_incident_feedback(incident.id, "correct", event_id="missing")
+
+    def test_ranked_lead_feedback_survives_event_retention(self) -> None:
+        with Database(":memory:") as database:
+            now = utc_now()
+            event = Event(
+                now,
+                "change",
+                "application",
+                "updated",
+                "Application updated",
+                source="apps",
+                event_id="retained-lead",
+            )
+            database.save_events([event])
+            incident = database.create_incident(
+                IncidentRequest("the app stopped working", now, now, "application", 7)
+            )
+            database.update_incident_results(incident.id, [{"event": event.as_dict()}])
+            database.connection.execute("DELETE FROM events WHERE id = ?", (event.event_id,))
+            database.connection.commit()
+
+            saved = database.record_incident_feedback(
+                incident.id,
+                "correct",
+                event_id=event.event_id,
+            )
+
+        self.assertEqual(saved["feedback"]["event_id"], "retained-lead")

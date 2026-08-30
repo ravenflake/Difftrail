@@ -479,12 +479,16 @@ def _expectation_report(
         if expectation.matches(hypothesis.event)
     ]
     if not matches:
-        return {**expectation.as_dict(), "rank": None, "confidence": None, "passed": False}
+        return {**expectation.as_dict(), "rank": None, "support_level": None, "passed": False}
     rank, hypothesis = matches[0]
     return {
         **expectation.as_dict(),
         "rank": rank,
-        "confidence": hypothesis.confidence,
+        "support_level": {
+            "High": "strong",
+            "Medium": "moderate",
+            "Low": "weak",
+        }.get(hypothesis.confidence, "weak"),
         "event_id": hypothesis.event.event_id,
         "passed": rank <= expectation.max_rank,
     }
@@ -507,16 +511,16 @@ def _run_controlled_scenario(scenario: ControlledScenario) -> dict[str, Any]:
         summary = run.summary
 
         expected = [_expectation_report(item, hypotheses) for item in scenario.expectations]
-        high_hypotheses = [item for item in hypotheses if item.confidence == "High"]
-        no_false_high = all(
+        strong_hypotheses = [item for item in hypotheses if item.confidence == "High"]
+        no_false_strong_support = all(
             any(expectation.matches(item.event) for expectation in scenario.expectations)
-            for item in high_hypotheses
+            for item in strong_hypotheses
         )
         evidence_passed = all(
             any(
                 expectation.matches(hypothesis.event)
                 and {evidence.signal for evidence in hypothesis.evidence}
-                >= {"temporal proximity", "subsystem relevance", "baseline break"}
+                >= {"temporal proximity", "subsystem relevance", "symptom timing"}
                 and all(evidence.explanation.strip() for evidence in hypothesis.evidence)
                 and "before" in hypothesis.event.details
                 and "after" in hypothesis.event.details
@@ -535,7 +539,7 @@ def _run_controlled_scenario(scenario: ControlledScenario) -> dict[str, Any]:
             and replay.symptom_events == 1
         )
         ranking_passed = all(item["passed"] for item in expected)
-        passed = capture_passed and ranking_passed and no_false_high and evidence_passed
+        passed = capture_passed and ranking_passed and no_false_strong_support and evidence_passed
         return {
             "name": scenario.name,
             "description": scenario.description,
@@ -545,15 +549,15 @@ def _run_controlled_scenario(scenario: ControlledScenario) -> dict[str, Any]:
             "replay": replay.as_dict(),
             "incident_id": incident.id,
             "candidate_count": len(hypotheses),
-            "top": hypotheses[0].as_dict() if hypotheses else None,
+            "top": hypotheses[0].public_dict() if hypotheses else None,
             "expectations": expected,
             "checks": {
                 "capture": capture_passed,
                 "ranking": ranking_passed,
-                "no_false_high": no_false_high,
+                "no_false_strong_support": no_false_strong_support,
                 "evidence": evidence_passed,
             },
-            "high_confidence_events": [item.event.title for item in high_hypotheses],
+            "strong_support_events": [item.event.title for item in strong_hypotheses],
             "captured_change_sources": sorted({event.source for event in events if event.kind == "change"}),
             "passed": passed,
         }
@@ -563,7 +567,7 @@ def run_controlled_fixture_suite() -> dict[str, Any]:
     """Run scanner-backed fixture scenarios in disposable in-memory journals."""
 
     scenarios = [_run_controlled_scenario(scenario) for scenario in build_controlled_scenarios()]
-    check_names = ("capture", "ranking", "no_false_high", "evidence")
+    check_names = ("capture", "ranking", "no_false_strong_support", "evidence")
     return {
         "suite": "controlled-fixture-replay",
         "description": "Safe scanner-to-investigation validation using Windows-shaped fixture snapshots.",

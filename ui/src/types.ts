@@ -1,7 +1,7 @@
 export type View = "home" | "timeline" | "investigate" | "incidents" | "health" | "automation";
 
 export type EventKind = "change" | "symptom";
-export type Confidence = "High" | "Medium" | "Low";
+export type SupportLevel = "strong" | "moderate" | "weak";
 export type AssessmentState = "candidate_found" | "insufficient_evidence" | "no_recent_changes" | "limited_coverage";
 
 export interface EventDetailSummary {
@@ -20,6 +20,7 @@ export interface EventRecord {
   id: string | null;
   occurred_at: string;
   kind: EventKind;
+  time_basis: "scan_observation" | "source_timestamp";
   subsystem: string;
   action: string;
   title: string;
@@ -39,9 +40,8 @@ export interface Evidence {
 
 export interface Hypothesis {
   event: EventRecord;
-  score: number;
   tie_count: number;
-  confidence: Confidence;
+  support_level: SupportLevel;
   evidence: Evidence[];
   counter_evidence: Evidence[];
   next_action: string;
@@ -53,7 +53,7 @@ export interface Hypothesis {
 }
 
 export interface Feedback {
-  outcome: "correct" | "incorrect" | "unknown" | null;
+  outcome: "helpful" | "not_helpful" | "unsure" | null;
   event_id: string | null;
   recorded_at: string | null;
 }
@@ -76,6 +76,9 @@ export interface Incident {
     limited?: boolean;
     reasons?: string[];
     uninitialized_sources?: string[];
+    warning_sources?: string[];
+    latest_scan_at?: string | null;
+    gap_to_onset_seconds?: number | null;
   };
   results: Hypothesis[];
   feedback: Feedback;
@@ -87,6 +90,8 @@ export interface ScanSummary {
   sources: number;
   state_events: number;
   symptom_events: number;
+  collected_sources: string[];
+  failed_sources: string[];
   errors: string[];
   error_count?: number;
   error_buckets?: string[];
@@ -125,6 +130,7 @@ export interface SourceStatus {
   initialized: boolean;
   item_count: number;
   last_seen_at: string | null;
+  last_successful_at: string | null;
   status: string;
 }
 
@@ -204,10 +210,10 @@ export interface ValidationReport {
   investigations: {
     total: number;
     with_feedback: number;
-    outcomes: { correct: number; incorrect: number; unknown: number };
-    correct_cause_top3_hits: number;
-    correct_cause_top3_rate: number | null;
-    correct_cause_rank_distribution: Record<string, number>;
+    outcomes: { helpful: number; not_helpful: number; unsure: number };
+    helpful_lead_top3_hits: number;
+    helpful_lead_top3_rate: number | null;
+    helpful_lead_rank_distribution: Record<string, number>;
     assessment_distribution: Record<string, number>;
   };
   privacy: string;

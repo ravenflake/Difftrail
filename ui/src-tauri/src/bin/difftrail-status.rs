@@ -341,7 +341,7 @@ mod windows_app {
         let initial_status = collection_status(&root);
         let status_item = MenuItem::with_id(STATUS_ID, initial_status.menu_text(), true, None);
         let open_item = MenuItem::with_id(OPEN_ID, "Open Difftrail", true, None);
-        let exit_item = MenuItem::with_id(EXIT_ID, "Exit Difftrail", true, None);
+        let exit_item = MenuItem::with_id(EXIT_ID, "Exit status icon", true, None);
         let separator = PredefinedMenuItem::separator();
         let menu = Menu::with_items(&[&status_item, &separator, &open_item, &exit_item])?;
         let tray = TrayIconBuilder::new()

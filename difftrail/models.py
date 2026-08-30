@@ -111,6 +111,8 @@ class IncidentRequest:
     def __post_init__(self) -> None:
         if not self.description.strip():
             raise ValueError("Incident description must not be empty")
+        if len(self.description.strip()) > 1_000:
+            raise ValueError("Incident description must be 1000 characters or fewer")
         if self.onset_end < self.onset_start:
             raise ValueError("Incident end must be after incident start")
         if self.lookback_days < 1 or self.lookback_days > 365:

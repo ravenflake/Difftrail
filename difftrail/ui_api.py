@@ -10,7 +10,6 @@ binds to loopback by default; it is not an internet-facing web service.
 
 import hmac
 import json
-import math
 import os
 import socket
 import sys
@@ -39,7 +38,13 @@ from .overhead import measure_watcher_overhead
 from .system_health import system_health_snapshot
 from .assessment import NEUTRAL_ASSESSMENT
 from .privacy import error_bucket, redact_public_text, redact_text
-from .public_data import public_detail_summary
+from .public_data import (
+    public_detail_summary,
+    public_feedback_outcome,
+    public_next_action,
+    public_review_text,
+    stored_feedback_outcome,
+)
 
 
 SOURCE_LABELS = {
@@ -66,8 +71,16 @@ MAX_BUNDLE_REQUEST_BODY_BYTES = 32 * 1024 * 1024
 MAX_REQUEST_JSON_NESTING = 128
 VALID_EVENT_KINDS = frozenset({"all", "change", "symptom"})
 API_TOKEN_ENV = "DIFFTRAIL_API_TOKEN"
-VALID_CONFIDENCES = frozenset({"High", "Medium", "Low"})
-VALID_FEEDBACK_OUTCOMES = frozenset({"correct", "incorrect", "unknown"})
+SUPPORT_LEVEL_BY_CONFIDENCE = {
+    "High": "strong",
+    "Medium": "moderate",
+    "Low": "weak",
+}
+COLLECTION_SOURCE_NAMES = frozenset(
+    {"updates", "apps", "drivers", "services", "tasks", "startup", "devices", "eventlog"}
+)
+MAX_INCIDENT_DESCRIPTION_CHARS = 1_000
+MAX_TIMELINE_SEARCH_CHARS = 200
 
 
 def _json_nesting_exceeds(payload: bytes, *, maximum: int = MAX_REQUEST_JSON_NESTING) -> bool:
@@ -96,16 +109,20 @@ def _json_nesting_exceeds(payload: bytes, *, maximum: int = MAX_REQUEST_JSON_NES
     return False
 
 
-def _public_event(event: dict[str, Any]) -> dict[str, Any]:
+def public_event(event: dict[str, Any]) -> dict[str, Any]:
     """Return UI-safe event metadata without raw detail payloads."""
 
-    result = dict(event)
-    if result.get("id") is not None:
-        result["id"] = redact_public_text(str(result["id"]))
+    raw = event if isinstance(event, dict) else {}
+    kind = "symptom" if raw.get("kind") == "symptom" else "change"
+    result: dict[str, Any] = {
+        "id": redact_public_text(str(raw["id"])) if raw.get("id") is not None else None,
+        "occurred_at": redact_public_text(str(raw.get("occurred_at", ""))),
+        "kind": kind,
+        "time_basis": "source_timestamp" if kind == "symptom" else "scan_observation",
+    }
     for key in ("subsystem", "action", "title", "entity", "severity", "source"):
-        result[key] = redact_public_text(str(result.get(key, "")))
-    detail_summary = public_detail_summary(result)
-    result.pop("details", None)
+        result[key] = redact_public_text(str(raw.get(key, "")))
+    detail_summary = public_detail_summary(raw)
     if detail_summary:
         result["detail_summary"] = detail_summary
     result["source_label"] = SOURCE_LABELS.get(result.get("source", ""), result.get("source", "Unknown").replace("-", " "))
@@ -119,21 +136,17 @@ def _public_evidence(item: Any) -> dict[str, Any]:
     return {
         "signal": redact_public_text(str(item.get("signal", ""))),
         "strength": redact_public_text(str(item.get("strength", ""))),
-        "explanation": redact_public_text(str(item.get("explanation", ""))),
+        "explanation": public_review_text(item.get("explanation", "")),
         "event_id": redact_public_text(str(event_id)) if event_id is not None else None,
     }
 
 
 def _public_hypothesis(hypothesis: dict[str, Any]) -> dict[str, Any]:
     raw = hypothesis if isinstance(hypothesis, dict) else {}
-    score = raw.get("score")
-    if (
-        isinstance(score, bool)
-        or not isinstance(score, (int, float))
-        or (isinstance(score, float) and not math.isfinite(score))
-    ):
-        score = 0
     confidence = str(raw.get("confidence", "Low"))
+    support_level = raw.get("support_level")
+    if support_level not in {"strong", "moderate", "weak"}:
+        support_level = SUPPORT_LEVEL_BY_CONFIDENCE.get(confidence, "weak")
     diagnostic = raw.get("safe_diagnostic") if isinstance(raw.get("safe_diagnostic"), dict) else {}
     evidence = raw.get("evidence") if isinstance(raw.get("evidence"), list) else []
     counter_evidence = raw.get("counter_evidence") if isinstance(raw.get("counter_evidence"), list) else []
@@ -145,10 +158,9 @@ def _public_hypothesis(hypothesis: dict[str, Any]) -> dict[str, Any]:
     except (TypeError, ValueError, OverflowError):
         tie_count = 1
     result: dict[str, Any] = {
-        "score": score,
-        "confidence": confidence if confidence in VALID_CONFIDENCES else "Low",
+        "support_level": support_level,
         "tie_count": tie_count,
-        "next_action": redact_public_text(str(raw.get("next_action", ""))),
+        "next_action": public_next_action(raw.get("event")),
         "safe_diagnostic": {
             key: redact_public_text(str(diagnostic.get(key, "")))
             for key in ("label", "target", "note")
@@ -159,7 +171,7 @@ def _public_hypothesis(hypothesis: dict[str, Any]) -> dict[str, Any]:
         ],
     }
     if isinstance(raw.get("event"), dict):
-        result["event"] = _public_event(raw["event"])
+        result["event"] = public_event(raw["event"])
     return result
 
 
@@ -170,6 +182,18 @@ def _safe_count(value: Any) -> int:
         return max(0, int(value))
     except (TypeError, ValueError, OverflowError):
         return 0
+
+
+def _public_collection_sources(value: Any) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    return sorted(
+        {
+            str(source)
+            for source in value
+            if isinstance(source, str) and source in COLLECTION_SOURCE_NAMES
+        }
+    )
 
 
 def _public_coverage(coverage: Any) -> dict[str, Any]:
@@ -189,8 +213,19 @@ def _public_coverage(coverage: Any) -> dict[str, Any]:
         "known": bool(raw.get("known", False)),
         "limited": bool(raw.get("limited", False)),
         "reasons": safe_strings("reasons"),
-        "sources": safe_strings("sources"),
-        "uninitialized_sources": safe_strings("uninitialized_sources"),
+        "sources": _public_collection_sources(raw.get("sources")),
+        "uninitialized_sources": _public_collection_sources(raw.get("uninitialized_sources")),
+        "warning_sources": _public_collection_sources(raw.get("warning_sources")),
+        "latest_scan_at": (
+            redact_public_text(str(raw["latest_scan_at"]))
+            if raw.get("latest_scan_at") is not None
+            else None
+        ),
+        "gap_to_onset_seconds": (
+            _safe_count(raw.get("gap_to_onset_seconds"))
+            if raw.get("gap_to_onset_seconds") is not None
+            else None
+        ),
         "provider_warning_count": _safe_count(raw.get("provider_warning_count")),
         "scan_count": _safe_count(raw.get("scan_count")),
         "scan_status_counts": dict(sorted(status_counts.items())),
@@ -207,7 +242,7 @@ def public_incident(incident: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(raw_reasons, list):
         raw_reasons = []
     feedback = raw.get("feedback") if isinstance(raw.get("feedback"), dict) else {}
-    outcome = feedback.get("outcome")
+    outcome = public_feedback_outcome(feedback.get("outcome"))
     return {
         "id": redact_public_text(str(raw.get("id", ""))),
         "created_at": redact_public_text(str(raw.get("created_at", ""))),
@@ -220,11 +255,11 @@ def public_incident(incident: dict[str, Any]) -> dict[str, Any]:
         "suspected_change": redact_public_text(str(raw["suspected_change"])) if raw.get("suspected_change") is not None else None,
         "status": redact_public_text(str(raw.get("status", ""))),
         "assessment": assessment if assessment in {NEUTRAL_ASSESSMENT, "candidate_found", "no_recent_changes", "limited_coverage"} else NEUTRAL_ASSESSMENT,
-        "assessment_reasons": [redact_public_text(str(reason)) for reason in raw_reasons],
+        "assessment_reasons": [public_review_text(reason) for reason in raw_reasons],
         "coverage": _public_coverage(raw.get("coverage")),
         "results": [_public_hypothesis(item) for item in raw_results if isinstance(item, dict)],
         "feedback": {
-            "outcome": outcome if outcome in VALID_FEEDBACK_OUTCOMES else None,
+            "outcome": outcome,
             "event_id": redact_public_text(str(feedback["event_id"])) if feedback.get("event_id") is not None else None,
             "recorded_at": redact_public_text(str(feedback["recorded_at"])) if feedback.get("recorded_at") is not None else None,
         },
@@ -248,7 +283,7 @@ def public_investigation_summary(summary: Any) -> dict[str, Any]:
         "method": redact_public_text(str(raw.get("method", ""))),
         "assessment": {
             "state": state if state in {NEUTRAL_ASSESSMENT, "candidate_found", "no_recent_changes", "limited_coverage"} else NEUTRAL_ASSESSMENT,
-            "reasons": [redact_public_text(str(reason)) for reason in reasons],
+            "reasons": [public_review_text(reason) for reason in reasons],
             "coverage": _public_coverage(assessment.get("coverage")),
         },
         "hypotheses": [_public_hypothesis(item) for item in hypotheses if isinstance(item, dict)],
@@ -272,6 +307,12 @@ def public_status(status: dict[str, Any]) -> dict[str, Any]:
             for key in ("scan_id", "status", "sources", "state_events", "symptom_events")
             if key in summary
         }
+        safe_last_scan["summary"]["collected_sources"] = _public_collection_sources(
+            summary.get("collected_sources")
+        )
+        safe_last_scan["summary"]["failed_sources"] = _public_collection_sources(
+            summary.get("failed_sources")
+        )
         safe_last_scan["summary"]["errors"] = []
         safe_last_scan["summary"]["error_count"] = len(errors)
         safe_last_scan["summary"]["error_buckets"] = sorted({error_bucket(error) for error in errors})
@@ -297,6 +338,8 @@ def public_scan_result(result: Any) -> dict[str, Any]:
         for key in ("scan_id", "status", "sources", "state_events", "symptom_events")
         if key in raw
     }
+    safe["collected_sources"] = _public_collection_sources(raw.get("collected_sources"))
+    safe["failed_sources"] = _public_collection_sources(raw.get("failed_sources"))
     safe["errors"] = []
     safe["error_count"] = len(errors)
     safe["error_buckets"] = sorted({error_bucket(error) for error in errors})
@@ -313,7 +356,7 @@ def build_bootstrap(database: Database, *, days: int = 7) -> dict[str, Any]:
     return {
         "version": __version__,
         "status": public_status(status),
-        "events": [_public_event(event.as_dict()) for event in database.list_events(limit=120)],
+        "events": [public_event(event.as_dict()) for event in database.list_events(limit=120)],
         "incidents": [public_incident(item) for item in database.recent_incidents(limit=20)],
         "validation": build_host_validation_report(database, days=days),
         "automation": automation_snapshot(database),
@@ -321,14 +364,23 @@ def build_bootstrap(database: Database, *, days: int = 7) -> dict[str, Any]:
 
 
 def create_investigation(database: Database, body: dict[str, Any]) -> dict[str, Any]:
-    description = str(body.get("description", "")).strip()
+    raw_description = body.get("description", "")
+    if not isinstance(raw_description, str):
+        raise ValueError("description must be a string")
+    description = raw_description.strip()
     if not description:
-        raise ValueError("Describe what went wrong before investigating")
+        raise ValueError("Describe what went wrong before reviewing related changes")
+    if len(description) > MAX_INCIDENT_DESCRIPTION_CHARS:
+        raise ValueError(
+            f"description must be {MAX_INCIDENT_DESCRIPTION_CHARS} characters or fewer"
+        )
     onset_value = body.get("onset")
     if onset_value is not None and not isinstance(onset_value, str):
         raise ValueError("onset must be an ISO timestamp string")
     onset_start = _now_or_parse(onset_value)
     onset_end = utc_now()
+    if onset_start > onset_end:
+        raise ValueError("onset must not be in the future")
     raw_subsystem = body.get("subsystem")
     if raw_subsystem is not None and not isinstance(raw_subsystem, str):
         raise ValueError("subsystem must be a string")
@@ -563,15 +615,20 @@ class UiRequestHandler(BaseHTTPRequestHandler):
                 subsystem = query.get("subsystem", "all")
                 if len(subsystem) > 64:
                     raise ValueError("Query parameter subsystem is too long")
+                search = query.get("search")
+                if search is not None and len(search) > MAX_TIMELINE_SEARCH_CHARS:
+                    raise ValueError(
+                        f"Query parameter search must be {MAX_TIMELINE_SEARCH_CHARS} characters or fewer"
+                    )
                 events = self._with_database(
                     lambda db: db.list_events(
                         limit=limit,
                         kind=kind,
                         subsystem=subsystem,
-                        search=query.get("search"),
+                        search=search,
                     )
                 )
-                payload = [_public_event(event.as_dict()) for event in events]
+                payload = [public_event(event.as_dict()) for event in events]
             elif path == "/api/incidents":
                 incidents = self._with_database(lambda db: db.recent_incidents(limit=100))
                 payload = [public_incident(item) for item in incidents]
@@ -687,7 +744,7 @@ class UiRequestHandler(BaseHTTPRequestHandler):
                 def record(database: Database) -> dict[str, Any]:
                     return database.record_incident_feedback(
                         incident_id,
-                        str(body.get("outcome", "unknown")),
+                        stored_feedback_outcome(body.get("outcome", "unsure")),
                         event_id=event_id,
                     )
 

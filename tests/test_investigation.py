@@ -60,7 +60,39 @@ class InvestigationTests(unittest.TestCase):
         self.assertEqual(run.hypotheses[0].event.event_id, "recent-change")
         self.assertFalse(run.assessment.coverage["known"])
         self.assertEqual(run.hypotheses[0].confidence, "Low")
-        self.assertEqual(run.assessment.state, "insufficient_evidence")
+        self.assertEqual(run.assessment.state, "limited_coverage")
+        self.assertTrue(
+            any("No completed scan" in reason for reason in run.assessment.reasons)
+        )
+
+    def test_post_onset_scan_does_not_claim_historical_coverage(self) -> None:
+        now = utc_now()
+        onset = now - timedelta(days=2)
+
+        with Database(":memory:") as database:
+            scan_id = database.start_scan(now - timedelta(minutes=2))
+            database.finish_scan(
+                scan_id,
+                now - timedelta(minutes=1),
+                "ok",
+                {"collected_sources": ["drivers", "devices", "updates", "eventlog"], "errors": []},
+            )
+            request = IncidentRequest(
+                "display failed two days ago",
+                onset,
+                now,
+                "graphics",
+                7,
+            )
+
+            run = run_investigation(database, request)
+
+        self.assertFalse(run.assessment.coverage["known"])
+        self.assertEqual(run.assessment.coverage["scan_count"], 0)
+        self.assertEqual(run.assessment.state, "limited_coverage")
+        self.assertTrue(
+            any("No completed scan" in reason for reason in run.assessment.reasons)
+        )
 
 
 if __name__ == "__main__":
