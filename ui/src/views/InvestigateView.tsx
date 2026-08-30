@@ -67,6 +67,7 @@ export function InvestigateView({ busy, connected, onInvestigate }: Props) {
           <label className="field-label onset-field"><span>When did you first notice it? <em>recommended</em></span><input type="datetime-local" value={onset} max={currentLocalDateTime()} onChange={(event) => setOnset(event.target.value)} /><small>Leave blank only if it began just now. Difftrail searches changes before this time.</small></label>
           {error && <div className="form-error" role="alert"><Icon name="alert" size={15} /> {error}</div>}
           <button type="submit" className="button button-primary investigate-submit" title={connected ? undefined : "Connect the local journal to review recorded evidence"} disabled={!connected || busy || submitting}>{busy || submitting ? <><span className="button-spinner" /> Comparing recorded evidence...</> : <>Find related changes <Icon name="arrow" size={16} /></>}</button>
+          {!connected && <p className="panel-footnote investigate-connect-note"><Icon name="alert" size={13} /> The local journal is not connected. Start Difftrail&apos;s backend to compare recorded evidence; nothing you enter here is sent anywhere.</p>}
         </section>
       </form>
     </div>

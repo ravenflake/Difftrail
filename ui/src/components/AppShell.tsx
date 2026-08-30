@@ -13,6 +13,7 @@ interface AppShellProps {
   version: string;
   connection: "local" | "preview";
   scanning: boolean;
+  unreadSignals: number;
   onNavigate: (view: View) => void;
   onScan: () => void;
   children: ReactNode;
@@ -47,7 +48,7 @@ function getDesktopWindow(): DesktopWindow | null {
   }
 }
 
-export function AppShell({ view, status, version, connection, scanning, onNavigate, onScan, children }: AppShellProps) {
+export function AppShell({ view, status, version, connection, scanning, unreadSignals, onNavigate, onScan, children }: AppShellProps) {
   const scanAttention = Boolean(status.last_scan && status.last_scan.status !== "ok");
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => getStoredThemeMode());
   const [systemTheme, setSystemTheme] = useState<Theme>(() => getSystemTheme());
@@ -132,7 +133,7 @@ export function AppShell({ view, status, version, connection, scanning, onNaviga
           <div className="brand-name">Difftrail</div>
         </div>
 
-        <NavigationList view={view} onNavigate={onNavigate} />
+        <NavigationList view={view} unreadSignals={unreadSignals} onNavigate={onNavigate} />
 
         <div className="sidebar-bottom">
           <ThemeControl theme={theme} mode={themeMode} onToggle={toggleTheme} onUseSystem={useSystemTheme} />
@@ -155,7 +156,7 @@ export function AppShell({ view, status, version, connection, scanning, onNaviga
             <Icon name="close" size={19} />
           </button>
         </div>
-        <NavigationList view={view} onNavigate={navigateFromMobileNav} />
+        <NavigationList view={view} unreadSignals={unreadSignals} onNavigate={navigateFromMobileNav} />
       </div>
 
       <div ref={mainColumnRef} className="main-column" aria-hidden={mobileNavOpen ? "true" : undefined}>
@@ -217,10 +218,11 @@ export function AppShell({ view, status, version, connection, scanning, onNaviga
 
 interface NavigationListProps {
   view: View;
+  unreadSignals: number;
   onNavigate: (view: View) => void;
 }
 
-function NavigationList({ view, onNavigate }: NavigationListProps) {
+function NavigationList({ view, unreadSignals, onNavigate }: NavigationListProps) {
   return (
     <nav className="nav-list" aria-label="Workspace navigation">
       {navItems.map((item) => (
@@ -236,6 +238,9 @@ function NavigationList({ view, onNavigate }: NavigationListProps) {
           <span className="nav-copy">
             <span>{item.label}</span>
           </span>
+          {item.id === "automation" && unreadSignals > 0 && (
+            <span className="nav-badge" aria-label={`${unreadSignals} unread signal${unreadSignals === 1 ? "" : "s"}`}>{unreadSignals > 9 ? "9+" : unreadSignals}</span>
+          )}
         </button>
       ))}
     </nav>

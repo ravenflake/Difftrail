@@ -8,11 +8,13 @@ import { assessmentLabel } from "../review-language";
 interface Props {
   data: Bootstrap;
   connection: "local" | "preview";
+  scanning: boolean;
   onNavigate: (view: View) => void;
+  onScan: () => void;
   onOpenIncident: (incident: Incident) => void;
 }
 
-export function HomeView({ data, connection, onNavigate, onOpenIncident }: Props) {
+export function HomeView({ data, connection, scanning, onNavigate, onScan, onOpenIncident }: Props) {
   const { status, events, incidents } = data;
   const preview = connection === "preview";
   const hasScan = Boolean(status.last_scan?.finished_at);
@@ -29,7 +31,8 @@ export function HomeView({ data, connection, onNavigate, onOpenIncident }: Props
           <strong>{preview ? "These examples demonstrate the workflow; they are not observations from this PC." : !hasScan ? "Run the first scan to establish baselines." : attention ? "Review coverage before relying on ranked leads." : `${readySources}/${status.sources.length} source baselines set`}</strong>
           <span>{preview ? "Connect the local journal to review real evidence" : hasScan ? `Last scan ${relativeTime(status.last_scan?.finished_at)}` : "No scan recorded"}</span>
         </div>
-        {!preview && attention && <button type="button" className="button button-secondary button-small" onClick={() => onNavigate("health")}>Review collection <Icon name="arrow" size={14} /></button>}
+        {!preview && !hasScan && <button type="button" className="button button-primary button-small" onClick={onScan} disabled={scanning}><Icon name={scanning ? "refresh" : "spark"} size={14} className={scanning ? "spin" : ""} /> {scanning ? "Scanning…" : "Run first scan"}</button>}
+        {!preview && hasScan && attention && <button type="button" className="button button-secondary button-small" onClick={() => onNavigate("health")}>Review collection <Icon name="arrow" size={14} /></button>}
       </section>
 
       <section className="metric-grid" aria-label="Journal summary">
@@ -48,7 +51,7 @@ export function HomeView({ data, connection, onNavigate, onOpenIncident }: Props
           {changes.length ? (
             <div className="event-list">{changes.map((event) => <EventRow key={event.id || `${event.occurred_at}-${event.title}`} event={event} compact />)}</div>
           ) : (
-            <EmptyPanel icon="timeline" title="The journal is still quiet" body="Run a scan to establish a baseline. Later scans will show filtered state changes here." action="Review collection" onClick={() => onNavigate("health")} />
+            <EmptyPanel icon="timeline" title="The journal is still quiet" body={hasScan ? "Later scans will show filtered state changes here." : "Run a scan to establish a baseline. Later scans will show filtered state changes here."} action={hasScan ? "Review collection" : scanning ? "Scanning…" : "Run first scan"} onClick={hasScan ? () => onNavigate("health") : onScan} disabled={hasScan ? false : scanning} />
           )}
         </section>
 
@@ -69,8 +72,8 @@ export function HomeView({ data, connection, onNavigate, onOpenIncident }: Props
   );
 }
 
-function EmptyPanel({ icon, title, body, action, onClick }: { icon: "timeline" | "investigate"; title: string; body: string; action: string; onClick: () => void }) {
-  return <div className="empty-panel"><div className="empty-icon"><Icon name={icon} size={19} /></div><div><h4>{title}</h4><p>{body}</p><button type="button" className="quiet-link" onClick={onClick}>{action} <Icon name="arrow" size={14} /></button></div></div>;
+function EmptyPanel({ icon, title, body, action, onClick, disabled = false }: { icon: "timeline" | "investigate"; title: string; body: string; action: string; onClick: () => void; disabled?: boolean }) {
+  return <div className="empty-panel"><div className="empty-icon"><Icon name={icon} size={19} /></div><div><h4>{title}</h4><p>{body}</p><button type="button" className="quiet-link" onClick={onClick} disabled={disabled}>{action} <Icon name={disabled ? "refresh" : "arrow"} size={14} className={disabled ? "spin" : ""} /></button></div></div>;
 }
 
 function IncidentListItem({ incident, onClick }: { incident: Incident; onClick: () => void }) {

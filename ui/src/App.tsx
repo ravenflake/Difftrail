@@ -329,15 +329,27 @@ export default function App() {
 
   const selectedIncident = useMemo(() => data?.incidents.find((incident) => incident.id === selectedIncidentId) || null, [data, selectedIncidentId]);
 
+  useEffect(() => {
+    if (!scanNotice) return;
+    const timer = window.setTimeout(() => setScanNotice(null), 10_000);
+    return () => window.clearTimeout(timer);
+  }, [scanNotice]);
+
+  useEffect(() => {
+    if (!automationNotice) return;
+    const timer = window.setTimeout(() => setAutomationNotice(null), 10_000);
+    return () => window.clearTimeout(timer);
+  }, [automationNotice]);
+
   if (loading) return <LoadingScreen />;
   if (!data) return <UnavailableScreen message={loadError} onRetry={() => void refresh(true)} />;
 
   return (
-    <AppShell view={view} status={data.status} version={data.version} connection={connection} scanning={scanning} onNavigate={navigate} onScan={handleScan}>
+    <AppShell view={view} status={data.status} version={data.version} connection={connection} scanning={scanning} unreadSignals={data.automation.notifications.unread} onNavigate={navigate} onScan={handleScan}>
       {connection === "preview" && <div className="preview-notice" role="status"><Icon name="alert" size={15} /><span>Synthetic preview data is shown because the local journal is not connected. It is not evidence from this PC{loadError ? ` · ${loadError}` : ""}.</span><button type="button" onClick={() => void refresh(true)}>Try again</button></div>}
       {scanError && <div className="form-error global-action-feedback" role="alert"><Icon name="alert" size={14} /><span><strong>Scan did not complete.</strong> {scanError}</span></div>}
       {scanNotice && <div className="action-notice global-action-feedback" role="status"><Icon name="check" size={14} /> {scanNotice}</div>}
-      {view === "home" && <HomeView data={data} connection={connection} onNavigate={navigate} onOpenIncident={(incident) => { setSelectedIncidentId(incident.id); navigate("incidents"); }} />}
+      {view === "home" && <HomeView data={data} connection={connection} scanning={scanning} onNavigate={navigate} onScan={handleScan} onOpenIncident={(incident) => { setSelectedIncidentId(incident.id); navigate("incidents"); }} />}
       {view === "timeline" && <TimelineView events={data.events} onLoad={handleLoadTimeline} />}
       {view === "investigate" && <InvestigateView busy={false} connected={connection === "local"} onInvestigate={handleInvestigate} />}
       {view === "incidents" && <IncidentsView incidents={data.incidents} selected={selectedIncident} connected={connection === "local"} onSelect={(incident) => { setDeleteError(null); setSelectedIncidentId(incident.id); }} onNavigate={() => navigate("investigate")} onFeedback={handleFeedback} onDelete={handleDeleteInvestigation} onExport={handleExportBundle} exportBusy={exportBusy} exportError={exportError} deleteBusy={deleteBusy} deleteError={deleteError} />}
@@ -360,7 +372,7 @@ function connectionErrorMessage(reason: unknown): string {
 }
 
 function LoadingScreen() {
-  return <div className="loading-screen" role="status"><BrandMark size={52} className="loading-brand-mark" /><span>Opening the local journal…</span></div>;
+  return <div className="loading-screen" role="status"><BrandMark size={52} className="loading-brand-mark" /><span>Opening the local journal…</span><span className="loading-bar-large" aria-hidden="true" /></div>;
 }
 
 function UnavailableScreen({ message, onRetry }: { message: string | null; onRetry: () => void }) {
