@@ -1,6 +1,6 @@
 """Difftrail: a local-first Windows change journal and evidence-review tool."""
 
-__version__ = "0.1.3"
+__version__ = "0.1.4"
 
 # Development CI may add this ignored module to the build workspace. Stable
 # source and release metadata continue to use the plain version above when absent.

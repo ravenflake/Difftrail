@@ -43,7 +43,7 @@ Normalized change history is kept locally for later problem review. Raw Event Lo
 
 ### Install the current Windows release
 
-Download `Difftrail_0.1.3_x64-setup.exe` from the
+Download `Difftrail_0.1.4_x64-setup.exe` from the
 [latest GitHub release](https://github.com/ravenflake/Difftrail/releases/latest),
 install it for the current user, launch Difftrail, and run the initial scan to
 create a quiet baseline.
@@ -323,7 +323,7 @@ Release notes are tracked in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Versioning
 
-Difftrail follows [Semantic Versioning 2.0.0](https://semver.org/) for user-visible releases. The current `0.1.3` line is the trust-and-portability hardening release and remains pre-1.0 while real-world and installed-runtime validation are still open.
+Difftrail follows [Semantic Versioning 2.0.0](https://semver.org/) for user-visible releases. The current `0.1.4` line strengthens evidence review, collection visibility, and desktop reliability while remaining pre-1.0 as real-world and installed-runtime validation continue.
 
 - `MAJOR` is reserved for incompatible changes after the product reaches 1.0.
 - `MINOR` adds backward-compatible product functionality within the pre-1.0 MVP line.
