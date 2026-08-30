@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.4
+
 - Reframed problem review around ranked evidence leads instead of root-cause
   claims: support labels now describe the recorded signals, ambiguity and
   counter-evidence reduce support, and next steps stay read-only.

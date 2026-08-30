@@ -21,7 +21,7 @@ class ReleaseMetadataTests(unittest.TestCase):
             "ui/src-tauri/Cargo.lock",
         }
         self.assertEqual(set(versions), expected_sources)
-        self.assertEqual(set(versions.values()), {"0.1.3"})
+        self.assertEqual(set(versions.values()), {"0.1.4"})
 
     def test_installer_smoke_script_preserves_argument_and_exit_code_contract(self) -> None:
         from pathlib import Path

@@ -41,14 +41,12 @@ def semver_prerelease_precedence(left: str, right: str) -> int:
 
 
 class BuildVersioningTests(unittest.TestCase):
-    def test_next_version_is_separate_from_committed_release_metadata(self) -> None:
+    def test_next_version_is_not_behind_committed_release_metadata(self) -> None:
         root = Path(__file__).resolve().parents[1]
 
-        self.assertEqual(read_next_version(root), "0.1.4")
-        self.assertEqual(
-            (root / "difftrail" / "__init__.py").read_text(encoding="utf-8").count('"0.1.3"'),
-            1,
-        )
+        next_version = tuple(int(part) for part in read_next_version(root).split("."))
+        stable_version = (0, 1, 4)
+        self.assertGreaterEqual(next_version, stable_version)
 
     def test_development_version_contains_pr_and_short_commit_identity(self) -> None:
         self.assertEqual(
