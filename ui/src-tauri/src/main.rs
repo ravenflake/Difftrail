@@ -33,8 +33,9 @@ struct ApiEndpoint {
 
 fn generate_api_token() -> Result<String, Box<dyn Error>> {
     let mut bytes = [0_u8; 32];
-    getrandom::fill(&mut bytes)
-        .map_err(|error| io::Error::other(format!("could not generate the local API token: {error}")))?;
+    getrandom::fill(&mut bytes).map_err(|error| {
+        io::Error::other(format!("could not generate the local API token: {error}"))
+    })?;
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
@@ -45,6 +46,26 @@ fn database_path() -> PathBuf {
             .join("difftrail.db");
     }
     PathBuf::from("difftrail.db")
+}
+
+fn ensure_status_companion(_app: &tauri::AppHandle) {
+    #[cfg(all(windows, not(debug_assertions)))]
+    {
+        use std::os::windows::process::CommandExt;
+
+        let Ok(resource_root) = workspace_root(_app) else {
+            return;
+        };
+        let executable = resource_root.join("difftrail-status.exe");
+        if executable.is_file() {
+            let _ = Command::new(executable)
+                .creation_flags(0x08000000)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn();
+        }
+    }
 }
 
 #[cfg(not(debug_assertions))]
@@ -276,10 +297,28 @@ fn wait_for_api_ready(child: &mut Child, port: u16, token: &str) -> Result<(), B
     }
 }
 
-fn start_local_api(
-    _app: &tauri::AppHandle,
-    token: &str,
-) -> Result<(Child, u16), Box<dyn Error>> {
+fn terminate_backend(child: &mut Child) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+
+        let taskkill_result = Command::new("taskkill")
+            .args(["/PID", &child.id().to_string(), "/T", "/F"])
+            .creation_flags(0x08000000)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        if taskkill_result.is_ok_and(|status| status.success()) {
+            let _ = child.wait();
+            return;
+        }
+    }
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn start_local_api(_app: &tauri::AppHandle, token: &str) -> Result<(Child, u16), Box<dyn Error>> {
     let db = database_path();
     let mut command;
 
@@ -350,8 +389,7 @@ fn start_local_api(
     let port = match port_receiver.recv_timeout(API_READY_TIMEOUT) {
         Ok(Ok(port)) => port,
         Ok(Err(message)) => {
-            let _ = child.kill();
-            let _ = child.wait();
+            terminate_backend(&mut child);
             return Err(Box::new(io::Error::other(format!(
                 "Difftrail backend startup failed: {message}; stdout: {}; stderr: {}",
                 backend_output(&stdout),
@@ -359,8 +397,7 @@ fn start_local_api(
             ))));
         }
         Err(mpsc::RecvTimeoutError::Timeout) => {
-            let _ = child.kill();
-            let _ = child.wait();
+            terminate_backend(&mut child);
             return Err(Box::new(io::Error::new(
                 io::ErrorKind::TimedOut,
                 format!(
@@ -372,8 +409,7 @@ fn start_local_api(
             )));
         }
         Err(mpsc::RecvTimeoutError::Disconnected) => {
-            let _ = child.kill();
-            let _ = child.wait();
+            terminate_backend(&mut child);
             return Err(Box::new(io::Error::other(format!(
                 "Difftrail backend port channel closed unexpectedly; stdout: {}; stderr: {}",
                 backend_output(&stdout),
@@ -383,8 +419,7 @@ fn start_local_api(
     };
 
     if let Err(error) = wait_for_api_ready(&mut child, port, token) {
-        let _ = child.kill();
-        let _ = child.wait();
+        terminate_backend(&mut child);
         return Err(Box::new(io::Error::other(format!(
             "Difftrail backend startup failed: {error}; stdout: {}; stderr: {}",
             backend_output(&stdout),
@@ -444,14 +479,17 @@ fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![api_port, api_token])
         .setup(|app| {
+            // The installer starts the companion at logon. Launching it here as
+            // a self-healing fallback is safe because the companion owns a
+            // named single-instance mutex.
+            ensure_status_companion(app.handle());
             let startup: Result<(Child, u16, String), Box<dyn Error>> = (|| {
                 let token = generate_api_token()?;
                 let (backend, port) = start_local_api(app.handle(), &token)?;
                 Ok((backend, port, token))
             })();
-            let (backend, port, token) = startup.map_err(|error| {
+            let (backend, port, token) = startup.inspect_err(|error| {
                 report_startup_failure(error.as_ref());
-                error
             })?;
             app.manage(ApiEndpoint { port, token });
             app.manage(BackendProcess(Mutex::new(Some(backend))));
@@ -464,8 +502,7 @@ fn main() {
                 if let Some(process) = app_handle.try_state::<BackendProcess>() {
                     if let Ok(mut child) = process.0.lock() {
                         if let Some(process) = child.as_mut() {
-                            let _ = process.kill();
-                            let _ = process.wait();
+                            terminate_backend(process);
                         }
                     }
                 }

@@ -5,6 +5,7 @@ import { Metric } from "../components/Metric";
 
 interface Props {
   data: Bootstrap;
+  connected: boolean;
   onRecordOverhead: () => Promise<void>;
   recording: boolean;
   error: string | null;
@@ -13,52 +14,107 @@ interface Props {
   exportError: string | null;
 }
 
-export function HealthView({ data, onRecordOverhead, recording, error, onExport, exportBusy, exportError }: Props) {
-  const { status, validation } = data;
+export function HealthView({ data, connected, onRecordOverhead, recording, error, onExport, exportBusy, exportError }: Props) {
+  const { status, validation, automation } = data;
   const ready = status.sources.filter((source) => source.initialized).length;
-  const warnings = validation.scans.provider_error_count;
+  const hasScan = Boolean(status.last_scan?.finished_at);
+  const scanStatusAttention = Boolean(status.last_scan && status.last_scan.status !== "ok");
+  const latestWarnings = status.last_scan ? status.last_scan.summary.error_count ?? status.last_scan.summary.errors.length : 0;
+  const latestFailedSources = status.last_scan?.summary.failed_sources ?? [];
   const integrityChecked = status.journal.integrity !== "not checked";
+  const watcherInstalled = automation.watcher.installed && automation.watcher.state?.toLowerCase() !== "disabled";
+  const watcherAttention = automation.watcher.needs_repair || (watcherInstalled && automation.watcher.last_task_result !== null && automation.watcher.last_task_result !== 0);
+  const diskAttention = status.host.system_disk_used_percent !== null && status.host.system_disk_used_percent >= 90;
+  const memoryAttention = status.host.memory_used_percent !== null && status.host.memory_used_percent >= 90;
+  const baselineAttention = ready < status.sources.length;
+  const needsAttention = !hasScan || scanStatusAttention || latestWarnings > 0 || !status.journal.ok || watcherAttention || baselineAttention || diskAttention || memoryAttention;
+  const bannerTitle = watcherAttention
+    ? "Background collection needs attention"
+    : latestWarnings
+      ? `Latest scan has ${latestWarnings} collection warning${latestWarnings === 1 ? "" : "s"}`
+      : scanStatusAttention
+        ? `Latest scan ended as ${status.last_scan?.status}`
+      : !status.journal.ok
+        ? "The local journal needs attention"
+        : !hasScan
+          ? "No evidence baseline has been recorded"
+          : baselineAttention
+            ? "Source baseline coverage is incomplete"
+            : diskAttention
+              ? "Windows reports low system-drive space"
+              : memoryAttention
+                ? "Windows reports high current memory use"
+                : "Source baselines are established";
+  const bannerNote = watcherAttention
+    ? automation.watcher.message || "Review the background watcher status below."
+    : latestWarnings
+      ? latestFailedSources.length
+        ? `Incomplete source read${latestFailedSources.length === 1 ? "" : "s"}: ${latestFailedSources.join(", ")}. Other sources may still have been collected.`
+        : "Evidence from the latest snapshot may be incomplete, but this scan record does not identify the affected source. Review the source baselines below."
+      : scanStatusAttention
+        ? "The latest scan did not finish cleanly. Review coverage and run another scan before relying on that window."
+      : !status.journal.ok
+        ? "Journal status is reported below. Do not rely on saved evidence until it is healthy."
+        : !hasScan
+          ? "Run a scan now. The first valid snapshot is a quiet baseline; later scans record differences."
+          : baselineAttention
+            ? `${status.sources.length - ready} source${status.sources.length - ready === 1 ? " is" : "s are"} still waiting for a valid first snapshot.`
+            : diskAttention
+              ? `${formatBytes(status.host.system_disk_free_bytes)} is currently free. This is context, not a diagnosis of the reported problem.`
+              : memoryAttention
+                ? `${formatBytes(status.host.memory_available_bytes)} is currently available. This point-in-time reading does not establish a cause.`
+                : `${ready} source baselines are ready · latest scan ${relativeTime(status.last_scan?.finished_at)}`;
 
   return (
     <div className="page-stack">
-      <section className="view-header">
-        <div><h2>System health</h2><p>Scan coverage, provider warnings, and watcher footprint.</p></div>
-        <button type="button" className="button button-secondary button-small" onClick={() => void onExport()} disabled={exportBusy} aria-busy={exportBusy}>{exportBusy ? "Preparing report…" : "Export diagnostic report"}</button>
+      <section className="view-header health-view-header">
+        <div><h2>Collection &amp; system</h2><p>What Difftrail can currently observe, plus a point-in-time Windows resource snapshot. This screen does not assess overall PC health.</p></div>
+        <button type="button" className="button button-secondary button-small" title={connected ? undefined : "Connect the local journal to export a report"} onClick={() => void onExport()} disabled={!connected || exportBusy} aria-busy={exportBusy}>{exportBusy ? "Preparing report…" : "Export redacted evidence report"}</button>
       </section>
       {exportError && <div className="form-error" role="alert"><Icon name="alert" size={14} /> {exportError}</div>}
 
-      <section className={`health-banner ${warnings ? "is-warning" : ""}`}>
-        <div className="health-banner-icon"><Icon name={warnings ? "alert" : "shield"} size={21} /></div>
-        <div>
-          <strong>{warnings ? `${warnings} provider warning${warnings === 1 ? "" : "s"} in this window` : "All active sources are reporting cleanly"}</strong>
-          <span>{validation.scans.total ? `${validation.scans.total} scans across the last ${validation.period.days} days · ${ready} of ${status.sources.length} sources initialized` : "Run a scan to start building a local baseline."}</span>
-        </div>
+      <section className={`health-banner ${needsAttention ? "is-warning" : ""}`}>
+        <div className="health-banner-icon"><Icon name={needsAttention ? "alert" : "shield"} size={21} /></div>
+        <div><strong>{bannerTitle}</strong><span>{bannerNote}</span></div>
         <span className="health-banner-date">{relativeTime(status.last_scan?.finished_at)}</span>
       </section>
 
-      <section className={`journal-health-card ${status.journal.ok ? "" : "is-warning"}`} aria-live="polite">
-        <div className="journal-health-copy"><span className="eyebrow">Journal status</span><strong>{status.journal.ok ? (integrityChecked ? "Journal is healthy" : "Journal structure looks healthy") : "Journal needs attention"}</strong><span>{integrityChecked ? `${status.journal.integrity} integrity` : "Full integrity check available in Doctor"} · schema {status.journal.schema.current_version}/{status.journal.schema.supported_version}</span></div>
-        <div className="journal-health-stats"><span><strong>{status.journal.scans.running}</strong> active scan{status.journal.scans.running === 1 ? "" : "s"}</span><span><strong>{status.journal.scans.stale_running.length}</strong> stale scan{status.journal.scans.stale_running.length === 1 ? "" : "s"}</span></div>
+      <section className="machine-context-section">
+        <div className="section-heading"><div><h3>Current machine context</h3><span className="section-subtitle">A single local snapshot captured {hostCapturedLabel(status.host.captured_at_epoch)}. These readings provide context only.</span></div></div>
+        <div className="metric-grid health-metrics" role="group" aria-label="Current machine context">
+          <Metric label="System uptime" value={formatUptime(status.host.uptime_seconds)} note="since the last Windows boot" icon={<Icon name="health" size={18} />} />
+          <Metric label="Memory available" value={formatBytes(status.host.memory_available_bytes)} note={status.host.memory_used_percent === null ? "current value unavailable" : `${number(status.host.memory_used_percent, 0)}% used of ${formatBytes(status.host.memory_total_bytes)}`} icon={<Icon name="device" size={18} />} />
+          <Metric label="System drive free" value={formatBytes(status.host.system_disk_free_bytes)} note={status.host.system_disk_used_percent === null ? "current value unavailable" : `${number(status.host.system_disk_used_percent, 0)}% used of ${formatBytes(status.host.system_disk_total_bytes)}`} icon={<Icon name="driver" size={18} />} />
+          <Metric label="Recorded symptoms" value={number(validation.journal.symptoms)} note={`Windows signals in ${validation.period.days} days`} icon={<Icon name="alert" size={18} />} />
+        </div>
       </section>
 
-      <section className="metric-grid health-metrics" aria-label="Health metrics">
-        <Metric label="Quiet scans" value={validation.scans.quiet_rate === null ? "—" : `${Math.round(validation.scans.quiet_rate * 100)}%`} note={`${validation.scans.quiet} of ${validation.scans.total} scans`} icon={<Icon name="timeline" size={18} />} />
-        <Metric label="Provider errors" value={String(validation.scans.provider_error_count)} note="in the selected window" icon={<Icon name="shield" size={18} />} />
-        <Metric label="Watcher CPU" value={validation.overhead.cpu_percent_mean === null ? "—" : `${number(validation.overhead.cpu_percent_mean, 2)}%`} note="recorded mean" icon={<Icon name="health" size={18} />} />
-        <Metric label="Memory peak" value={validation.overhead.rss_mb_peak === null ? "—" : `${number(validation.overhead.rss_mb_peak, 0)} MB`} note="recorded RSS peak" icon={<Icon name="device" size={18} />} />
+      <section className="panel collection-health-panel">
+        <div className="section-heading"><div><h3>Evidence readiness</h3><span className="section-subtitle">Baseline and latest-scan status for later comparisons. This does not imply continuous coverage.</span></div></div>
+        <div className="collection-health-grid">
+          <HealthFact label="Last scan" value={status.last_scan?.finished_at ? relativeTime(status.last_scan.finished_at) : "Not run"} detail={status.last_scan ? `${status.last_scan.status} · ${status.last_scan.summary.sources}/${status.sources.length} sources read · ${latestWarnings} collection warning${latestWarnings === 1 ? "" : "s"}` : "Run a scan to establish baselines"} tone={!status.last_scan || status.last_scan.status !== "ok" ? "warning" : "good"} />
+          <HealthFact label="Background scans" value={watcherAttention ? "Needs attention" : watcherInstalled ? "Enabled" : "Off"} detail={watcherInstalled ? `Every ${formatInterval(automation.config.interval_seconds)} · next ${relativeTime(automation.watcher.next_run_at)}` : "No scheduled scans"} tone={watcherAttention ? "warning" : watcherInstalled ? "good" : "neutral"} />
+          <HealthFact label="Source baselines" value={`${ready}/${status.sources.length} set`} detail={ready === status.sources.length ? "Future scan-to-scan differences can be recorded" : `${status.sources.length - ready} waiting for a valid first snapshot`} tone={ready === status.sources.length ? "good" : "warning"} />
+          <HealthFact label="Local journal" value={status.journal.ok ? "Healthy" : "Needs attention"} detail={`${number(status.journal.journal.events)} events · ${status.journal.scans.stale_running.length} stuck scans`} tone={status.journal.ok ? "good" : "warning"} />
+        </div>
+      </section>
+
+      <section className={`journal-health-card ${status.journal.ok ? "" : "is-warning"}`} aria-live="polite">
+        <div className="journal-health-copy"><span className="eyebrow">Journal integrity</span><strong>{status.journal.ok ? (integrityChecked ? "Journal is healthy" : "Journal structure looks healthy") : "Journal needs attention"}</strong><span>{integrityChecked ? `${status.journal.integrity} integrity` : "Full integrity check available in Doctor"} · schema {status.journal.schema.current_version}/{status.journal.schema.supported_version}</span></div>
+        <div className="journal-health-stats"><span><strong>{status.journal.scans.running}</strong> active scan{status.journal.scans.running === 1 ? "" : "s"}</span><span><strong>{status.journal.scans.stale_running.length}</strong> stale scan{status.journal.scans.stale_running.length === 1 ? "" : "s"}</span></div>
       </section>
 
       <section className="panel source-panel">
         <div className="section-heading">
-          <div><h3>Source coverage</h3><span className="section-subtitle">Read-only sources used by the journal.</span></div>
-          <span className="muted-count">{ready}/{status.sources.length} initialized</span>
+          <div><h3>Source coverage</h3><span className="section-subtitle">Each read-only source needs a valid baseline before later state differences can become evidence. {validation.scans.provider_error_count} provider warning{validation.scans.provider_error_count === 1 ? "" : "s"} recorded in the last {validation.period.days} days.</span></div>
+          <span className="muted-count">{ready}/{status.sources.length} ready</span>
         </div>
         <div className="source-grid">
           {status.sources.map((source) => (
             <div className={`source-card ${source.initialized ? "is-ready" : "is-waiting"}`} key={source.source}>
               <span className="source-card-icon"><Icon name={sourceIcon(source.source)} size={17} /></span>
-              <div><strong>{source.label}</strong><span>{source.initialized ? `${number(source.item_count)} items · ${relativeTime(source.last_seen_at)}` : "Waiting for first baseline"}</span></div>
-              <span className={`source-state ${source.initialized ? "" : "waiting"}`}><span className="status-dot" />{source.initialized ? "Capturing" : "Waiting"}</span>
+              <div><strong>{source.label}</strong><span>{source.initialized ? sourceDetail(source) : "Waiting for a valid first read"}</span></div>
+              <span className={`source-state ${source.initialized ? "" : "waiting"}`}><span className="status-dot" />{source.initialized ? "Baseline set" : "No baseline"}</span>
             </div>
           ))}
         </div>
@@ -66,21 +122,60 @@ export function HealthView({ data, onRecordOverhead, recording, error, onExport,
 
       <section className="panel overhead-panel">
         <div className="section-heading overhead-heading">
-          <div><h3>Watcher footprint</h3><span className="section-subtitle">Local CPU, memory, and disk use for the watcher process tree.</span></div>
-          <div className="overhead-actions"><span className="muted-count">{validation.overhead.measurements} sample{validation.overhead.measurements === 1 ? "" : "s"}</span><button type="button" className="button button-secondary button-small" onClick={() => void onRecordOverhead()} disabled={recording} aria-busy={recording}>{recording ? "Measuring..." : validation.overhead.measurements ? "Record another" : "Record footprint"}</button></div>
+          <div><h3>Background scan footprint</h3><span className="section-subtitle">Measures one disposable watcher run on this PC. It is a diagnostic benchmark, not a process that stays resident.</span></div>
+          <div className="overhead-actions"><span className="muted-count">{validation.overhead.measurements} sample{validation.overhead.measurements === 1 ? "" : "s"}</span><button type="button" className="button button-secondary button-small" title={connected ? undefined : "Connect the local journal to measure a scan"} onClick={() => void onRecordOverhead()} disabled={!connected || recording} aria-busy={recording}>{recording ? "Measuring one scan…" : validation.overhead.measurements ? "Measure again" : "Measure one scan"}</button></div>
         </div>
-        {validation.overhead.measurements ? <><div className="overhead-values"><div><strong>{number(validation.overhead.cpu_percent_mean, 2)}%</strong><span>CPU mean</span></div><div><strong>{number(validation.overhead.rss_mb_peak, 0)} MB</strong><span>RSS peak</span></div><div><strong>{number(validation.overhead.disk_read_mb_total, 1)} MB</strong><span>Disk read</span></div></div><p className="panel-footnote">Latest sample {relativeTime(validation.overhead.last_measured_at)}.</p></> : <div className="inline-empty"><Icon name="health" size={18} /><p>No footprint sample recorded.</p></div>}
+        {validation.overhead.measurements ? <><div className="overhead-values"><div><strong>{number(validation.overhead.cpu_percent_mean, 2)}%</strong><span>CPU mean</span></div><div><strong>{number(validation.overhead.rss_mb_peak, 0)} MB</strong><span>memory peak</span></div><div><strong>{number(validation.overhead.disk_read_mb_total, 1)} MB</strong><span>disk read</span></div></div><p className="panel-footnote">Latest sample {relativeTime(validation.overhead.last_measured_at)}. Between scheduled scans, the watcher has no persistent process; only the small tray companion remains.</p></> : <div className="inline-empty"><Icon name="health" size={18} /><p>No scan-footprint sample recorded yet. This is optional and does not affect monitoring.</p></div>}
         {error && <div className="form-error" role="alert"><Icon name="alert" size={14} /> {error}</div>}
       </section>
     </div>
   );
 }
 
+function HealthFact({ label, value, detail, tone }: { label: string; value: string; detail: string; tone: "good" | "warning" | "neutral" }) {
+  return <div className={`collection-health-fact is-${tone}`}><span>{label}</span><strong>{value}</strong><small>{detail}</small></div>;
+}
+
+function formatBytes(value: number | null): string {
+  if (value === null) return "—";
+  const gib = value / 1_073_741_824;
+  if (gib >= 1024) return `${number(gib / 1024, 1)} TB`;
+  return `${number(gib, gib >= 100 ? 0 : 1)} GB`;
+}
+
+function formatUptime(seconds: number | null): string {
+  if (seconds === null) return "—";
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  if (days) return `${days}d ${hours}h`;
+  const minutes = Math.floor((seconds % 3600) / 60);
+  return hours ? `${hours}h ${minutes}m` : `${minutes}m`;
+}
+
+function hostCapturedLabel(epochSeconds: number): string {
+  if (!Number.isFinite(epochSeconds) || epochSeconds <= 0) return "at an unknown time";
+  return relativeTime(new Date(epochSeconds * 1000).toISOString());
+}
+
+function formatInterval(seconds: number): string {
+  if (seconds % 3600 === 0) return `${seconds / 3600} hour${seconds === 3600 ? "" : "s"}`;
+  return `${Math.round(seconds / 60)} minutes`;
+}
+
 function sourceIcon(source: string) {
+  if (source === "eventlog") return "alert" as const;
   if (source === "drivers") return "driver" as const;
   if (source === "apps") return "application" as const;
   if (source === "devices") return "device" as const;
   if (source === "services" || source === "tasks") return "service" as const;
   if (source === "startup") return "startup" as const;
   return "update" as const;
+}
+
+function sourceDetail(source: Bootstrap["status"]["sources"][number]): string {
+  const lastRead = relativeTime(source.last_successful_at || source.last_seen_at);
+  if (source.source === "eventlog") {
+    return `${number(source.item_count)} retained symptom record${source.item_count === 1 ? "" : "s"} · last successful read ${lastRead}`;
+  }
+  return `${number(source.item_count)} current item${source.item_count === 1 ? "" : "s"} · last successful read ${lastRead}`;
 }

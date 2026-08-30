@@ -18,7 +18,7 @@ jobs:
     runs-on: windows-latest
     strategy:
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
 
     steps:
       - name: Check out repository
@@ -106,13 +106,13 @@ jobs:
         shell: pwsh
         env:
           BUILD_COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          BUILD_NUMBER: ${{ github.run_number }}
+          BUILD_ID: ${{ github.run_id }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           if ("${{ github.event_name }}" -eq "pull_request") {
-            python ../scripts/stamp_build_version.py --pr-number "$env:PR_NUMBER" --commit-sha "$env:BUILD_COMMIT_SHA"
+            python ../scripts/stamp_build_version.py --pr-number "$env:PR_NUMBER" --build-id "$env:BUILD_ID" --commit-sha "$env:BUILD_COMMIT_SHA"
           } else {
-            python ../scripts/stamp_build_version.py --channel main --build-number "$env:BUILD_NUMBER" --commit-sha "$env:BUILD_COMMIT_SHA"
+            python ../scripts/stamp_build_version.py --channel main --build-id "$env:BUILD_ID" --commit-sha "$env:BUILD_COMMIT_SHA"
           }
 
       - name: Audit locked UI dependencies

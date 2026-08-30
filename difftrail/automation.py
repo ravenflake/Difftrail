@@ -740,7 +740,7 @@ def process_scan_events(
                 database,
                 event,
                 kind="change",
-                title="Meaningful system change detected",
+                title="System change recorded",
                 body=f"{event.title} · {_event_context(event)}.",
             ):
                 notifications += 1
@@ -758,7 +758,11 @@ def process_scan_events(
                 database.create_automation_notification(
                     kind="warning",
                     title="Scan completed with warnings",
-                    body=f"{len(errors)} provider warning{'' if len(errors) == 1 else 's'} was recorded. Review System health.",
+                    body=(
+                        f"{len(errors)} provider warning"
+                        f"{'' if len(errors) == 1 else 's'} "
+                        f"{'was' if len(errors) == 1 else 'were'} recorded. Review System health."
+                    ),
                     commit=False,
                 )
         if marked:

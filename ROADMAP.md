@@ -39,7 +39,7 @@ pending until the recorded Windows checks actually happen.
 
 ## Non-goals
 
-- Requiring AI, an online account, or cloud upload for diagnosis.
+- Requiring AI, an online account, or cloud upload for evidence review.
 - Automatic remediation, rollback, uninstall, disable, or repair actions.
 - Presenting timestamp correlation as proof of causality.
 - Maximizing event volume at the expense of a quiet, understandable journal.

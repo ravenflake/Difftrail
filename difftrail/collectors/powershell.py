@@ -12,6 +12,35 @@ class PowerShellError(RuntimeError):
     pass
 
 
+MAX_POWERSHELL_JSON_NESTING = 128
+
+
+def _json_nesting_exceeds(payload: str, *, maximum: int = MAX_POWERSHELL_JSON_NESTING) -> bool:
+    """Check structural JSON nesting without relying on parser recursion."""
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for character in payload:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+        elif character in "{[":
+            depth += 1
+            if depth > maximum:
+                return True
+        elif character in "}]" and depth:
+            depth -= 1
+    return False
+
+
 def powershell_path() -> str | None:
     return shutil.which("powershell.exe") or shutil.which("pwsh.exe")
 
@@ -48,6 +77,10 @@ def run_json(script: str, *, timeout: int = 45) -> list[dict[str, Any]]:
         raise PowerShellError(result.stderr.strip() or f"PowerShell exited with code {result.returncode}")
     if not stdout:
         return []
+    if _json_nesting_exceeds(stdout):
+        raise PowerShellError(
+            f"PowerShell returned invalid JSON: nesting exceeds {MAX_POWERSHELL_JSON_NESTING} levels"
+        )
     try:
         parsed = json.loads(stdout)
     except (json.JSONDecodeError, RecursionError) as exc:

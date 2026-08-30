@@ -9,11 +9,25 @@ from typing import Any
 from .collectors.base import Collector
 from .collectors.windows import WindowsCollector
 from .db import Database
-from .models import utc_now
+from .models import iso_datetime, utc_now
 from .privacy import redact_text
 
 
 LOGGER = logging.getLogger(__name__)
+
+KNOWN_PROVIDER_SOURCES = frozenset(
+    {"updates", "apps", "drivers", "services", "tasks", "startup", "devices", "eventlog"}
+)
+
+
+def _provider_source(error: Any) -> str | None:
+    """Extract only a known, non-sensitive provider label from a diagnostic."""
+
+    text = str(error).strip()
+    if text.casefold().startswith("collector:"):
+        text = text.split(":", 1)[1].strip()
+    source = text.split(":", 1)[0].strip().casefold()
+    return source if source in KNOWN_PROVIDER_SOURCES else None
 
 
 @dataclass(frozen=True)
@@ -23,6 +37,8 @@ class ScanResult:
     sources: int
     state_events: int
     symptom_events: int
+    collected_sources: tuple[str, ...] = ()
+    failed_sources: tuple[str, ...] = ()
     errors: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
@@ -32,6 +48,8 @@ class ScanResult:
             "sources": self.sources,
             "state_events": self.state_events,
             "symptom_events": self.symptom_events,
+            "collected_sources": list(self.collected_sources),
+            "failed_sources": list(self.failed_sources),
             "errors": list(self.errors),
         }
 
@@ -46,6 +64,9 @@ class Scanner:
         scan_id = self.database.start_scan(started)
         state_events = 0
         symptom_events = 0
+        symptoms_collected = False
+        applied_sources: set[str] = set()
+        failed_sources: set[str] = set()
         errors: list[str] = []
         collector_errors = getattr(self.collector, "last_errors", None)
         if isinstance(collector_errors, list):
@@ -62,8 +83,11 @@ class Scanner:
                 state_events += len(
                     self.database.apply_snapshot(source, items, occurred_at=started, scan_id=scan_id)
                 )
+                applied_sources.add(str(source))
             except Exception as exc:  # a bad provider must not lose the whole scan
                 errors.append(f"{source}: {redact_text(str(exc))}")
+                if str(source) in KNOWN_PROVIDER_SOURCES:
+                    failed_sources.add(str(source))
         cursor = self.database.get_meta("symptoms:cursor")
         since = started - timedelta(days=7)
         if cursor:
@@ -74,11 +98,24 @@ class Scanner:
             except ValueError:
                 pass
         try:
+            collector_error_count = len(collector_errors) if isinstance(collector_errors, list) else 0
             symptoms = self.collector.collect_symptoms(since)
             symptom_events = self.database.save_events(symptoms, scan_id=scan_id)
-            self.database.set_meta_for_active_scan(scan_id, "symptoms:cursor", started.isoformat())
+            new_collector_errors = (
+                collector_errors[collector_error_count:]
+                if isinstance(collector_errors, list)
+                else []
+            )
+            if any(_provider_source(error) == "eventlog" for error in new_collector_errors):
+                # Keep the cursor unchanged so incomplete provider output is
+                # retried. Stable event IDs make already-saved rows idempotent.
+                failed_sources.add("eventlog")
+            else:
+                self.database.set_meta_for_active_scan(scan_id, "symptoms:cursor", iso_datetime(started))
+                symptoms_collected = True
         except Exception as exc:
             errors.append(f"symptoms: {redact_text(str(exc))}")
+            failed_sources.add("eventlog")
         try:
             # Retention is independent of the provider's current health. A
             # transient Event Log failure must not retain old raw messages.
@@ -88,10 +125,26 @@ class Scanner:
         except Exception as exc:
             errors.append(f"retention: {redact_text(str(exc))}")
         if isinstance(collector_errors, list):
-            errors.extend(f"collector: {redact_text(str(error))}" for error in collector_errors)
+            for error in collector_errors:
+                errors.append(f"collector: {redact_text(str(error))}")
+                source = _provider_source(error)
+                if source is not None:
+                    failed_sources.add(source)
         finished = utc_now()
         status = "partial" if errors else "ok"
-        result = ScanResult(scan_id, status, len(snapshots), state_events, symptom_events, tuple(errors))
+        collected_sources = tuple(
+            sorted((applied_sources | ({"eventlog"} if symptoms_collected else set())) - failed_sources)
+        )
+        result = ScanResult(
+            scan_id=scan_id,
+            status=status,
+            sources=len(collected_sources),
+            state_events=state_events,
+            symptom_events=symptom_events,
+            collected_sources=collected_sources,
+            failed_sources=tuple(sorted(failed_sources)),
+            errors=tuple(errors),
+        )
         self.database.finish_scan(scan_id, finished, status, result.as_dict())
         return result
 

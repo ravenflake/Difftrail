@@ -18,15 +18,25 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .assessment import NEUTRAL_ASSESSMENT
+from .assessment import ASSESSMENT_STATES, NEUTRAL_ASSESSMENT
 from .db import Database
 from .models import ensure_utc, iso_datetime, parse_datetime, utc_now
 from .privacy import error_bucket, redact_public_text
-from .public_data import SAFE_CHANGE_FIELDS, public_detail_summary
+from .public_data import (
+    SAFE_CHANGE_FIELDS,
+    public_detail_summary,
+    public_feedback_outcome,
+    public_next_action,
+    public_review_text,
+)
 
 
 BUNDLE_FORMAT = "difftrail-diagnostic-bundle"
-BUNDLE_VERSION = 1
+BUNDLE_VERSION = 2
+SUPPORTED_BUNDLE_VERSIONS = frozenset({1, BUNDLE_VERSION})
+COLLECTION_SOURCE_NAMES = frozenset(
+    {"updates", "apps", "drivers", "services", "tasks", "startup", "devices", "eventlog"}
+)
 MAX_BUNDLE_ROWS = 100_000
 MAX_BUNDLE_NESTING = 64
 FORBIDDEN_KEYS = frozenset(
@@ -67,6 +77,27 @@ def _safe_summary_value(value: Any) -> Any:
     return value
 
 
+def _safe_count(value: Any) -> int:
+    if isinstance(value, bool):
+        return 0
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _safe_collection_sources(value: Any) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    return sorted(
+        {
+            _safe_text(source)
+            for source in value
+            if isinstance(source, str) and source in COLLECTION_SOURCE_NAMES
+        }
+    )
+
+
 def _safe_detail_summary(event: dict[str, Any]) -> dict[str, Any] | None:
     summary = public_detail_summary(event)
     if not summary:
@@ -101,6 +132,7 @@ def _safe_event(event: Any) -> dict[str, Any]:
         "id": _safe_text(raw.get("id", "")) if raw.get("id") is not None else None,
         "occurred_at": raw.get("occurred_at"),
         "kind": raw.get("kind"),
+        "time_basis": "source_timestamp" if raw.get("kind") == "symptom" else "scan_observation",
         "subsystem": _safe_text(raw.get("subsystem", "")),
         "action": _safe_text(raw.get("action", "")),
         "title": _safe_text(raw.get("title", "")),
@@ -120,11 +152,18 @@ def _safe_hypothesis(hypothesis: Any) -> dict[str, Any]:
     diagnostic = hypothesis.get("safe_diagnostic")
     if not isinstance(diagnostic, dict):
         diagnostic = {}
+    confidence = str(hypothesis.get("confidence", "Low"))
+    support_level = hypothesis.get("support_level")
+    if support_level not in {"strong", "moderate", "weak"}:
+        support_level = {
+            "High": "strong",
+            "Medium": "moderate",
+            "Low": "weak",
+        }.get(confidence, "weak")
     result = {
-        "score": hypothesis.get("score"),
-        "tie_count": hypothesis.get("tie_count", 1),
-        "confidence": hypothesis.get("confidence"),
-        "next_action": _safe_text(hypothesis.get("next_action", "")),
+        "tie_count": max(1, _safe_count(hypothesis.get("tie_count", 1))),
+        "support_level": support_level,
+        "next_action": public_next_action(hypothesis.get("event")),
         "safe_diagnostic": {
             "label": _safe_text(diagnostic.get("label", "")),
             "target": _safe_text(diagnostic.get("target", "")),
@@ -144,7 +183,7 @@ def _safe_hypothesis(hypothesis: Any) -> dict[str, Any]:
             {
                 "signal": _safe_text(item.get("signal", "")),
                 "strength": _safe_text(item.get("strength", "")),
-                "explanation": _safe_text(item.get("explanation", "")),
+                "explanation": public_review_text(item.get("explanation", "")),
                 "event_id": item.get("event_id"),
             }
             for item in evidence_items
@@ -165,12 +204,15 @@ def _safe_incident(incident: dict[str, Any]) -> dict[str, Any]:
     uninitialized_sources = coverage.get("uninitialized_sources", [])
     if not isinstance(uninitialized_sources, list):
         uninitialized_sources = []
+    raw_scan_status_counts = coverage.get("scan_status_counts")
+    scan_status_counts = raw_scan_status_counts if isinstance(raw_scan_status_counts, dict) else {}
     raw_results = incident.get("results", [])
     if not isinstance(raw_results, list):
         raw_results = []
     feedback = incident.get("feedback")
     if not isinstance(feedback, dict):
         feedback = {}
+    assessment = str(incident.get("assessment", NEUTRAL_ASSESSMENT))
     return {
         "id": incident.get("id"),
         "created_at": incident.get("created_at"),
@@ -182,25 +224,35 @@ def _safe_incident(incident: dict[str, Any]) -> dict[str, Any]:
         "affected_entity": _safe_text(incident.get("affected_entity", "")) or None,
         "suspected_change": _safe_text(incident.get("suspected_change", "")) or None,
         "status": _safe_text(incident.get("status", "")),
-        "assessment": _safe_text(incident.get("assessment", NEUTRAL_ASSESSMENT)),
-        "assessment_reasons": [_safe_text(reason) for reason in raw_reasons],
+        "assessment": assessment if assessment in ASSESSMENT_STATES else NEUTRAL_ASSESSMENT,
+        "assessment_reasons": [public_review_text(reason) for reason in raw_reasons],
         "coverage": {
             "known": bool(coverage.get("known", False)),
             "limited": bool(coverage.get("limited", False)),
             "reasons": [
-                _safe_text(reason)
+                public_review_text(reason)
                 for reason in coverage_reasons
             ],
-            "uninitialized_sources": [
-                _safe_text(source)
-                for source in uninitialized_sources
-            ],
-            "provider_warning_count": max(0, int(coverage.get("provider_warning_count", 0) or 0)),
-            "scan_count": max(0, int(coverage.get("scan_count", 0) or 0)),
+            "sources": _safe_collection_sources(coverage.get("sources")),
+            "uninitialized_sources": _safe_collection_sources(uninitialized_sources),
+            "warning_sources": _safe_collection_sources(coverage.get("warning_sources")),
+            "latest_scan_at": coverage.get("latest_scan_at"),
+            "gap_to_onset_seconds": (
+                _safe_count(coverage.get("gap_to_onset_seconds"))
+                if coverage.get("gap_to_onset_seconds") is not None
+                else None
+            ),
+            "provider_warning_count": _safe_count(coverage.get("provider_warning_count")),
+            "scan_count": _safe_count(coverage.get("scan_count")),
+            "scan_status_counts": {
+                status: _safe_count(scan_status_counts.get(status))
+                for status in ("ok", "partial", "failed", "interrupted")
+                if status in scan_status_counts
+            },
         },
         "results": [_safe_hypothesis(item) for item in raw_results],
         "feedback": {
-            "outcome": feedback.get("outcome"),
+            "outcome": public_feedback_outcome(feedback.get("outcome")),
             "event_id": feedback.get("event_id"),
             "recorded_at": feedback.get("recorded_at"),
         },
@@ -210,15 +262,19 @@ def _safe_incident(incident: dict[str, Any]) -> dict[str, Any]:
 def _safe_scan(scan: dict[str, Any]) -> dict[str, Any]:
     summary = scan.get("summary") if isinstance(scan.get("summary"), dict) else {}
     errors = summary.get("errors", []) if isinstance(summary.get("errors", []), list) else []
+    collected_sources = summary.get("collected_sources")
+    failed_sources = summary.get("failed_sources")
     return {
         "id": scan.get("id"),
         "started_at": scan.get("started_at"),
         "finished_at": scan.get("finished_at"),
         "status": scan.get("status"),
         "summary": {
-            "sources": summary.get("sources", 0),
-            "state_events": summary.get("state_events", 0),
-            "symptom_events": summary.get("symptom_events", 0),
+            "sources": _safe_count(summary.get("sources")),
+            "state_events": _safe_count(summary.get("state_events")),
+            "symptom_events": _safe_count(summary.get("symptom_events")),
+            "collected_sources": _safe_collection_sources(collected_sources),
+            "failed_sources": _safe_collection_sources(failed_sources),
             "error_count": len(errors),
             "error_buckets": sorted({error_bucket(error) for error in errors}),
         },
@@ -230,8 +286,9 @@ def _safe_source(source: dict[str, Any]) -> dict[str, Any]:
         "source": _safe_text(source.get("source", "")),
         "label": _safe_text(source.get("label", "")),
         "initialized": bool(source.get("initialized", False)),
-        "item_count": int(source.get("item_count", 0) or 0),
+        "item_count": _safe_count(source.get("item_count")),
         "last_seen_at": source.get("last_seen_at"),
+        "last_successful_at": source.get("last_successful_at"),
         "status": _safe_text(source.get("status", "")),
     }
 
@@ -358,7 +415,7 @@ def validate_bundle(bundle: Any) -> dict[str, Any]:
         return {"valid": False, "errors": ["Bundle root must be a JSON object"], "warnings": []}
     if bundle.get("format") != BUNDLE_FORMAT:
         errors.append("Unsupported bundle format")
-    if bundle.get("format_version") != BUNDLE_VERSION:
+    if bundle.get("format_version") not in SUPPORTED_BUNDLE_VERSIONS:
         errors.append("Unsupported bundle version")
     for key in ("application", "exported_at", "period", "scope", "journal", "investigations", "privacy", "integrity"):
         if key not in bundle:
@@ -503,5 +560,5 @@ def write_bundle(bundle: dict[str, Any], output: str | Path, *, database_path: P
 def bundle_filename(incident_id: str | None = None) -> str:
     if incident_id:
         safe_id = re.sub(r"[^A-Za-z0-9._-]+", "-", str(incident_id)).strip(".-")[:80]
-        return f"difftrail-investigation-{safe_id or 'report'}-bundle.json"
+        return f"difftrail-evidence-review-{safe_id or 'report'}-bundle.json"
     return "difftrail-diagnostic-bundle.json"

@@ -3,6 +3,7 @@ export { subsystemLabel } from "./subsystems";
 const SOURCE_LABELS: Record<string, string> = {
   updates: "Windows update",
   "event-log": "Windows signal",
+  eventlog: "Windows signal",
   "fixture:eventlog": "Windows signal",
   "windows-reliability": "Windows signal",
   apps: "Application",
@@ -14,6 +15,8 @@ const SOURCE_LABELS: Record<string, string> = {
 };
 
 export function sourceLabel(source: string): string {
+  if (source === "demo") return "Synthetic demo";
+  if (source.startsWith("fixture:")) return "Synthetic fixture";
   return SOURCE_LABELS[source] || source.replace(/[-_]/g, " ");
 }
 

@@ -70,4 +70,30 @@ $settings = New-ScheduledTaskSettingsSet `
     -ExecutionTimeLimit (New-TimeSpan -Hours 2)
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger @($periodicTrigger, $logonTrigger) -Settings $settings -Description "Difftrail local-first background journal scans" -Force | Out-Null
 Start-ScheduledTask -TaskName $taskName
+
+# Keep the last successful interval outside the task so the notification-area
+# companion can re-enable collection without silently resetting a custom value.
+try {
+    if ($DatabasePath) {
+        # The scheduled task resolves a relative database path from its working
+        # directory. Resolve it the same way here so a filename-only path still
+        # gets a usable preference location.
+        $databasePathForState = $DatabasePath
+        if (-not [System.IO.Path]::IsPathRooted($databasePathForState)) {
+            $databasePathForState = Join-Path $WorkingDirectory $databasePathForState
+        }
+        $intervalStateRoot = Split-Path -Parent $databasePathForState
+        if (-not $intervalStateRoot) {
+            $intervalStateRoot = $WorkingDirectory
+        }
+    } elseif ($env:LOCALAPPDATA) {
+        $intervalStateRoot = Join-Path $env:LOCALAPPDATA "Difftrail"
+    } else {
+        $intervalStateRoot = $WorkingDirectory
+    }
+    New-Item -ItemType Directory -Path $intervalStateRoot -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $intervalStateRoot "watcher-interval.txt") -Value $scheduledIntervalSeconds -Encoding ascii
+} catch {
+    Write-Warning "The watcher was installed, but its tray interval preference could not be saved: $($_.Exception.Message)"
+}
 Write-Host "Installed and started $taskName. It will also scan every $scheduledIntervalSeconds seconds and start at logon."

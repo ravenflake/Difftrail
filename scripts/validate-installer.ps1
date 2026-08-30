@@ -11,11 +11,32 @@ if ([IO.Path]::GetExtension($installer) -ine ".exe") {
 
 $smokeRoot = $null
 $installRoot = $null
+$desktopProcess = $null
 $installerTimeoutMilliseconds = 120000
 $processTreeWaitMilliseconds = 5000
 $uninstallCleanupTimeoutMilliseconds = 30000
 $uninstallRegistryKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Difftrail"
 $productRegistryKey = "HKCU:\Software\difftrail\Difftrail"
+$runRegistryKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+$statusRunValueName = "Difftrail Status"
+$statusStartupShortcut = Join-Path ([Environment]::GetFolderPath("Startup")) "Difftrail Status.lnk"
+
+function Get-RegistryValue {
+    param(
+        [string]$Path,
+        [string]$Name
+    )
+
+    $properties = Get-ItemProperty -LiteralPath $Path -ErrorAction SilentlyContinue
+    if ($null -eq $properties) {
+        return $null
+    }
+    $property = $properties.PSObject.Properties[$Name]
+    if ($null -eq $property) {
+        return $null
+    }
+    return $property.Value
+}
 
 function Assert-NoExistingDifftrailRegistration {
     if (
@@ -48,6 +69,19 @@ function Remove-SmokeInstallerState {
         $registeredLocation = [string](Get-Item -LiteralPath $productRegistryKey).GetValue("")
         if ($registeredLocation.Trim().Trim('"') -ieq $ExpectedInstallRoot) {
             Remove-Item -LiteralPath $productRegistryKey -Recurse -Force -ErrorAction Stop
+        }
+    }
+
+    $expectedStatusExecutable = Join-Path $ExpectedInstallRoot "backend\difftrail-status.exe"
+    $statusCommand = [string](Get-RegistryValue -Path $runRegistryKey -Name $statusRunValueName)
+    if ($statusCommand.Trim().Trim('"') -ieq $expectedStatusExecutable) {
+        Remove-ItemProperty -LiteralPath $runRegistryKey -Name $statusRunValueName -Force -ErrorAction Stop
+    }
+    if (Test-Path -LiteralPath $statusStartupShortcut -PathType Leaf) {
+        $shell = New-Object -ComObject WScript.Shell
+        $statusShortcut = $shell.CreateShortcut($statusStartupShortcut)
+        if ($statusShortcut.TargetPath -ieq $expectedStatusExecutable) {
+            Remove-Item -LiteralPath $statusStartupShortcut -Force -ErrorAction Stop
         }
     }
 
@@ -198,6 +232,68 @@ try {
         throw "Silent installation completed but difftrail-desktop.exe was not found under $installRoot"
     }
 
+    $installedStatusExecutable = Get-Item -LiteralPath (Join-Path $installRoot "backend\difftrail-status.exe") -ErrorAction SilentlyContinue
+    if ($null -eq $installedStatusExecutable) {
+        $installedStatusExecutable = Get-ChildItem -LiteralPath $installRoot -Filter "difftrail-status.exe" -File -Recurse |
+            Select-Object -First 1
+    }
+    if ($null -eq $installedStatusExecutable) {
+        throw "Silent installation completed but difftrail-status.exe was not found under $installRoot"
+    }
+    $statusCommand = [string](Get-RegistryValue -Path $runRegistryKey -Name $statusRunValueName)
+    if (-not (Test-Path -LiteralPath $statusStartupShortcut -PathType Leaf)) {
+        throw "Silent installation did not create the Difftrail notification-area startup shortcut"
+    }
+    $shell = New-Object -ComObject WScript.Shell
+    $statusShortcut = $shell.CreateShortcut($statusStartupShortcut)
+    $expectedStatusPath = [IO.Path]::GetFullPath($installedStatusExecutable.FullName)
+    $shortcutTargetPath = ([string]$statusShortcut.TargetPath).Trim().Trim('"')
+    $normalizedShortcutTarget = if ([string]::IsNullOrWhiteSpace($shortcutTargetPath)) {
+        ""
+    }
+    else {
+        [IO.Path]::GetFullPath($shortcutTargetPath)
+    }
+    if ($normalizedShortcutTarget -ine $expectedStatusPath) {
+        throw "Difftrail notification-area startup shortcut targets the wrong executable (expected '$expectedStatusPath', found '$shortcutTargetPath')"
+    }
+    # The startup shortcut is the portable fallback for current-user installs.
+    # Some Windows images expose the per-user Run key through a different
+    # registry view than the NSIS process. Accept either mechanism as long as
+    # one verified startup path points at the installed companion.
+    $registryStartupMatches = $statusCommand.Trim().Trim('"') -ieq $installedStatusExecutable.FullName
+    $shortcutStartupMatches = $normalizedShortcutTarget -ieq $expectedStatusPath
+    if (-not ($registryStartupMatches -or $shortcutStartupMatches)) {
+        throw "Silent installation did not register the Difftrail notification-area companion"
+    }
+
+    Write-Host "Launching the isolated installation before an in-place reinstall"
+    $desktopStartInfo = [Diagnostics.ProcessStartInfo]::new()
+    $desktopStartInfo.FileName = $installedExecutable.FullName
+    $desktopStartInfo.UseShellExecute = $false
+    $desktopStartInfo.CreateNoWindow = $true
+    $desktopStartInfo.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
+    $desktopProcess = [Diagnostics.Process]::Start($desktopStartInfo)
+    Start-Sleep -Seconds 2
+    $desktopProcess.Refresh()
+    if ($desktopProcess.HasExited) {
+        throw "Installed desktop exited before the in-place reinstall test"
+    }
+
+    Write-Host "Reinstalling over the running isolated installation"
+    Invoke-Installer -FilePath $installer -RawArguments "/S /D=$installRoot"
+    if (-not (Test-Path -LiteralPath $installedExecutable.FullName -PathType Leaf)) {
+        throw "In-place reinstall did not restore the application executable"
+    }
+    if ($null -ne (Get-Process -Id $desktopProcess.Id -ErrorAction SilentlyContinue)) {
+        throw "In-place reinstall left the previous desktop process running"
+    }
+    $desktopProcess.Dispose()
+    $desktopProcess = $null
+    if (-not (Test-Path -LiteralPath $statusStartupShortcut -PathType Leaf)) {
+        throw "In-place reinstall did not restore the notification-area startup shortcut"
+    }
+
     $uninstaller = Get-ChildItem -LiteralPath $installRoot -Filter "uninstall.exe" -File -Recurse |
         Select-Object -First 1
     if ($null -eq $uninstaller) {
@@ -215,11 +311,34 @@ try {
     if (Test-Path -LiteralPath $installedExecutable.FullName) {
         throw "Silent uninstall left the application executable in place: $($installedExecutable.FullName)"
     }
+    if ($null -ne (Get-RegistryValue -Path $runRegistryKey -Name $statusRunValueName)) {
+        throw "Silent uninstall left the Difftrail notification-area startup registration in place"
+    }
+    if (Test-Path -LiteralPath $statusStartupShortcut -PathType Leaf) {
+        throw "Silent uninstall left the Difftrail notification-area startup shortcut in place"
+    }
 }
 catch {
     $failure = $_
 }
 finally {
+    if ($null -ne $desktopProcess) {
+        try {
+            if (-not $desktopProcess.HasExited) {
+                Stop-InstallerProcess -Process $desktopProcess
+            }
+            $desktopProcess.Dispose()
+        }
+        catch {
+            $cleanupMessage = "Installer smoke-test desktop cleanup failed: $($_.Exception.Message)"
+            if ($null -eq $failure) {
+                $failure = $_
+            }
+            else {
+                Write-Warning "$cleanupMessage (preserving the original installer failure)"
+            }
+        }
+    }
     if ($null -ne $installRoot) {
         try {
             Remove-SmokeInstallerState -ExpectedInstallRoot $installRoot

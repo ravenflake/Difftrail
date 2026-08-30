@@ -18,6 +18,7 @@ from difftrail.automation import (
     TASK_RESULT_HAS_NOT_RUN,
     _normalize_task_time,
     _fallback_task_action,
+    _run_schtasks,
     _run_task_script,
     _watcher_task_needs_repair,
     _watcher_status_message,
@@ -638,6 +639,17 @@ class AutomationTests(unittest.TestCase):
             _run_task_script(Path("install-watcher.ps1"), [])
             retry.assert_called_once()
 
+    def test_access_denied_retries_task_disable_with_uac(self) -> None:
+        denied = CompletedProcess(["schtasks.exe"], 1, "", "Access is denied.")
+        elevated = CompletedProcess(["schtasks.exe"], 0, "", "")
+        with patch("difftrail.automation.shutil.which", return_value="schtasks.exe"), patch(
+            "difftrail.automation.subprocess.run", return_value=denied
+        ), patch("difftrail.automation._run_elevated", return_value=elevated) as retry:
+            _run_schtasks(["/Delete", "/TN", "Difftrail Watcher", "/F"])
+            retry.assert_called_once_with(
+                "schtasks.exe", ["/Delete", "/TN", "Difftrail Watcher", "/F"]
+            )
+
     def test_task_scheduler_never_run_sentinel_is_hidden(self) -> None:
         self.assertIsNone(_normalize_task_time("1999-11-30T00:00:00"))
         self.assertEqual(_normalize_task_time("2026-08-02T10:15:00Z"), "2026-08-02T10:15:00Z")
@@ -731,3 +743,13 @@ class AutomationTests(unittest.TestCase):
         self.assertIn("-Hidden", contents)
         self.assertIn("-RestartCount", contents)
         self.assertIn("difftrail.watcher", contents)
+        self.assertIn("watcher-interval.txt", contents)
+        self.assertIn("Set-Content", contents)
+
+    def test_source_uninstaller_surfaces_task_scheduler_access_errors(self) -> None:
+        script = Path(__file__).parents[1] / "scripts" / "uninstall-watcher.ps1"
+        contents = script.read_text(encoding="utf-8")
+        self.assertIn("Get-ScheduledTask", contents)
+        self.assertIn("Unregister-ScheduledTask", contents)
+        self.assertIn("-ErrorAction Stop", contents)
+        self.assertNotIn("Unregister-ScheduledTask -TaskName \"Difftrail Watcher\" -Confirm:$false -ErrorAction SilentlyContinue", contents)

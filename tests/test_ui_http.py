@@ -68,6 +68,16 @@ class UiHttpTests(unittest.TestCase):
         status, _ = self.request("OPTIONS", "/api/health", Origin="http://127.0.0.1:5173")
         self.assertEqual(status, 204)
 
+    def test_allowed_cors_response_uses_the_canonical_allowlist_value(self) -> None:
+        connection = HTTPConnection("127.0.0.1", self.port, timeout=5)
+        connection.request("GET", "/api/health", headers={"Origin": "http://tauri.localhost"})
+        response = connection.getresponse()
+        response.read()
+        connection.close()
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.getheader("Access-Control-Allow-Origin"), "http://tauri.localhost")
+
     def test_bundle_routes_return_safe_contracts(self) -> None:
         with Database(self.database_path) as database:
             now = utc_now()
@@ -106,6 +116,10 @@ class UiHttpTests(unittest.TestCase):
         status, payload = self.request("GET", "/api/health?days=not-a-number")
         self.assertEqual(status, 400)
         self.assertIn("days", payload["error"])
+
+        status, payload = self.request("GET", f"/api/timeline?search={'x' * 201}")
+        self.assertEqual(status, 400)
+        self.assertIn("200 characters or fewer", payload["error"])
 
         status, payload = self.request("POST", "/api/validate-bundle", ["not", "an", "object"])
         self.assertEqual(status, 400)
@@ -350,7 +364,10 @@ class UiHttpTests(unittest.TestCase):
 
         status, payload = self.request("GET", "/api/incidents")
         self.assertEqual(status, 200)
-        self.assertEqual(payload[0]["results"][0]["score"], 0)
+        result = payload[0]["results"][0]
+        self.assertEqual(result["support_level"], "strong")
+        self.assertNotIn("score", result)
+        self.assertNotIn("confidence", result)
         self.assertEqual(payload[0]["coverage"]["scan_count"], 0)
         encoded = json.dumps(payload)
         for secret in ("Alice", r"C:\Users", r"C:\Program Files", "private raw collector", "private evidence payload"):
@@ -381,10 +398,20 @@ class UiHttpTests(unittest.TestCase):
         status, feedback = self.request(
             "POST",
             f"/api/incidents/{incident_id}/feedback",
+            {"outcome": "unsure"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(feedback["incident"]["feedback"]["outcome"], "unsure")
+
+        # Old local clients may still send the storage vocabulary during an
+        # in-place upgrade, but the public response remains non-causal.
+        status, feedback = self.request(
+            "POST",
+            f"/api/incidents/{incident_id}/feedback",
             {"outcome": "unknown"},
         )
         self.assertEqual(status, 200)
-        self.assertEqual(feedback["incident"]["feedback"]["outcome"], "unknown")
+        self.assertEqual(feedback["incident"]["feedback"]["outcome"], "unsure")
 
         status, payload = self.request(
             "POST",

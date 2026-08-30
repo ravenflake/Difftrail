@@ -25,6 +25,14 @@ class ServiceTests(unittest.TestCase):
             first = Scanner(database, collector).scan()
             self.assertEqual(first.state_events, 0)
             self.assertEqual(first.symptom_events, 1)
+            self.assertEqual(first.collected_sources, ("eventlog", "services"))
+            self.assertEqual(first.sources, 2)
+            statuses = {item["source"]: item for item in database.source_status()}
+            self.assertTrue(statuses["eventlog"]["initialized"])
+            self.assertEqual(statuses["eventlog"]["item_count"], 1)
+            self.assertIsNotNone(statuses["eventlog"]["last_seen_at"])
+            self.assertIsNotNone(statuses["eventlog"]["last_successful_at"])
+            self.assertIsNotNone(statuses["services"]["last_successful_at"])
             collector.snapshots["services"][0] = SnapshotItem("services", "demo", "startup", "Service Demo", {"state": "Running", "start_mode": "Manual"})
             second = Scanner(database, collector).scan()
             self.assertEqual(second.state_events, 1)
@@ -139,3 +147,41 @@ class ServiceTests(unittest.TestCase):
             result = Scanner(database, DegradedCollector()).scan()
             self.assertEqual(result.status, "partial")
             self.assertIn("collector: drivers: provider unavailable", result.errors)
+            self.assertEqual(result.failed_sources, ("drivers",))
+            self.assertEqual(result.collected_sources, ("eventlog",))
+
+    def test_eventlog_diagnostic_keeps_cursor_for_retry_and_marks_source_incomplete(self) -> None:
+        class DegradedEventLogCollector:
+            def __init__(self) -> None:
+                self.last_errors: list[str] = []
+
+            def collect_snapshots(self):
+                return {}
+
+            def collect_symptoms(self, since):
+                self.last_errors.append("eventlog: provider unavailable")
+                return []
+
+        with Database(":memory:") as database:
+            result = Scanner(database, DegradedEventLogCollector()).scan()
+            cursor = database.get_meta("symptoms:cursor")
+
+        self.assertEqual(result.status, "partial")
+        self.assertEqual(result.failed_sources, ("eventlog",))
+        self.assertEqual(result.collected_sources, ())
+        self.assertIsNone(cursor)
+
+    def test_failed_snapshot_application_is_not_reported_as_collected(self) -> None:
+        class InvalidSnapshotCollector:
+            def collect_snapshots(self):
+                return {"drivers": None}
+
+            def collect_symptoms(self, since):
+                return []
+
+        with Database(":memory:") as database:
+            result = Scanner(database, InvalidSnapshotCollector()).scan()
+
+        self.assertEqual(result.status, "partial")
+        self.assertEqual(result.collected_sources, ("eventlog",))
+        self.assertEqual(result.failed_sources, ("drivers",))

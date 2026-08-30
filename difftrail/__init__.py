@@ -1,4 +1,4 @@
-"""Difftrail: a local-first Windows change journal and investigator."""
+"""Difftrail: a local-first Windows change journal and evidence-review tool."""
 
 __version__ = "0.1.3"
 

@@ -122,7 +122,7 @@ def build_ground_truth_scenarios(base: datetime | None = None) -> tuple[GroundTr
     )
     scenarios.append(
         GroundTruthScenario(
-            "counter-evidence-downgrades-confidence",
+            "counter-evidence-reduces-support",
             "Audio fails after a driver change, but the same symptom was already present before it.",
             IncidentRequest("audio is unreliable", now - timedelta(hours=1), now, "audio", 7),
             (
@@ -152,7 +152,7 @@ def build_ground_truth_scenarios(base: datetime | None = None) -> tuple[GroundTr
     )
     scenarios.append(
         GroundTruthScenario(
-            "no-cause-recorded",
+            "no-supported-change-recorded",
             "A network symptom occurs, but only unrelated changes are in the journal.",
             IncidentRequest("the internet stopped working", now - timedelta(hours=1), now, "network", 7),
             (
@@ -166,8 +166,8 @@ def build_ground_truth_scenarios(base: datetime | None = None) -> tuple[GroundTr
     )
     scenarios.append(
         GroundTruthScenario(
-            "post-onset-change-is-not-cause",
-            "A graphics driver changes after the selected onset and must not be considered causal.",
+            "post-onset-change-is-not-ranked",
+            "A graphics driver changes after the selected onset and must not be ranked for the earlier problem window.",
             IncidentRequest("the display failed", now - timedelta(hours=2), now, "graphics", 7),
             (
                 _change(now, "gt-post-onset-driver", 1, "graphics", "Graphics driver updated", "drivers"),
@@ -199,7 +199,7 @@ def build_ground_truth_scenarios(base: datetime | None = None) -> tuple[GroundTr
                 _symptom(now, "gt-simultaneous-symptom", 0.25, "graphics", "Game crash", "crash"),
             ),
             "gt-simultaneous-a",
-            expected_assessment="candidate_found",
+            expected_assessment="insufficient_evidence",
         )
     )
     scenarios.append(
@@ -229,7 +229,7 @@ def _rank_of(hypotheses: Iterable[Hypothesis], event_id: str | None) -> int | No
 def run_ground_truth_suite(base: datetime | None = None) -> dict[str, Any]:
     scenarios = build_ground_truth_scenarios(base)
     reports: list[dict[str, Any]] = []
-    known_cause = 0
+    expected_leads = 0
     top1 = 0
     top3 = 0
     no_false_high = 0
@@ -261,7 +261,7 @@ def run_ground_truth_suite(base: datetime | None = None) -> dict[str, Any]:
             no_false_high += int(passed)
             passed = passed and assessment_pass
         else:
-            known_cause += 1
+            expected_leads += 1
             top1 += int(rank == 1)
             top3 += int(rank is not None and rank <= 3)
             confidence_pass = scenario.expected_confidence is None or (
@@ -277,20 +277,20 @@ def run_ground_truth_suite(base: datetime | None = None) -> dict[str, Any]:
                 "description": scenario.description,
                 "expected_event_id": scenario.expected_event_id,
                 "rank": rank,
-                "top": hypotheses[0].as_dict() if hypotheses else None,
+                "top": hypotheses[0].public_dict() if hypotheses else None,
                 "assessment": assessment.as_dict(),
                 "passed": passed,
-                "candidate_count": len(hypotheses),
+                "ranked_lead_count": len(hypotheses),
             }
         )
     stress = run_perturbation_suite(base)
     return {
         "scenario_count": len(scenarios),
-        "known_cause_count": known_cause,
-        "top1_accuracy": round(top1 / known_cause, 3) if known_cause else 0.0,
-        "top3_accuracy": round(top3 / known_cause, 3) if known_cause else 0.0,
-        "no_false_high_rate": round(no_false_high / (len(scenarios) - known_cause), 3) if len(scenarios) != known_cause else 1.0,
-        "expected_confidence_pass_rate": round(expected_confidence_passes / known_cause, 3) if known_cause else 0.0,
+        "expected_lead_count": expected_leads,
+        "expected_lead_top1_rate": round(top1 / expected_leads, 3) if expected_leads else 0.0,
+        "expected_lead_top3_rate": round(top3 / expected_leads, 3) if expected_leads else 0.0,
+        "no_false_strong_support_rate": round(no_false_high / (len(scenarios) - expected_leads), 3) if len(scenarios) != expected_leads else 1.0,
+        "expected_support_pass_rate": round(expected_confidence_passes / expected_leads, 3) if expected_leads else 0.0,
         "assessment_pass_rate": round(assessment_passes / len(scenarios), 3) if scenarios else 0.0,
         "determinism": {"passed": not determinism_failures, "failures": determinism_failures},
         "passed": all(report["passed"] for report in reports) and stress["passed"] and not determinism_failures,
@@ -312,7 +312,7 @@ def run_perturbation_suite(base: datetime | None = None, *, iterations: int = 10
         true_hours = rng.uniform(4.0, 72.0)
         onset = now - timedelta(hours=1)
         true_source = "devices" if area == "audio" else "drivers"
-        true_event = _change(now, f"stress-true-{index}", true_hours, area, f"{area} root change", true_source)
+        true_event = _change(now, f"stress-true-{index}", true_hours, area, f"Expected {area} change", true_source)
         distractors = [
             _change(now, f"stress-app-{index}", rng.uniform(1.5, max(2.0, true_hours - 0.5)), "application", "Nearby app update", "apps"),
             _change(now, f"stress-startup-{index}", rng.uniform(1.5, max(2.0, true_hours - 0.5)), "startup", "Nearby startup change", "services", "added"),
@@ -324,6 +324,6 @@ def run_perturbation_suite(base: datetime | None = None, *, iterations: int = 10
         if rank == 1:
             successes += 1
         elif len(failures) < 10:
-            failures.append({"iteration": index, "area": area, "rank": rank, "top": hypotheses[0].as_dict() if hypotheses else None})
-    accuracy = successes / iterations if iterations else 0.0
-    return {"iterations": iterations, "seed": seed, "top1_accuracy": round(accuracy, 3), "passed": accuracy >= 0.95, "failures": failures}
+            failures.append({"iteration": index, "area": area, "rank": rank, "top": hypotheses[0].public_dict() if hypotheses else None})
+    top1_rate = successes / iterations if iterations else 0.0
+    return {"iterations": iterations, "seed": seed, "expected_lead_top1_rate": round(top1_rate, 3), "passed": top1_rate >= 0.95, "failures": failures}

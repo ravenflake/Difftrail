@@ -11,6 +11,6 @@ ASSESSMENT_STATES = frozenset(
 )
 
 # A newly created or otherwise unassessed investigation must never imply that
-# a causal candidate was found. This is intentionally one of the public
+# a supported lead was found. This is intentionally one of the public
 # assessment states so old journals can be read without a separate sentinel.
 NEUTRAL_ASSESSMENT = "insufficient_evidence"

@@ -47,7 +47,9 @@ def run_investigation(
     coverage = database.investigation_coverage(
         request.subsystem,
         since=window_start,
-        until=request.onset_end,
+        # A scan performed after the reported onset cannot retroactively prove
+        # that the preceding change window was observed.
+        until=request.onset_start,
     )
     hypotheses = tuple(rank_candidates(events, request))
     if not coverage.get("known") or int(coverage.get("scan_count", 0)) == 0:

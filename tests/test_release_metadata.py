@@ -48,6 +48,10 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("if ($exitCode -ne 0)", script)
 
         self.assertIn('Filter "difftrail-desktop.exe"', script)
+        self.assertIn('Filter "difftrail-status.exe"', script)
+        self.assertIn('$statusRunValueName = "Difftrail Status"', script)
+        self.assertIn("did not register the Difftrail notification-area companion", script)
+        self.assertIn("left the Difftrail notification-area startup registration", script)
         self.assertIn('$startInfo.Arguments = $RawArguments', script)
         self.assertIn('Invoke-Installer -FilePath $installer -RawArguments "/S /D=$installRoot"', script)
         self.assertIn('Invoke-Installer -FilePath $uninstaller.FullName -RawArguments "/S _?=$installRoot"', script)
@@ -74,6 +78,41 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("DifftrailRemoveWatcherTask", hooks)
         self.assertNotIn("LOCALAPPDATA", hooks)
         self.assertNotIn("difftrail.db", hooks.casefold())
+        self.assertIn("difftrail-status.exe", hooks)
+        self.assertIn('WriteRegStr HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Run" "Difftrail Status"', hooks)
+        self.assertIn('DeleteRegValue HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Run" "Difftrail Status"', hooks)
+        self.assertIn('CreateShortCut "$SMSTARTUP\\Difftrail Status.lnk"', hooks)
+        self.assertIn('Delete "$SMSTARTUP\\Difftrail Status.lnk"', hooks)
+        self.assertIn("MUI_CUSTOMFUNCTION_GUIINIT DifftrailInstallerGuiInit", hooks)
+        self.assertIn("Function DifftrailInstallerGuiInit", hooks)
+        self.assertGreaterEqual(hooks.count("/IM difftrail-status.exe /T /F"), 2)
+
+    def test_status_companion_menu_can_toggle_collection(self) -> None:
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "ui" / "src-tauri" / "src" / "bin" / "difftrail-status.rs").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('const STATUS_ID: &str = "toggle-background-collection";', source)
+        self.assertIn('MenuItem::with_id(STATUS_ID, initial_status.menu_text(), true, None)', source)
+        self.assertIn('MenuItem::with_id(EXIT_ID, "Exit status icon", true, None)', source)
+        self.assertIn('run_watcher_script(root, "uninstall-watcher.ps1", &[])', source)
+        self.assertIn('"install-watcher.ps1"', source)
+        self.assertIn("-Verb RunAs", source)
+        self.assertIn("run_with_startup_retry", source)
+        self.assertIn("watcher-interval.txt", source)
+
+    def test_installer_validation_covers_status_startup_fallback(self) -> None:
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "scripts" / "validate-installer.ps1").read_text(encoding="utf-8")
+        self.assertIn("$statusStartupShortcut", source)
+        self.assertIn("notification-area startup shortcut targets the wrong executable", source)
+        self.assertIn("startup shortcut in place", source)
+        self.assertIn("Reinstalling over the running isolated installation", source)
+        self.assertIn("In-place reinstall left the previous desktop process running", source)
 
     def test_release_workflow_reuses_metadata_checker(self) -> None:
         from pathlib import Path
@@ -102,7 +141,8 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("Stamp development build version", workflow)
         self.assertIn('--pr-number "$env:PR_NUMBER"', workflow)
         self.assertIn("--channel main", workflow)
-        self.assertIn('--build-number "$env:BUILD_NUMBER"', workflow)
+        self.assertIn('BUILD_ID: ${{ github.run_id }}', workflow)
+        self.assertEqual(workflow.count('--build-id "$env:BUILD_ID"'), 2)
         self.assertIn("Build versioned development UI", workflow)
         self.assertIn("--config src-tauri/tauri.build.conf.json", workflow)
         self.assertIn("steps.stamp_build.outputs.artifact_name", workflow)

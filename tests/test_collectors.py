@@ -117,6 +117,21 @@ class CollectorTests(unittest.TestCase):
             with self.assertRaisesRegex(PowerShellError, "invalid JSON"):
                 run_json("Get-Item")
 
+    def test_powershell_json_depth_ignores_structural_characters_in_strings(self) -> None:
+        completed = subprocess.CompletedProcess(
+            ["powershell.exe"],
+            0,
+            '[{"Name":"text with { [ } ] and an escaped \\\" quote"}]',
+            "",
+        )
+        with patch("difftrail.collectors.powershell.powershell_path", return_value="powershell.exe"), patch(
+            "difftrail.collectors.powershell.subprocess.run", return_value=completed
+        ):
+            self.assertEqual(
+                run_json("Get-Item"),
+                [{"Name": 'text with { [ } ] and an escaped " quote'}],
+            )
+
     def test_application_event_identity_is_safe_and_stable(self) -> None:
         self.assertEqual(
             extract_safe_application_name(r"Faulting application name: C:\Games\Example.exe, version 1.0"),
@@ -193,6 +208,13 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0].subsystem, "graphics")
         self.assertEqual(items[0].payload["version"], "1.2.3")
+
+    def test_driver_inventory_does_not_duplicate_device_presence_transitions(self) -> None:
+        script = WindowsCollector.snapshot_scripts["drivers"]
+
+        self.assertIn("Get-CimInstance Win32_PnPSignedDriver", script)
+        self.assertIn("Where-Object { $_.DeviceID }", script)
+        self.assertNotIn("$_.Present", script)
 
     def test_one_unavailable_provider_does_not_stop_other_snapshots(self) -> None:
         collector = WindowsCollector()

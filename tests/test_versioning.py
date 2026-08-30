@@ -18,6 +18,28 @@ from scripts.versioning import (
 )
 
 
+def semver_prerelease_precedence(left: str, right: str) -> int:
+    """Compare the prerelease identifiers used by disposable test builds."""
+
+    left_core = left.split("+", 1)[0]
+    right_core = right.split("+", 1)[0]
+    left_base, left_pre = left_core.split("-", 1)
+    right_base, right_pre = right_core.split("-", 1)
+    if left_base != right_base:
+        raise ValueError("test helper expects matching base versions")
+    for left_part, right_part in zip(left_pre.split("."), right_pre.split(".")):
+        if left_part == right_part:
+            continue
+        left_numeric = left_part.isdigit()
+        right_numeric = right_part.isdigit()
+        if left_numeric and right_numeric:
+            return (int(left_part) > int(right_part)) - (int(left_part) < int(right_part))
+        if left_numeric != right_numeric:
+            return -1 if left_numeric else 1
+        return (left_part > right_part) - (left_part < right_part)
+    return 0
+
+
 class BuildVersioningTests(unittest.TestCase):
     def test_next_version_is_separate_from_committed_release_metadata(self) -> None:
         root = Path(__file__).resolve().parents[1]
@@ -30,8 +52,8 @@ class BuildVersioningTests(unittest.TestCase):
 
     def test_development_version_contains_pr_and_short_commit_identity(self) -> None:
         self.assertEqual(
-            development_version("0.1.4", 27, "ABCDEF1234567890"),
-            "0.1.4-dev.27+abcdef1",
+            development_version("0.1.4", 27, 33255304554, "ABCDEF1234567890"),
+            "0.1.4-preview.33255304554.pr.27+abcdef1",
         )
         self.assertEqual(short_commit_sha("abcdef1"), "abcdef1")
         self.assertEqual(
@@ -41,8 +63,8 @@ class BuildVersioningTests(unittest.TestCase):
 
     def test_main_snapshot_version_contains_channel_and_commit_identity(self) -> None:
         self.assertEqual(
-            main_snapshot_version("0.1.4", 124, "8B7B92CC4741ACE8"),
-            "0.1.4-dev.main.124+8b7b92c",
+            main_snapshot_version("0.1.4", 33253989141, "8B7B92CC4741ACE8"),
+            "0.1.4-preview.33253989141.main+8b7b92c",
         )
         self.assertEqual(
             main_artifact_name("8B7B92CC4741ACE8"),
@@ -51,11 +73,13 @@ class BuildVersioningTests(unittest.TestCase):
 
     def test_development_version_rejects_ambiguous_inputs(self) -> None:
         with self.assertRaises(ValueError):
-            development_version("0.1.4-beta.1", 27, "abcdef123456")
+            development_version("0.1.4-beta.1", 27, 100, "abcdef123456")
         with self.assertRaises(ValueError):
-            development_version("0.1.4", 0, "abcdef123456")
+            development_version("0.1.4", 0, 100, "abcdef123456")
         with self.assertRaises(ValueError):
-            development_version("0.1.4", 27, "not-a-commit")
+            development_version("0.1.4", 27, 100, "not-a-commit")
+        with self.assertRaises(ValueError):
+            development_version("0.1.4", 27, 0, "abcdef123456")
         with self.assertRaises(ValueError):
             main_snapshot_version("0.1.4-beta.1", 124, "abcdef123456")
         with self.assertRaises(ValueError):
@@ -63,15 +87,28 @@ class BuildVersioningTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             main_snapshot_version("0.1.4", 0, "abcdef123456")
 
+    def test_newer_build_ids_win_across_channels_and_legacy_versions(self) -> None:
+        legacy_main = "0.1.4-dev.main.12+5b16880"
+        main = main_snapshot_version("0.1.4", 33253989141, "8b7b92cc4741")
+        pull_request = development_version("0.1.4", 37, 33255304554, "209c688c5ce2")
+        next_main = main_snapshot_version("0.1.4", 33256000000, "abcdef123456")
+
+        self.assertGreater(semver_prerelease_precedence(main, legacy_main), 0)
+        self.assertGreater(semver_prerelease_precedence(pull_request, main), 0)
+        self.assertGreater(semver_prerelease_precedence(next_main, pull_request), 0)
+
     def test_build_stamp_is_ignored_and_targets_backend_and_tauri(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            version = "0.1.4-dev.27+abcdef1"
+            version = "0.1.4-preview.33255304554.pr.27+abcdef1"
 
             write_build_stamp(root, version)
 
             build_module = (root / "difftrail" / "_build_version.py").read_text(encoding="utf-8")
-            self.assertIn("BUILD_VERSION = '0.1.4-dev.27+abcdef1'", build_module)
+            self.assertIn(
+                "BUILD_VERSION = '0.1.4-preview.33255304554.pr.27+abcdef1'",
+                build_module,
+            )
             tauri_config = json.loads(
                 (root / "ui" / "src-tauri" / "tauri.build.conf.json").read_text(
                     encoding="utf-8"
@@ -82,14 +119,17 @@ class BuildVersioningTests(unittest.TestCase):
     def test_main_snapshot_build_stamp_targets_backend_and_tauri(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            version = "0.1.4-dev.main.124+8b7b92c"
+            version = "0.1.4-preview.33253989141.main+8b7b92c"
 
             write_build_stamp(root, version)
 
             build_module = (root / "difftrail" / "_build_version.py").read_text(
                 encoding="utf-8"
             )
-            self.assertIn("BUILD_VERSION = '0.1.4-dev.main.124+8b7b92c'", build_module)
+            self.assertIn(
+                "BUILD_VERSION = '0.1.4-preview.33253989141.main+8b7b92c'",
+                build_module,
+            )
             tauri_config = json.loads(
                 (root / "ui" / "src-tauri" / "tauri.build.conf.json").read_text(
                     encoding="utf-8"
@@ -109,8 +149,8 @@ class BuildVersioningTests(unittest.TestCase):
                         str(root),
                         "--channel",
                         "main",
-                        "--build-number",
-                        "124",
+                        "--build-id",
+                        "33253989141",
                         "--commit-sha",
                         "8b7b92cc4741ace8",
                     ]
@@ -122,7 +162,10 @@ class BuildVersioningTests(unittest.TestCase):
                     encoding="utf-8"
                 )
             )
-            self.assertEqual(tauri_config, {"version": "0.1.4-dev.main.124+8b7b92c"})
+            self.assertEqual(
+                tauri_config,
+                {"version": "0.1.4-preview.33253989141.main+8b7b92c"},
+            )
 
 
 if __name__ == "__main__":

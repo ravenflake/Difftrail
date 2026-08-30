@@ -1,6 +1,7 @@
 import unittest
 
 from difftrail.privacy import (
+    error_bucket,
     extract_safe_application_name,
     redact_legacy_text,
     redact_public_text,
@@ -157,6 +158,14 @@ class PrivacyTests(unittest.TestCase):
     def test_extracts_only_a_safe_application_basename(self) -> None:
         message = r"Faulting application name: C:\Users\testuser\Games\Example.exe, version 1.2.3"
         self.assertEqual(extract_safe_application_name(message), "Example.exe")
+
+    def test_provider_error_bucket_keeps_nested_collector_source_only(self) -> None:
+        self.assertEqual(
+            error_bucket(r"collector: drivers: C:\Users\Alice\private-provider.log"),
+            "drivers",
+        )
+        self.assertEqual(error_bucket("collector: eventlog: private provider detail"), "eventlog")
+        self.assertEqual(error_bucket("collector: private-source: secret"), "collector")
 
     def test_extracts_hanging_program_name(self) -> None:
         message = "The program Example.exe version 1.0 stopped interacting with Windows."

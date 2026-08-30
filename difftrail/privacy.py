@@ -13,6 +13,8 @@ KNOWN_ERROR_BUCKETS = frozenset(
         "tasks",
         "startup",
         "devices",
+        "eventlog",
+        "retention",
         "snapshots",
         "symptoms",
         "collector",
@@ -165,7 +167,13 @@ def redact_legacy_value(value: Any) -> Any:
 def error_bucket(error: object) -> str:
     """Return a stable, non-sensitive provider-error category."""
 
-    prefix = str(error).split(":", 1)[0].strip()
+    parts = [part.strip() for part in str(error).split(":", 2)]
+    prefix = parts[0]
+    # WindowsCollector reports the provider name inside the scanner's
+    # aggregate ``collector`` category. Keep that useful source identity while
+    # discarding the exception text that follows it.
+    if prefix == "collector" and len(parts) > 1 and parts[1] in KNOWN_ERROR_BUCKETS:
+        return parts[1]
     return prefix if prefix in KNOWN_ERROR_BUCKETS else "other"
 
 

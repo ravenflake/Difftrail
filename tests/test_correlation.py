@@ -112,7 +112,7 @@ class CorrelationTests(unittest.TestCase):
         self.assertEqual(hypotheses[0].event.event_id, "driver")
         self.assertIn(hypotheses[0].confidence, {"High", "Medium"})
         signals = {item.signal for item in hypotheses[0].evidence}
-        self.assertTrue({"temporal proximity", "subsystem relevance", "baseline break"}.issubset(signals))
+        self.assertTrue({"temporal proximity", "subsystem relevance", "symptom timing"}.issubset(signals))
         self.assertEqual(hypotheses[0].safe_diagnostic["target"], "devmgmt.msc")
 
     def test_equal_top_scores_are_marked_ambiguous_and_not_a_conclusion(self) -> None:
@@ -137,7 +137,7 @@ class CorrelationTests(unittest.TestCase):
         self.assertEqual(hypotheses[0].confidence, "Medium")
         assessment = assess_investigation(request, hypotheses, [*changes, symptom])
         self.assertEqual(assessment.state, "insufficient_evidence")
-        self.assertIn("tied at the same score", " ".join(assessment.reasons))
+        self.assertIn("tied by the fixed ranking rules", " ".join(assessment.reasons))
 
     def test_individual_service_events_are_not_suppressed_only_by_timestamp(self) -> None:
         now = utc_now()
@@ -172,7 +172,7 @@ class CorrelationTests(unittest.TestCase):
         assessment = assess_investigation(request, hypotheses, [*service_events, symptom])
         self.assertEqual(assessment.state, "insufficient_evidence")
         self.assertNotIn("bulk Windows per-user service refresh", " ".join(assessment.reasons))
-        self.assertIn("tied at the same score", " ".join(assessment.reasons))
+        self.assertIn("tied by the fixed ranking rules", " ".join(assessment.reasons))
 
     def test_per_user_service_candidate_uses_safe_review_language(self) -> None:
         now = utc_now()
@@ -223,7 +223,12 @@ class CorrelationTests(unittest.TestCase):
         by_id = {hypothesis.event.event_id: hypothesis for hypothesis in hypotheses}
         self.assertEqual(by_id["service"].confidence, "Low")
         self.assertEqual(by_id["app"].confidence, "Low")
-        self.assertIn("No related symptom event", by_id["service"].evidence[2].explanation)
+        no_support = next(
+            item
+            for item in by_id["service"].counter_evidence
+            if item.signal == "no symptom corroboration"
+        )
+        self.assertIn("No compatible symptom record", no_support.explanation)
 
     def test_explicit_difftrail_entity_outranks_newer_discord_update(self) -> None:
         now = utc_now()
@@ -287,9 +292,12 @@ class CorrelationTests(unittest.TestCase):
 
         self.assertEqual({item.confidence for item in hypotheses}, {"Low"})
         for hypothesis in hypotheses:
-            baseline = next(item for item in hypothesis.evidence if item.signal == "baseline break")
-            self.assertEqual(baseline.strength, "weak")
-            self.assertIn("No related symptom event", baseline.explanation)
+            no_support = next(
+                item
+                for item in hypothesis.counter_evidence
+                if item.signal == "no symptom corroboration"
+            )
+            self.assertIn("No compatible symptom record", no_support.explanation)
             self.assertTrue(any(item.signal == "entity mismatch" for item in hypothesis.counter_evidence))
         self.assertEqual(assessment.state, "insufficient_evidence")
         self.assertIn(
@@ -342,10 +350,10 @@ class CorrelationTests(unittest.TestCase):
         hypotheses = rank_candidates([minecraft, brave, symptom], request)
 
         self.assertEqual(hypotheses[0].event.event_id, "minecraft-update")
-        matching_baseline = next(
-            item for item in hypotheses[0].evidence if item.signal == "baseline break"
+        matching_symptom = next(
+            item for item in hypotheses[0].evidence if item.signal == "symptom timing"
         )
-        self.assertNotEqual(matching_baseline.strength, "weak")
+        self.assertNotEqual(matching_symptom.strength, "weak")
         brave_hypothesis = next(
             item for item in hypotheses if item.event.event_id == "brave-update"
         )
@@ -409,8 +417,12 @@ class CorrelationTests(unittest.TestCase):
 
         self.assertEqual({item.confidence for item in hypotheses}, {"Low"})
         for hypothesis in hypotheses:
-            baseline = next(item for item in hypothesis.evidence if item.signal == "baseline break")
-            self.assertEqual(baseline.strength, "weak")
+            self.assertTrue(
+                any(
+                    item.signal == "no symptom corroboration"
+                    for item in hypothesis.counter_evidence
+                )
+            )
             self.assertTrue(any(item.signal == "entity mismatch" for item in hypothesis.counter_evidence))
 
     def test_matching_service_still_uses_affected_entity_symptom(self) -> None:
@@ -447,8 +459,8 @@ class CorrelationTests(unittest.TestCase):
 
         hypothesis = rank_candidates([service, symptom], request)[0]
 
-        baseline = next(item for item in hypothesis.evidence if item.signal == "baseline break")
-        self.assertNotEqual(baseline.strength, "weak")
+        symptom_timing = next(item for item in hypothesis.evidence if item.signal == "symptom timing")
+        self.assertNotEqual(symptom_timing.strength, "weak")
         self.assertFalse(any(item.signal == "entity mismatch" for item in hypothesis.counter_evidence))
 
     def test_unidentified_service_remains_eligible_for_symptom_support(self) -> None:
@@ -484,8 +496,8 @@ class CorrelationTests(unittest.TestCase):
 
         hypothesis = rank_candidates([service, symptom], request)[0]
 
-        baseline = next(item for item in hypothesis.evidence if item.signal == "baseline break")
-        self.assertNotEqual(baseline.strength, "weak")
+        symptom_timing = next(item for item in hypothesis.evidence if item.signal == "symptom timing")
+        self.assertNotEqual(symptom_timing.strength, "weak")
         self.assertFalse(any(item.signal == "entity mismatch" for item in hypothesis.counter_evidence))
 
     def test_cross_application_system_changes_remain_eligible(self) -> None:
@@ -572,8 +584,8 @@ class CorrelationTests(unittest.TestCase):
 
         hypothesis = rank_candidates([event], request)[0]
 
-        signal = next(item for item in hypothesis.evidence if item.signal == "entity relevance")
-        self.assertEqual(signal.strength, "weak")
+        self.assertFalse(any(item.signal == "entity relevance" for item in hypothesis.evidence))
+        self.assertTrue(any(item.signal == "entity mismatch" for item in hypothesis.counter_evidence))
 
     def test_suspected_change_is_a_separate_bounded_ranking_signal(self) -> None:
         now = utc_now()
@@ -595,6 +607,189 @@ class CorrelationTests(unittest.TestCase):
         self.assertEqual(hypotheses[0].event.event_id, "display-driver")
         signal = next(item for item in hypotheses[0].evidence if item.signal == "suspected change")
         self.assertEqual(signal.strength, "moderate")
+
+    def test_medium_support_never_becomes_a_found_candidate(self) -> None:
+        now = utc_now()
+        update = Event(
+            now - timedelta(hours=2),
+            "change",
+            "windows-update",
+            "installed",
+            "Windows update installed",
+            source="updates",
+            event_id="update",
+        )
+        restart = Event(
+            now - timedelta(minutes=15),
+            "symptom",
+            "general",
+            "unexpected_restart",
+            "Unexpected restart detected",
+            entity="Kernel-Power",
+            source="eventlog",
+            event_id="restart",
+        )
+        request = IncidentRequest("the computer restarted unexpectedly", now, now, "general", 7)
+
+        hypotheses = rank_candidates([update, restart], request)
+        assessment = assess_investigation(request, hypotheses, [update, restart])
+
+        self.assertEqual(hypotheses[0].confidence, "Medium")
+        self.assertEqual(assessment.state, "insufficient_evidence")
+        self.assertTrue(
+            any(
+                item.signal == "limited symptom specificity"
+                for item in hypotheses[0].counter_evidence
+            )
+        )
+
+    def test_known_crash_identity_is_not_shared_across_app_changes(self) -> None:
+        now = utc_now()
+        onset = now - timedelta(minutes=30)
+        minecraft = Event(
+            onset - timedelta(hours=48),
+            "change",
+            "application",
+            "updated",
+            "Application Minecraft updated",
+            entity="Minecraft",
+            source="apps",
+            event_id="minecraft",
+        )
+        discord = Event(
+            onset - timedelta(minutes=15),
+            "change",
+            "application",
+            "updated",
+            "Application Discord updated",
+            entity="Discord",
+            source="apps",
+            event_id="discord",
+        )
+        crash = Event(
+            onset,
+            "symptom",
+            "application",
+            "crash",
+            "Application crash detected",
+            entity="Minecraft.exe",
+            source="eventlog",
+            event_id="minecraft-crash",
+        )
+        request = IncidentRequest("an application crashed", onset, now, "application", 7)
+
+        hypotheses = rank_candidates([minecraft, discord, crash], request)
+        by_id = {item.event.event_id: item for item in hypotheses}
+
+        self.assertEqual(hypotheses[0].event.event_id, "minecraft")
+        self.assertTrue(any(item.signal == "symptom timing" for item in by_id["minecraft"].evidence))
+        self.assertFalse(any(item.signal == "symptom timing" for item in by_id["discord"].evidence))
+        self.assertTrue(
+            any(
+                item.signal == "symptom identity mismatch"
+                for item in by_id["discord"].counter_evidence
+            )
+        )
+
+    def test_symptom_well_before_selected_onset_is_not_corroboration(self) -> None:
+        now = utc_now()
+        driver = Event(
+            now - timedelta(days=4),
+            "change",
+            "graphics",
+            "updated",
+            "Graphics driver updated",
+            source="drivers",
+            event_id="driver",
+        )
+        old_failure = Event(
+            now - timedelta(days=3),
+            "symptom",
+            "graphics",
+            "driver_reset",
+            "Display driver reset",
+            source="eventlog",
+            event_id="old-reset",
+        )
+        request = IncidentRequest("display failed today", now, now, "graphics", 7)
+
+        hypothesis = rank_candidates([driver, old_failure], request)[0]
+
+        self.assertEqual(hypothesis.confidence, "Low")
+        self.assertFalse(any(item.signal == "symptom timing" for item in hypothesis.evidence))
+        self.assertTrue(
+            any(
+                item.signal == "symptom predates reported onset"
+                for item in hypothesis.counter_evidence
+            )
+        )
+
+    def test_symptom_well_after_selected_onset_is_not_corroboration(self) -> None:
+        now = utc_now()
+        onset = now - timedelta(days=2)
+        driver = Event(
+            onset - timedelta(hours=1),
+            "change",
+            "graphics",
+            "updated",
+            "Graphics driver updated",
+            source="drivers",
+            event_id="driver",
+        )
+        late_failure = Event(
+            now,
+            "symptom",
+            "graphics",
+            "driver_reset",
+            "Display driver reset",
+            source="eventlog",
+            event_id="late-reset",
+        )
+        request = IncidentRequest("display failed two days ago", onset, now, "graphics", 7)
+
+        hypothesis = rank_candidates([driver, late_failure], request)[0]
+
+        self.assertEqual(hypothesis.confidence, "Low")
+        self.assertFalse(any(item.signal == "symptom timing" for item in hypothesis.evidence))
+        self.assertTrue(
+            any(
+                item.signal == "no symptom corroboration"
+                for item in hypothesis.counter_evidence
+            )
+        )
+
+    def test_near_equal_leads_are_treated_as_ambiguous(self) -> None:
+        now = utc_now()
+        changes = [
+            Event(
+                now - timedelta(hours=hours),
+                "change",
+                "graphics",
+                "updated",
+                f"Display driver {hours} updated",
+                source="drivers",
+                event_id=f"driver-{hours}",
+            )
+            for hours in (2, 3)
+        ]
+        symptom = Event(
+            now,
+            "symptom",
+            "graphics",
+            "driver_reset",
+            "Display driver reset",
+            source="eventlog",
+            event_id="reset",
+        )
+        request = IncidentRequest("display driver reset", now, now, "graphics", 7)
+
+        hypotheses = rank_candidates([*changes, symptom], request)
+        assessment = assess_investigation(request, hypotheses, [*changes, symptom])
+
+        self.assertNotEqual(hypotheses[0].score, hypotheses[1].score)
+        self.assertEqual(hypotheses[0].tie_count, 2)
+        self.assertEqual(hypotheses[0].confidence, "Medium")
+        self.assertEqual(assessment.state, "insufficient_evidence")
 
     def test_no_structured_context_preserves_existing_temporal_order(self) -> None:
         now = utc_now()

@@ -20,6 +20,8 @@ const CONFIGURED_API_BASE = IS_DEVELOPMENT_BUILD
   : "";
 const CONFIGURED_API_TOKEN = IS_DEVELOPMENT_BUILD ? import.meta.env.VITE_DIFFTRAIL_API_TOKEN || "" : "";
 const REQUEST_TIMEOUT_MS = 10_000;
+const SCAN_TIMEOUT_MS = 120_000;
+const LONG_OPERATION_TIMEOUT_MS = 45_000;
 
 type ApiEndpoint = {
   base: string;
@@ -62,9 +64,9 @@ function getApiEndpoint(): Promise<ApiEndpoint> {
   return apiEndpointPromise;
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function request<T>(path: string, init?: RequestInit, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
     const endpoint = await getApiEndpoint();
     const response = await fetch(`${endpoint.base}${path}`, {
@@ -97,7 +99,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     return payload as T;
   } catch (reason) {
     if (reason instanceof DOMException && reason.name === "AbortError") {
-      throw new Error(`Difftrail API request timed out after ${REQUEST_TIMEOUT_MS / 1000} seconds`);
+      throw new Error(`Difftrail API request timed out after ${timeoutMs / 1000} seconds`);
     }
     throw reason;
   } finally {
@@ -128,7 +130,7 @@ export function loadTimeline(filters: TimelineFilters, limit = 240): Promise<Eve
 }
 
 export function runScan(): Promise<{ scan: ScanSummary }> {
-  return request<{ scan: ScanSummary }>("/scan", { method: "POST", body: "{}" });
+  return request<{ scan: ScanSummary }>("/scan", { method: "POST", body: "{}" }, SCAN_TIMEOUT_MS);
 }
 
 export function updateAutomationConfig(input: AutomationConfig): Promise<{ automation: AutomationSummary }> {
@@ -145,7 +147,7 @@ export function updateAutomationWatcher(
   return request<{ automation: AutomationSummary; scan?: ScanSummary }>("/automation/watcher", {
     method: "POST",
     body: JSON.stringify({ action, interval_seconds: intervalSeconds }),
-  });
+  }, action === "run" ? SCAN_TIMEOUT_MS : LONG_OPERATION_TIMEOUT_MS);
 }
 
 export function markAutomationNotificationsRead(ids?: string[]): Promise<{ automation: AutomationSummary }> {
@@ -156,7 +158,7 @@ export function markAutomationNotificationsRead(ids?: string[]): Promise<{ autom
 }
 
 export function recordOverhead(): Promise<OverheadResponse> {
-  return request<OverheadResponse>("/overhead", { method: "POST", body: "{}" });
+  return request<OverheadResponse>("/overhead", { method: "POST", body: "{}" }, SCAN_TIMEOUT_MS);
 }
 
 export function createInvestigation(input: InvestigationInput): Promise<InvestigationResponse> {
@@ -168,7 +170,7 @@ export function createInvestigation(input: InvestigationInput): Promise<Investig
 
 export function recordFeedback(
   incidentId: string,
-  outcome: "correct" | "incorrect" | "unknown",
+  outcome: NonNullable<Incident["feedback"]["outcome"]>,
   eventId?: string,
 ): Promise<{ incident: Incident }> {
   return request<{ incident: Incident }>(`/incidents/${encodeURIComponent(incidentId)}/feedback`, {
@@ -187,7 +189,7 @@ export function exportBundle(options: { days?: number; incident_id?: string }): 
   return request<BundleResponse>("/export-bundle", {
     method: "POST",
     body: JSON.stringify(options),
-  });
+  }, LONG_OPERATION_TIMEOUT_MS);
 }
 
 export const API_BASE = CONFIGURED_API_BASE || (IS_DEVELOPMENT_BUILD ? DEFAULT_API_BASE : "");

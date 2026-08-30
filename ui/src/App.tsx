@@ -72,6 +72,8 @@ export default function App() {
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [scanError, setScanError] = useState<string | null>(null);
+  const [scanNotice, setScanNotice] = useState<string | null>(null);
   const [selectedIncidentId, setSelectedIncidentId] = useState<string | null>(null);
   const [automationBusy, setAutomationBusy] = useState<"config" | "enable" | "disable" | "run" | "read" | null>(null);
   const [automationError, setAutomationError] = useState<string | null>(null);
@@ -81,30 +83,49 @@ export default function App() {
     window.location.hash = next;
     setView(next);
     if (next === "investigate") setSelectedIncidentId(null);
+    setExportError(null);
+    setDeleteError(null);
+    setScanError(null);
+    setScanNotice(null);
   }, []);
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
+  const refresh = useCallback(async (initial = false): Promise<boolean> => {
+    if (initial) setLoading(true);
     try {
       const next = await loadBootstrapWithRetry();
       setData(next);
       setConnection("local");
       setLoadError(null);
+      return true;
     } catch (reason) {
-      setData(makePreviewBootstrap());
-      setConnection("preview");
-      setLoadError(reason instanceof Error ? reason.message : "The local journal is not available.");
+      const message = connectionErrorMessage(reason);
+      if (initial) {
+        if (import.meta.env.DEV) {
+          setData(makePreviewBootstrap());
+          setConnection("preview");
+        } else {
+          setData(null);
+          setConnection("local");
+        }
+      }
+      setLoadError(message);
+      return false;
     } finally {
-      setLoading(false);
+      if (initial) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    void refresh();
+    void refresh(true);
     const onHashChange = () => setView(routeFromHash());
     window.addEventListener("hashchange", onHashChange);
     return () => window.removeEventListener("hashchange", onHashChange);
   }, [refresh]);
+
+  useEffect(() => {
+    if (view !== "incidents" || selectedIncidentId || !data?.incidents.length) return;
+    setSelectedIncidentId(data.incidents[0].id);
+  }, [data?.incidents, selectedIncidentId, view]);
 
   useEffect(() => {
     if (connection !== "local") return;
@@ -123,11 +144,24 @@ export default function App() {
 
   const handleScan = useCallback(async () => {
     if (connection === "preview") {
-      setLoadError("Start the local Difftrail UI API to scan the real journal.");
+      setScanError("Start the local Difftrail UI API to scan the real journal.");
       return;
     }
     setScanning(true);
-    try { await runScan(); await refresh(); } catch (reason) { setLoadError(reason instanceof Error ? reason.message : "The scan could not be completed."); } finally { setScanning(false); }
+    setScanError(null);
+    setScanNotice(null);
+    try {
+      const response = await runScan();
+      const refreshed = await refresh();
+      const warnings = response.scan.error_count ?? response.scan.errors.length;
+      const coverage = response.scan.collected_sources.length || response.scan.sources;
+      const failedSources = response.scan.failed_sources.length ? ` (${response.scan.failed_sources.join(", ")})` : "";
+      setScanNotice(`Scan completed: ${response.scan.state_events} changes and ${response.scan.symptom_events} symptoms recorded across ${coverage} source${coverage === 1 ? "" : "s"}${warnings ? ` · ${warnings} collection warning${warnings === 1 ? "" : "s"}${failedSources}` : ""}${refreshed ? "" : " · the view could not refresh yet"}.`);
+    } catch (reason) {
+      setScanError(reason instanceof Error ? reason.message : "The scan could not be completed.");
+    } finally {
+      setScanning(false);
+    }
   }, [connection, refresh]);
 
   const handleRecordOverhead = useCallback(async () => {
@@ -139,7 +173,8 @@ export default function App() {
     setOverheadError(null);
     try {
       await recordOverhead();
-      await refresh();
+      const refreshed = await refresh();
+      if (!refreshed) setOverheadError("The measurement was saved, but this view could not refresh yet.");
     } catch (reason) {
       setOverheadError(reason instanceof Error ? reason.message : "The watcher footprint could not be recorded.");
     } finally {
@@ -149,7 +184,7 @@ export default function App() {
 
   const handleExportBundle = useCallback(async (incidentId?: string) => {
     if (connection === "preview") {
-      setExportError("Connect the local journal to export a diagnostic report.");
+      setExportError("Connect the local journal to export a redacted evidence report.");
       return;
     }
     setExportBusy(true);
@@ -166,7 +201,7 @@ export default function App() {
       link.remove();
       window.setTimeout(() => URL.revokeObjectURL(url), 0);
     } catch (reason) {
-      setExportError(reason instanceof Error ? reason.message : "The diagnostic bundle could not be exported.");
+      setExportError(reason instanceof Error ? reason.message : "The redacted evidence report could not be exported.");
     } finally {
       setExportBusy(false);
     }
@@ -181,7 +216,7 @@ export default function App() {
   }, [connection, data]);
 
   const handleInvestigate = useCallback(async (input: InvestigationInput) => {
-    if (connection === "preview") throw new Error("The local UI API is not connected. Start it to investigate the real journal.");
+    if (connection === "preview") throw new Error("The local UI API is not connected. Start it to review the real journal.");
     const response = await createInvestigation(input);
     setData((current) => current ? { ...current, incidents: [response.incident, ...current.incidents.filter((incident) => incident.id !== response.incident.id)], status: { ...current.status, incidents: current.status.incidents + 1 } } : current);
     setSelectedIncidentId(response.incident.id);
@@ -189,7 +224,7 @@ export default function App() {
     return response;
   }, [connection, navigate]);
 
-  const handleFeedback = useCallback(async (incidentId: string, outcome: "correct" | "incorrect" | "unknown", eventId?: string) => {
+  const handleFeedback = useCallback(async (incidentId: string, outcome: NonNullable<Incident["feedback"]["outcome"]>, eventId?: string) => {
     if (connection === "preview") throw new Error("Feedback is only saved when the local journal is connected.");
     const response = await recordFeedback(incidentId, outcome, eventId);
     setData((current) => current ? { ...current, incidents: current.incidents.map((incident) => incident.id === incidentId ? response.incident : incident) } : current);
@@ -197,7 +232,7 @@ export default function App() {
 
   const handleDeleteInvestigation = useCallback(async (incidentId: string) => {
     if (connection === "preview") {
-      const error = new Error("Connect the local journal to remove an investigation.");
+      const error = new Error("Connect the local journal to remove an evidence review.");
       setDeleteError(error.message);
       throw error;
     }
@@ -212,10 +247,10 @@ export default function App() {
       } catch {
         setData((current) => current ? removeIncidentFromBootstrap(current, incidentId) : current);
         setSelectedIncidentId(null);
-        setDeleteError("Investigation removed, but the dashboard could not refresh.");
+        setDeleteError("Evidence review removed, but the dashboard could not refresh.");
       }
     } catch (reason) {
-      const error = reason instanceof Error ? reason : new Error("The investigation could not be removed.");
+      const error = reason instanceof Error ? reason : new Error("The evidence review could not be removed.");
       setDeleteError(error.message);
       throw error;
     } finally {
@@ -253,12 +288,22 @@ export default function App() {
       const interval = action === "enable" ? intervalSeconds ?? data?.automation.config.interval_seconds : undefined;
       const response = await updateAutomationWatcher(action, interval);
       if (action === "run") {
-        await refresh();
+        const refreshed = await refresh();
         if (response.scan) {
-          const warning = response.scan.errors.length ? ` with ${response.scan.errors.length} warning${response.scan.errors.length === 1 ? "" : "s"}` : "";
-          setAutomationNotice(`Scan completed${warning}: ${response.scan.state_events} changes and ${response.scan.symptom_events} symptoms recorded.`);
+          const warnings = response.scan.error_count ?? response.scan.errors.length;
+          const failedSources = response.scan.failed_sources.length ? ` (${response.scan.failed_sources.join(", ")})` : "";
+          const warning = warnings ? ` with ${warnings} collection warning${warnings === 1 ? "" : "s"}${failedSources}` : "";
+          setAutomationNotice(`Scan completed${warning}: ${response.scan.state_events} changes and ${response.scan.symptom_events} symptoms recorded${refreshed ? "" : "; the view could not refresh yet"}.`);
         }
-      } else setData((current) => current ? { ...current, automation: response.automation } : current);
+      } else {
+        const installed = response.automation.watcher.installed && response.automation.watcher.state?.toLowerCase() !== "disabled";
+        if (action === "enable" && !installed) throw new Error(response.automation.watcher.message || "The watcher did not remain enabled.");
+        if (action === "disable" && installed) throw new Error(response.automation.watcher.message || "The watcher is still enabled.");
+        setData((current) => current ? { ...current, automation: response.automation } : current);
+        setAutomationNotice(action === "enable"
+          ? `Background collection enabled. Difftrail will scan every ${formatInterval(response.automation.config.interval_seconds)}.`
+          : "Background collection disabled. No scheduled scans will run until you enable it again.");
+      }
       return true;
     } catch (reason) {
       setAutomationError(reason instanceof Error ? reason.message : "The automation action could not be completed.");
@@ -284,21 +329,52 @@ export default function App() {
 
   const selectedIncident = useMemo(() => data?.incidents.find((incident) => incident.id === selectedIncidentId) || null, [data, selectedIncidentId]);
 
-  if (loading || !data) return <LoadingScreen />;
+  useEffect(() => {
+    if (!scanNotice) return;
+    const timer = window.setTimeout(() => setScanNotice(null), 10_000);
+    return () => window.clearTimeout(timer);
+  }, [scanNotice]);
+
+  useEffect(() => {
+    if (!automationNotice) return;
+    const timer = window.setTimeout(() => setAutomationNotice(null), 10_000);
+    return () => window.clearTimeout(timer);
+  }, [automationNotice]);
+
+  if (loading) return <LoadingScreen />;
+  if (!data) return <UnavailableScreen message={loadError} onRetry={() => void refresh(true)} />;
 
   return (
-    <AppShell view={view} status={data.status} version={data.version} connection={connection} scanning={scanning} onNavigate={navigate} onScan={handleScan}>
-      {connection === "preview" && <div className="preview-notice" role="status"><Icon name="alert" size={15} /><span>Preview data is shown because the local journal is not connected{loadError ? ` · ${loadError}` : ""}.</span><button type="button" onClick={() => void refresh()}>Try again</button></div>}
-      {view === "home" && <HomeView data={data} onNavigate={navigate} onOpenIncident={(incident) => { setSelectedIncidentId(incident.id); navigate("incidents"); }} />}
+    <AppShell view={view} status={data.status} version={data.version} connection={connection} scanning={scanning} unreadSignals={data.automation.notifications.unread} onNavigate={navigate} onScan={handleScan}>
+      {connection === "preview" && <div className="preview-notice" role="status"><Icon name="alert" size={15} /><span>Synthetic preview data is shown because the local journal is not connected. It is not evidence from this PC{loadError ? ` · ${loadError}` : ""}.</span><button type="button" onClick={() => void refresh(true)}>Try again</button></div>}
+      {scanError && <div className="form-error global-action-feedback" role="alert"><Icon name="alert" size={14} /><span><strong>Scan did not complete.</strong> {scanError}</span></div>}
+      {scanNotice && <div className="action-notice global-action-feedback" role="status"><Icon name="check" size={14} /> {scanNotice}</div>}
+      {view === "home" && <HomeView data={data} connection={connection} scanning={scanning} onNavigate={navigate} onScan={handleScan} onOpenIncident={(incident) => { setSelectedIncidentId(incident.id); navigate("incidents"); }} />}
       {view === "timeline" && <TimelineView events={data.events} onLoad={handleLoadTimeline} />}
-      {view === "investigate" && <InvestigateView busy={false} onInvestigate={handleInvestigate} />}
-      {view === "incidents" && <IncidentsView incidents={data.incidents} selected={selectedIncident} onSelect={(incident) => { setDeleteError(null); setSelectedIncidentId(incident.id); }} onNavigate={() => navigate("investigate")} onFeedback={handleFeedback} onDelete={handleDeleteInvestigation} onExport={handleExportBundle} exportBusy={exportBusy} exportError={exportError} deleteBusy={deleteBusy} deleteError={deleteError} />}
-      {view === "health" && <HealthView data={data} onRecordOverhead={handleRecordOverhead} recording={recordingOverhead} error={overheadError} onExport={() => handleExportBundle()} exportBusy={exportBusy} exportError={exportError} />}
-      {view === "automation" && <AutomationView automation={data.automation} connection={connection} busy={automationBusy} error={automationError} notice={automationNotice} onConfigSave={handleAutomationConfig} onWatcherAction={handleAutomationWatcher} onMarkRead={handleMarkAutomationRead} onNavigate={navigate} />}
+      {view === "investigate" && <InvestigateView busy={false} connected={connection === "local"} onInvestigate={handleInvestigate} />}
+      {view === "incidents" && <IncidentsView incidents={data.incidents} selected={selectedIncident} connected={connection === "local"} onSelect={(incident) => { setDeleteError(null); setSelectedIncidentId(incident.id); }} onNavigate={() => navigate("investigate")} onFeedback={handleFeedback} onDelete={handleDeleteInvestigation} onExport={handleExportBundle} exportBusy={exportBusy} exportError={exportError} deleteBusy={deleteBusy} deleteError={deleteError} />}
+      {view === "health" && <HealthView data={data} connected={connection === "local"} onRecordOverhead={handleRecordOverhead} recording={recordingOverhead} error={overheadError} onExport={() => handleExportBundle()} exportBusy={exportBusy} exportError={exportError} />}
+      {view === "automation" && <AutomationView automation={data.automation} connection={connection} busy={automationBusy} error={automationError} notice={automationNotice} onConfigSave={handleAutomationConfig} onWatcherAction={handleAutomationWatcher} onMarkRead={handleMarkAutomationRead} onOpenReview={(incidentId) => { setSelectedIncidentId(incidentId); navigate("incidents"); }} />}
     </AppShell>
   );
 }
 
+function formatInterval(seconds: number): string {
+  if (seconds % 3600 === 0) return `${seconds / 3600} hour${seconds === 3600 ? "" : "s"}`;
+  if (seconds % 60 === 0) return `${seconds / 60} minute${seconds === 60 ? "" : "s"}`;
+  return `${seconds} seconds`;
+}
+
+function connectionErrorMessage(reason: unknown): string {
+  const message = reason instanceof Error ? reason.message : "The local journal is not available";
+  if (/failed to fetch/i.test(message)) return "The local API is not responding";
+  return message.replace(/[.!?]+$/, "");
+}
+
 function LoadingScreen() {
-  return <div className="loading-screen" role="status"><BrandMark size={52} className="loading-brand-mark" /><span>Opening the local journal…</span></div>;
+  return <div className="loading-screen" role="status"><BrandMark size={52} className="loading-brand-mark" /><span>Opening the local journal…</span><span className="loading-bar-large" aria-hidden="true" /></div>;
+}
+
+function UnavailableScreen({ message, onRetry }: { message: string | null; onRetry: () => void }) {
+  return <main className="unavailable-screen"><BrandMark size={52} className="loading-brand-mark" /><div><span className="eyebrow">Local journal unavailable</span><h1>Difftrail could not open its local evidence service.</h1><p>No sample results are being substituted. Your journal remains local and unchanged.</p>{message && <div className="unavailable-reason" role="alert">{message}</div>}<div className="unavailable-actions"><button type="button" className="button button-primary" onClick={onRetry}><Icon name="refresh" size={15} /> Try again</button><span>If this continues, restart Difftrail and check that its backend process is allowed to run.</span></div></div></main>;
 }

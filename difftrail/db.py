@@ -35,12 +35,14 @@ from .service_identity import is_per_user_service_payload, service_base_name
 DEFAULT_RETENTION_DAYS = 30
 DATABASE_SCHEMA_VERSION = 7
 STALE_SCAN_AFTER = timedelta(minutes=15)
+INVESTIGATION_MAX_PRE_ONSET_GAP = timedelta(hours=24)
 MAX_PERSISTED_JSON_NESTING = 64
 VALID_SCAN_STATUSES = frozenset({"running", "ok", "partial", "failed", "interrupted"})
 VALID_INVESTIGATION_ASSESSMENTS = ASSESSMENT_STATES
 _DATABASE_INITIALIZATION_LOCK = threading.RLock()
 _AUTOMATION_LINK_REPAIR_CURSOR = "automation:link-repair-cursor"
 _AUTOMATION_LINK_REPAIR_BATCH = 200
+_DRIVER_INVENTORY_REBASE_MARKER = "migration:installed-driver-inventory"
 
 
 # These fields describe runtime state or localized display metadata rather
@@ -402,6 +404,7 @@ class Database:
                     self.connection.execute("PRAGMA journal_mode = WAL")
                 self.connection.execute("PRAGMA synchronous = NORMAL")
                 self._run_migrations()
+                self._rebaseline_installed_driver_inventory()
                 # This compatibility backfill intentionally remains safe to rerun. It
                 # also repairs a journal where an older build's marker was lost without
                 # changing the schema version or deleting any evidence.
@@ -412,6 +415,16 @@ class Database:
                 if connection is not None:
                     connection.close()
                 raise
+
+    def _rebaseline_installed_driver_inventory(self) -> None:
+        """Quietly reset state written with the old present-device filter."""
+
+        if self.get_meta(_DRIVER_INVENTORY_REBASE_MARKER) == "1":
+            return
+        with self.connection:
+            self.connection.execute("DELETE FROM state_items WHERE source = 'drivers'")
+            self.connection.execute("DELETE FROM meta WHERE key = 'source:drivers:initialized'")
+            self._set_meta_without_commit(_DRIVER_INVENTORY_REBASE_MARKER, "1")
 
     def _run_migrations(self) -> None:
         """Apply numbered, transactional migrations to fresh and legacy journals."""
@@ -1308,6 +1321,7 @@ class Database:
             "SELECT item_key, payload_json FROM state_items WHERE source = ?", (source,)
         ).fetchall()
         initialized_key = f"source:{source}:initialized"
+        successful_key = f"source:{source}:last_successful_at"
         previous: dict[str, dict[str, Any]] = {}
         invalid_state = False
         for row in previous_rows:
@@ -1326,6 +1340,7 @@ class Database:
                     self._assert_scan_lease(scan_id)
                 self.connection.execute("DELETE FROM state_items WHERE source = ?", (source,))
                 self.connection.execute("DELETE FROM meta WHERE key = ?", (initialized_key,))
+                self.connection.execute("DELETE FROM meta WHERE key = ?", (successful_key,))
             raise RuntimeError(
                 f"Stored snapshot state for {source} was invalid and has been reset; it will baseline on the next scan"
             )
@@ -1340,6 +1355,7 @@ class Database:
                     self._assert_scan_lease(scan_id)
                 self._replace_state(source, current, now)
                 self._set_meta_without_commit(initialized_key, "1")
+                self._set_meta_without_commit(successful_key, iso_datetime(now))
             return generated
 
         for key, item in current.items():
@@ -1461,6 +1477,7 @@ class Database:
                 self._assert_scan_lease(scan_id)
             self._replace_state(source, current, now)
             self._set_meta_without_commit(initialized_key, "1")
+            self._set_meta_without_commit(successful_key, iso_datetime(now))
             self._insert_event_rows(event_rows)
         return generated
 
@@ -1806,7 +1823,7 @@ class Database:
         event_id: str | None = None,
         recorded_at: datetime | None = None,
     ) -> dict[str, Any]:
-        """Record a user's local assessment of an investigation result."""
+        """Record local lead-usefulness feedback using the legacy stored values."""
 
         if outcome not in {"correct", "incorrect", "unknown"}:
             raise ValueError("outcome must be correct, incorrect, or unknown")
@@ -1814,11 +1831,17 @@ class Database:
         if incident is None:
             raise ValueError(f"Unknown incident: {incident_id}")
         if outcome == "correct" and not event_id:
-            raise ValueError("A correct outcome requires --event-id for top-three measurement")
+            raise ValueError("Helpful feedback requires an event ID for lead-usefulness measurement")
         if event_id:
-            event_row = self.connection.execute("SELECT id FROM events WHERE id = ?", (event_id,)).fetchone()
-            if event_row is None:
-                raise ValueError(f"Unknown event: {event_id}")
+            ranked_event_ids = {
+                str(event.get("id"))
+                for result in incident.get("results", [])
+                if isinstance(result, dict)
+                and isinstance((event := result.get("event")), dict)
+                and event.get("id") is not None
+            }
+            if event_id not in ranked_event_ids:
+                raise ValueError("The selected event is not a ranked lead in this evidence review")
         timestamp = iso_datetime(recorded_at or utc_now())
         self.connection.execute(
             """
@@ -2109,12 +2132,20 @@ class Database:
         return self.list_incidents(limit=max(1, min(limit, 100)))
 
     def source_status(self) -> list[dict[str, Any]]:
-        sources = ("updates", "apps", "drivers", "services", "tasks", "startup", "devices")
+        sources = ("updates", "apps", "drivers", "services", "tasks", "startup", "devices", "eventlog")
         counts = {
             row["source"]: {"item_count": int(row["item_count"]), "last_seen_at": row["last_seen_at"]}
             for row in self.connection.execute(
                 "SELECT source, COUNT(*) AS item_count, MAX(last_seen_at) AS last_seen_at FROM state_items GROUP BY source"
             ).fetchall()
+        }
+        eventlog = self.connection.execute(
+            "SELECT COUNT(*) AS item_count, MAX(occurred_at) AS last_seen_at FROM events "
+            "WHERE kind = 'symptom'"
+        ).fetchone()
+        counts["eventlog"] = {
+            "item_count": int(eventlog["item_count"]),
+            "last_seen_at": eventlog["last_seen_at"],
         }
         labels = {
             "updates": "Windows updates",
@@ -2124,11 +2155,22 @@ class Database:
             "tasks": "Scheduled tasks",
             "startup": "Startup entries",
             "devices": "Devices",
+            "eventlog": "Windows signals",
         }
         result = []
         for source in sources:
             item = counts.get(source, {})
-            initialized = self.get_meta(f"source:{source}:initialized") == "1"
+            if source == "eventlog":
+                last_successful_at = self.get_meta("symptoms:cursor")
+                initialized = last_successful_at is not None
+            else:
+                initialized = self.get_meta(f"source:{source}:initialized") == "1"
+                last_successful_at = self.get_meta(f"source:{source}:last_successful_at")
+                if last_successful_at is None and initialized:
+                    # Older journals did not record a source-level success
+                    # timestamp. Existing item freshness is the safest
+                    # available lower bound until the next successful scan.
+                    last_successful_at = item.get("last_seen_at")
             result.append(
                 {
                     "source": source,
@@ -2136,6 +2178,7 @@ class Database:
                     "initialized": initialized,
                     "item_count": item.get("item_count", 0),
                     "last_seen_at": item.get("last_seen_at"),
+                    "last_successful_at": last_successful_at,
                     "status": "capturing" if initialized else "waiting for baseline",
                 }
             )
@@ -2150,17 +2193,19 @@ class Database:
     ) -> dict[str, Any]:
         """Summarize collection gaps across the investigation's scan window."""
 
-        clauses: list[str] = []
+        clauses: list[str] = ["finished_at IS NOT NULL"]
         params: list[Any] = []
         if until is not None:
-            clauses.append("started_at <= ?")
+            # A scan is not usable as pre-onset coverage until every provider
+            # read and journal write in that scan has completed.
+            clauses.append("finished_at <= ?")
             params.append(iso_datetime(until))
         if since is not None:
-            clauses.append("(finished_at IS NULL OR finished_at >= ?)")
+            clauses.append("finished_at >= ?")
             params.append(iso_datetime(since))
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         scan_rows = self.connection.execute(
-            f"SELECT status, summary_json FROM scans {where} ORDER BY started_at DESC",
+            f"SELECT status, summary_json, finished_at FROM scans {where} ORDER BY started_at DESC",
             params,
         ).fetchall()
         if not scan_rows:
@@ -2170,44 +2215,90 @@ class Database:
                 "reasons": [],
                 "sources": [],
                 "uninitialized_sources": [],
+                "warning_sources": [],
+                "latest_scan_at": None,
+                "gap_to_onset_seconds": None,
                 "scan_count": 0,
                 "provider_warning_count": 0,
                 "scan_status_counts": {},
             }
 
+        finished_times: list[datetime] = []
+        for row in scan_rows:
+            try:
+                finished_times.append(parse_datetime(str(row["finished_at"])))
+            except (TypeError, ValueError):
+                continue
+        latest_scan_at = max(finished_times) if finished_times else None
+        gap_to_onset_seconds = (
+            max(0, int((ensure_utc(until) - latest_scan_at).total_seconds()))
+            if until is not None and latest_scan_at is not None
+            else None
+        )
+
         source_map = {
-            "graphics": {"drivers", "devices", "updates"},
-            "audio": {"drivers", "devices"},
-            "network": {"drivers", "devices"},
-            "bluetooth": {"drivers", "devices"},
-            "driver": {"drivers", "devices"},
-            "startup": {"services", "tasks", "startup"},
-            "application": {"apps"},
-            "windows-update": {"updates"},
-            "device": {"devices", "drivers"},
-            "general": {"updates", "apps", "drivers", "services", "tasks", "startup", "devices"},
+            "graphics": {"drivers", "devices", "updates", "eventlog"},
+            "audio": {"drivers", "devices", "eventlog"},
+            "network": {"drivers", "devices", "eventlog"},
+            "bluetooth": {"drivers", "devices", "eventlog"},
+            "driver": {"drivers", "devices", "eventlog"},
+            "startup": {"services", "tasks", "startup", "eventlog"},
+            "application": {"apps", "eventlog"},
+            "windows-update": {"updates", "eventlog"},
+            "device": {"devices", "drivers", "eventlog"},
+            "general": {"updates", "apps", "drivers", "services", "tasks", "startup", "devices", "eventlog"},
         }
-        statuses = {item["source"]: item for item in self.source_status()}
         expected = sorted(source_map.get(subsystem, source_map["general"]))
-        uninitialized = [
-            source for source in expected
-            if not statuses.get(source, {}).get("initialized", False)
-        ]
         status_counts: dict[str, int] = {}
         provider_warning_count = 0
+        collected_sources: set[str] = set()
+        warning_sources: set[str] = set()
+        legacy_source_metadata = False
+        impaired_counts: dict[str, int] = {}
         for row in scan_rows:
             status = str(row["status"])
             status_counts[status] = status_counts.get(status, 0) + 1
             summary = self._scan_summary(row["summary_json"])
+            raw_collected_sources = summary.get("collected_sources")
+            if isinstance(raw_collected_sources, list):
+                collected_sources.update(
+                    str(source)
+                    for source in raw_collected_sources
+                    if isinstance(source, str) and source
+                )
+            else:
+                legacy_source_metadata = True
             raw_warnings = summary.get("errors", [])
-            if isinstance(raw_warnings, list):
-                provider_warning_count += len(raw_warnings)
+            raw_failed_sources = summary.get("failed_sources")
+            if isinstance(raw_failed_sources, list):
+                relevant_failed_sources = {
+                    str(source)
+                    for source in raw_failed_sources
+                    if isinstance(source, str) and str(source) in expected
+                }
+                warning_sources.update(relevant_failed_sources)
+                provider_warning_count += len(relevant_failed_sources)
+                if status in {"failed", "interrupted"}:
+                    impaired_counts[status] = impaired_counts.get(status, 0) + 1
+            else:
+                # Older summaries cannot identify which provider emitted a
+                # warning, so retain their conservative whole-scan treatment.
+                if isinstance(raw_warnings, list):
+                    provider_warning_count += len(raw_warnings)
+                if status in {"partial", "failed", "interrupted"}:
+                    impaired_counts[status] = impaired_counts.get(status, 0) + 1
+        if legacy_source_metadata and not collected_sources:
+            # Pre-v0.1.4 summaries stored only a provider count. Keep the old
+            # current-status fallback useful, but never present it as proven
+            # historical coverage.
+            statuses = {item["source"]: item for item in self.source_status()}
+            uninitialized = [
+                source for source in expected
+                if not statuses.get(source, {}).get("initialized", False)
+            ]
+        else:
+            uninitialized = [source for source in expected if source not in collected_sources]
         reasons: list[str] = []
-        impaired_counts = {
-            status: status_counts.get(status, 0)
-            for status in ("partial", "failed", "interrupted")
-            if status_counts.get(status, 0)
-        }
         if impaired_counts:
             descriptions = ", ".join(
                 f"{count} {status}" + (" scan" if count == 1 else " scans")
@@ -2215,7 +2306,21 @@ class Database:
             )
             reasons.append(f"The investigation window includes {descriptions}.")
         if uninitialized:
-            reasons.append("Some relevant sources are still waiting for their first baseline.")
+            reasons.append("Some relevant sources have no successful read recorded in the evidence window.")
+        if legacy_source_metadata and uninitialized:
+            reasons.append(
+                "Some older scan records do not identify which sources were read, so source coverage cannot be confirmed."
+            )
+        if latest_scan_at is None:
+            reasons.append("Completed scan timing is unavailable, so proximity to the reported onset cannot be confirmed.")
+        elif (
+            gap_to_onset_seconds is not None
+            and gap_to_onset_seconds > int(INVESTIGATION_MAX_PRE_ONSET_GAP.total_seconds())
+        ):
+            reasons.append(
+                "The last completed scan before onset finished "
+                f"{gap_to_onset_seconds / 3600:.1f} hours earlier, so later changes may be missing."
+            )
         if provider_warning_count:
             reasons.append(
                 f"{provider_warning_count} provider warning"
@@ -2228,6 +2333,9 @@ class Database:
             "reasons": reasons,
             "sources": expected,
             "uninitialized_sources": uninitialized,
+            "warning_sources": sorted(warning_sources),
+            "latest_scan_at": iso_datetime(latest_scan_at) if latest_scan_at is not None else None,
+            "gap_to_onset_seconds": gap_to_onset_seconds,
             "provider_warning_count": provider_warning_count,
             "scan_count": len(scan_rows),
             "scan_status_counts": dict(sorted(status_counts.items())),

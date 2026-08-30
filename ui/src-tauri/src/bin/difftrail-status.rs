@@ -1,0 +1,457 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+#[cfg(not(windows))]
+fn main() {}
+
+#[cfg(windows)]
+mod windows_app {
+    use std::error::Error;
+    use std::ffi::OsStr;
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::process::CommandExt;
+    use std::path::{Path, PathBuf};
+    use std::process::{Command, Stdio};
+    use std::thread;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    use image::ImageReader;
+    use tao::event::Event;
+    use tao::event_loop::{ControlFlow, EventLoopBuilder};
+    use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+    use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, STILL_ACTIVE,
+    };
+    use windows_sys::Win32::System::Threading::{
+        CreateMutexW, GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    const STATUS_ID: &str = "toggle-background-collection";
+    const OPEN_ID: &str = "open-difftrail";
+    const EXIT_ID: &str = "exit-difftrail-status";
+    const ACTIVE_MARKER: &str = "watcher.active";
+    const INTERVAL_STATE: &str = "watcher-interval.txt";
+    const TASK_NAME: &str = "Difftrail Watcher";
+    const STATUS_INTERVAL: Duration = Duration::from_secs(2);
+    const STARTUP_RETRY_INTERVAL: Duration = Duration::from_secs(5);
+    const STARTUP_ATTEMPTS: u8 = 13;
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum CollectionStatus {
+        Scanning,
+        Enabled,
+        Off,
+    }
+
+    impl CollectionStatus {
+        fn menu_text(self) -> &'static str {
+            match self {
+                Self::Scanning => "Background collection: scanning now",
+                Self::Enabled => "Background collection: enabled",
+                Self::Off => "Background collection: off",
+            }
+        }
+
+        fn tooltip(self) -> &'static str {
+            match self {
+                Self::Scanning => "Difftrail — background scan in progress",
+                Self::Enabled => "Difftrail — background collection enabled",
+                Self::Off => "Difftrail — background collection is off",
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    enum UserEvent {
+        Tray(TrayIconEvent),
+        Menu(MenuEvent),
+        Refresh,
+    }
+
+    struct InstanceGuard(HANDLE);
+
+    impl InstanceGuard {
+        fn acquire() -> Result<Option<Self>, Box<dyn Error>> {
+            let name: Vec<u16> = OsStr::new("Local\\DifftrailStatusIcon")
+                .encode_wide()
+                .chain(Some(0))
+                .collect();
+            let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
+            if handle.is_null() {
+                return Err(Box::new(std::io::Error::last_os_error()));
+            }
+            if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+                unsafe {
+                    CloseHandle(handle);
+                }
+                return Ok(None);
+            }
+            Ok(Some(Self(handle)))
+        }
+    }
+
+    impl Drop for InstanceGuard {
+        fn drop(&mut self) {
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
+    }
+
+    fn install_root() -> PathBuf {
+        std::env::current_exe()
+            .ok()
+            .and_then(|path| path.parent().and_then(Path::parent).map(Path::to_path_buf))
+            .unwrap_or_else(|| PathBuf::from("."))
+    }
+
+    fn active_marker_path(root: &Path) -> PathBuf {
+        std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .map(|path| path.join("Difftrail").join(ACTIVE_MARKER))
+            .unwrap_or_else(|| root.join(ACTIVE_MARKER))
+    }
+
+    fn watcher_is_active(root: &Path) -> bool {
+        let marker = active_marker_path(root);
+        let Ok(contents) = std::fs::read_to_string(marker) else {
+            return false;
+        };
+        let Ok(pid) = contents.trim().parse::<u32>() else {
+            return false;
+        };
+
+        let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if process.is_null() {
+            return false;
+        }
+
+        let mut exit_code = 0_u32;
+        let is_active = unsafe { GetExitCodeProcess(process, &mut exit_code) != 0 }
+            && exit_code == STILL_ACTIVE as u32;
+        unsafe {
+            CloseHandle(process);
+        }
+        is_active
+    }
+
+    fn watcher_is_enabled() -> bool {
+        let system_root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+        let schtasks = PathBuf::from(system_root)
+            .join("System32")
+            .join("schtasks.exe");
+        Command::new(schtasks)
+            .args(["/Query", "/TN", TASK_NAME])
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
+    fn powershell_executable() -> PathBuf {
+        let system_root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+        PathBuf::from(system_root)
+            .join("System32")
+            .join("WindowsPowerShell")
+            .join("v1.0")
+            .join("powershell.exe")
+    }
+
+    fn powershell_literal(value: &str) -> String {
+        format!("'{}'", value.replace('\'', "''"))
+    }
+
+    fn command_line_argument(value: &str) -> String {
+        if value.is_empty() || value.chars().any(char::is_whitespace) {
+            format!("\"{}\"", value.replace('"', "\\\""))
+        } else {
+            value.to_string()
+        }
+    }
+
+    fn run_watcher_script(
+        root: &Path,
+        script_name: &str,
+        extra_arguments: &[(&str, String)],
+    ) -> bool {
+        let script = root.join("backend").join(script_name);
+        if !script.is_file() {
+            return false;
+        }
+
+        let powershell = powershell_executable();
+        let mut arguments = vec![
+            "-NoProfile".to_string(),
+            "-NonInteractive".to_string(),
+            "-ExecutionPolicy".to_string(),
+            "Bypass".to_string(),
+            "-File".to_string(),
+            script.display().to_string(),
+        ];
+        for (name, value) in extra_arguments {
+            arguments.push((*name).to_string());
+            arguments.push(value.clone());
+        }
+
+        let mut command = Command::new(&powershell);
+        command.args(&arguments).current_dir(root.join("backend"));
+        let completed = command
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        if completed.is_ok_and(|status| status.success()) {
+            return true;
+        }
+
+        let argument_string = arguments
+            .iter()
+            .map(|argument| command_line_argument(argument))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let elevated_command = format!(
+            "$process = Start-Process -FilePath {} -Verb RunAs -Wait -PassThru -WindowStyle Hidden -ArgumentList {}; exit $process.ExitCode",
+            powershell_literal(&powershell.display().to_string()),
+            powershell_literal(&argument_string),
+        );
+        Command::new(&powershell)
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                &elevated_command,
+            ])
+            .current_dir(root.join("backend"))
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
+    fn database_path(root: &Path) -> PathBuf {
+        std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .map(|path| path.join("Difftrail").join("difftrail.db"))
+            .unwrap_or_else(|| root.join("difftrail.db"))
+    }
+
+    fn saved_interval_seconds(root: &Path) -> u32 {
+        let state_path = std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .map(|path| path.join("Difftrail").join(INTERVAL_STATE))
+            .unwrap_or_else(|| root.join(INTERVAL_STATE));
+        std::fs::read_to_string(state_path)
+            .ok()
+            .and_then(|value| value.trim().parse::<u32>().ok())
+            .filter(|value| (15..=86_400).contains(value))
+            .unwrap_or(300)
+    }
+
+    fn enable_watcher(root: &Path) -> bool {
+        let watcher = root.join("backend").join("difftrail-watcher.exe");
+        let working_directory = root.join("backend");
+        run_watcher_script(
+            root,
+            "install-watcher.ps1",
+            &[
+                ("-IntervalSeconds", saved_interval_seconds(root).to_string()),
+                ("-DatabasePath", database_path(root).display().to_string()),
+                ("-ExecutablePath", watcher.display().to_string()),
+                ("-WorkingDirectory", working_directory.display().to_string()),
+            ],
+        )
+    }
+
+    fn disable_watcher(root: &Path) -> bool {
+        run_watcher_script(root, "uninstall-watcher.ps1", &[])
+    }
+
+    fn toggle_watcher(root: &Path) {
+        match collection_status(root) {
+            CollectionStatus::Off => {
+                let _ = enable_watcher(root);
+            }
+            CollectionStatus::Enabled | CollectionStatus::Scanning => {
+                let _ = disable_watcher(root);
+            }
+        }
+    }
+
+    fn collection_status(root: &Path) -> CollectionStatus {
+        if watcher_is_active(root) {
+            CollectionStatus::Scanning
+        } else if watcher_is_enabled() {
+            CollectionStatus::Enabled
+        } else {
+            CollectionStatus::Off
+        }
+    }
+
+    fn open_difftrail(root: &Path) {
+        let executable = root.join("difftrail-desktop.exe");
+        if executable.is_file() {
+            let _ = Command::new(executable)
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn();
+        }
+    }
+
+    fn load_icon() -> Result<Icon, Box<dyn Error>> {
+        let image = ImageReader::new(std::io::Cursor::new(include_bytes!(
+            "../../icons/32x32.png"
+        )))
+        .with_guessed_format()?
+        .decode()?
+        .into_rgba8();
+        let (width, height) = image.dimensions();
+        Ok(Icon::from_rgba(image.into_raw(), width, height)?)
+    }
+
+    pub fn run() -> Result<(), Box<dyn Error>> {
+        let Some(_instance_guard) = InstanceGuard::acquire()? else {
+            return Ok(());
+        };
+
+        let root = install_root();
+        let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
+        let proxy = event_loop.create_proxy();
+        TrayIconEvent::set_event_handler(Some(move |event| {
+            let _ = proxy.send_event(UserEvent::Tray(event));
+        }));
+        let proxy = event_loop.create_proxy();
+        MenuEvent::set_event_handler(Some(move |event| {
+            let _ = proxy.send_event(UserEvent::Menu(event));
+        }));
+        let proxy = event_loop.create_proxy();
+        thread::spawn(move || loop {
+            thread::sleep(STATUS_INTERVAL);
+            if proxy.send_event(UserEvent::Refresh).is_err() {
+                break;
+            }
+        });
+
+        let initial_status = collection_status(&root);
+        let status_item = MenuItem::with_id(STATUS_ID, initial_status.menu_text(), true, None);
+        let open_item = MenuItem::with_id(OPEN_ID, "Open Difftrail", true, None);
+        let exit_item = MenuItem::with_id(EXIT_ID, "Exit status icon", true, None);
+        let separator = PredefinedMenuItem::separator();
+        let menu = Menu::with_items(&[&status_item, &separator, &open_item, &exit_item])?;
+        let tray = TrayIconBuilder::new()
+            .with_menu(Box::new(menu))
+            .with_menu_on_left_click(false)
+            .with_tooltip(initial_status.tooltip())
+            .with_icon(load_icon()?)
+            .build()?;
+
+        let mut last_status = initial_status;
+        event_loop.run(move |event, _, control_flow| {
+            *control_flow = ControlFlow::Wait;
+            match event {
+                Event::UserEvent(UserEvent::Tray(
+                    TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    }
+                    | TrayIconEvent::DoubleClick {
+                        button: MouseButton::Left,
+                        ..
+                    },
+                )) => open_difftrail(&root),
+                Event::UserEvent(UserEvent::Menu(event)) if event.id.as_ref() == STATUS_ID => {
+                    toggle_watcher(&root);
+                    let status = collection_status(&root);
+                    if status != last_status {
+                        status_item.set_text(status.menu_text());
+                        let _ = tray.set_tooltip(Some(status.tooltip()));
+                        last_status = status;
+                    }
+                }
+                Event::UserEvent(UserEvent::Menu(event)) if event.id.as_ref() == OPEN_ID => {
+                    open_difftrail(&root);
+                }
+                Event::UserEvent(UserEvent::Menu(event)) if event.id.as_ref() == EXIT_ID => {
+                    *control_flow = ControlFlow::Exit;
+                }
+                Event::UserEvent(UserEvent::Refresh) => {
+                    let status = collection_status(&root);
+                    if status != last_status {
+                        status_item.set_text(status.menu_text());
+                        let _ = tray.set_tooltip(Some(status.tooltip()));
+                        last_status = status;
+                    }
+                }
+                _ => {}
+            }
+        });
+    }
+
+    fn record_startup_failure(attempt: u8, error: &dyn Error) {
+        let log_path = std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .map(|path| path.join("Difftrail").join("status.log"))
+            .unwrap_or_else(|| PathBuf::from("difftrail-status.log"));
+        if let Some(parent) = log_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let Ok(mut log) = OpenOptions::new().create(true).append(true).open(log_path) else {
+            return;
+        };
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or_default();
+        let _ = writeln!(
+            log,
+            "[{timestamp}] notification-area startup attempt {attempt}/{STARTUP_ATTEMPTS} failed: {error}"
+        );
+    }
+
+    pub fn run_with_startup_retry() {
+        for attempt in 1..=STARTUP_ATTEMPTS {
+            match run() {
+                Ok(()) => return,
+                Err(error) => {
+                    record_startup_failure(attempt, error.as_ref());
+                    if attempt < STARTUP_ATTEMPTS {
+                        thread::sleep(STARTUP_RETRY_INTERVAL);
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::CollectionStatus;
+
+        #[test]
+        fn status_copy_distinguishes_scanning_enabled_and_off() {
+            assert_eq!(
+                CollectionStatus::Scanning.menu_text(),
+                "Background collection: scanning now"
+            );
+            assert_eq!(
+                CollectionStatus::Enabled.tooltip(),
+                "Difftrail — background collection enabled"
+            );
+            assert_eq!(
+                CollectionStatus::Off.tooltip(),
+                "Difftrail — background collection is off"
+            );
+        }
+    }
+}
+
+#[cfg(windows)]
+fn main() {
+    windows_app::run_with_startup_retry();
+}

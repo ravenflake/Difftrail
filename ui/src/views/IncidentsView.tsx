@@ -2,13 +2,15 @@ import type { Incident } from "../types";
 import { relativeTime, subsystemLabel } from "../format";
 import { Icon } from "../components/Icon";
 import { InvestigationDetail } from "./InvestigationDetail";
+import { assessmentLabel } from "../review-language";
 
 interface Props {
   incidents: Incident[];
   selected: Incident | null;
+  connected: boolean;
   onSelect: (incident: Incident) => void;
   onNavigate: () => void;
-  onFeedback: (incidentId: string, outcome: "correct" | "incorrect" | "unknown", eventId?: string) => Promise<void>;
+  onFeedback: (incidentId: string, outcome: NonNullable<Incident["feedback"]["outcome"]>, eventId?: string) => Promise<void>;
   onDelete: (incidentId: string) => Promise<void>;
   onExport: (incidentId: string) => Promise<void>;
   exportBusy: boolean;
@@ -17,14 +19,14 @@ interface Props {
   deleteError: string | null;
 }
 
-export function IncidentsView({ incidents, selected, onSelect, onNavigate, onFeedback, onDelete, onExport, exportBusy, exportError, deleteBusy, deleteError }: Props) {
+export function IncidentsView({ incidents, selected, connected, onSelect, onNavigate, onFeedback, onDelete, onExport, exportBusy, exportError, deleteBusy, deleteError }: Props) {
   return (
     <div className="page-stack">
-      <section className="view-header split-intro"><div><h2>Investigations</h2><p>Saved symptom analyses and feedback.</p></div><button type="button" className="button button-primary" onClick={onNavigate}><Icon name="plus" size={16} /> New investigation</button></section>
+      <section className="view-header split-intro"><div><h2>Saved evidence reviews</h2><p>Revisit a problem window, compare ranked leads, and record which direction helped.</p></div><button type="button" className="button button-primary" onClick={onNavigate}><Icon name="plus" size={16} /> New evidence review</button></section>
       {deleteError && !selected && <div className="form-error" role="alert"><Icon name="alert" size={14} /> {deleteError}</div>}
       <div className="incidents-layout">
-        <section className="panel incident-sidebar"><div className="panel-heading-line"><h3>Saved investigations</h3><span className="muted-count">{incidents.length}</span></div>{incidents.length ? <div className="incident-nav-list">{incidents.map((incident) => <button type="button" className={`incident-nav-item ${selected?.id === incident.id ? "is-selected" : ""}`} key={incident.id} onClick={() => onSelect(incident)}><span className="incident-nav-icon"><Icon name="incidents" size={15} /></span><span><strong>{incident.description}</strong><small>{subsystemLabel(incident.subsystem)} · {relativeTime(incident.created_at)}</small></span><Icon name="chevron" size={14} /></button>)}</div> : <div className="sidebar-empty"><Icon name="investigate" size={18} /><p>No investigations yet.</p></div>}</section>
-        <section className="incident-detail-column">{selected ? <InvestigationDetail key={selected.id} incident={selected} onFeedback={onFeedback} onDelete={onDelete} onExport={onExport} exportBusy={exportBusy} exportError={exportError} deleteBusy={deleteBusy} deleteError={deleteError} /> : <div className="panel choose-incident"><h3>Select an investigation</h3><p>Choose a saved investigation to review its ranked changes.</p><button type="button" className="quiet-link" onClick={onNavigate}>Start an investigation <Icon name="arrow" size={14} /></button></div>}</section>
+        <section className="panel incident-sidebar"><div className="panel-heading-line"><h3>Problem windows</h3><span className="muted-count">{incidents.length}</span></div>{incidents.length ? <div className="incident-nav-list">{incidents.map((incident) => <button type="button" className={`incident-nav-item ${selected?.id === incident.id ? "is-selected" : ""}`} key={incident.id} onClick={() => onSelect(incident)}><span className="incident-nav-icon"><Icon name="incidents" size={15} /></span><span><strong>{incident.description}</strong><small>{subsystemLabel(incident.subsystem)} · {relativeTime(incident.created_at)}</small><small className="incident-review-state">{assessmentLabel(incident)}</small></span><Icon name="chevron" size={14} /></button>)}</div> : <div className="sidebar-empty"><Icon name="investigate" size={18} /><p>No saved reviews yet.</p></div>}</section>
+        <section className="incident-detail-column">{selected ? <InvestigationDetail key={selected.id} incident={selected} connected={connected} onFeedback={onFeedback} onDelete={onDelete} onExport={onExport} exportBusy={exportBusy} exportError={exportError} deleteBusy={deleteBusy} deleteError={deleteError} /> : incidents.length ? <div className="panel choose-incident"><h3>Select an evidence review</h3><p>Choose a saved problem window to inspect its facts, ranked leads, and limitations.</p></div> : <div className="panel choose-incident"><h3>Start with a real symptom</h3><p>Describe what happened and when. Difftrail will compare it with changes already recorded in the local journal.</p><button type="button" className="quiet-link" onClick={onNavigate}>Review a problem <Icon name="arrow" size={14} /></button></div>}</section>
       </div>
     </div>
   );

@@ -39,6 +39,7 @@ class BundleTests(unittest.TestCase):
 
             loaded, report = load_bundle(output)
             self.assertTrue(report["valid"])
+            self.assertEqual(loaded["journal"]["events"][0]["time_basis"], "source_timestamp")
             encoded = json.dumps(loaded["journal"])
             self.assertNotIn("Faulting application name", encoded)
             self.assertNotIn("C:\\Users\\Raven", encoded)
@@ -65,6 +66,27 @@ class BundleTests(unittest.TestCase):
             encoded = json.dumps(bundle["journal"])
             self.assertNotIn(r"C:\Program Files", encoded)
             self.assertIn("<path>", encoded)
+
+    def test_export_keeps_only_known_collected_and_failed_source_labels(self) -> None:
+        with Database(":memory:") as database:
+            now = utc_now()
+            scan_id = database.start_scan(now - timedelta(minutes=2))
+            database.finish_scan(
+                scan_id,
+                now - timedelta(minutes=1),
+                "partial",
+                {
+                    "sources": 1,
+                    "collected_sources": ["apps", r"C:\Users\Raven\private-source"],
+                    "failed_sources": ["drivers", r"C:\Users\Raven\private-source"],
+                    "errors": ["drivers: unavailable"],
+                },
+            )
+            bundle = export_bundle(database, as_of=now)
+
+        summary = bundle["journal"]["scans"][0]["summary"]
+        self.assertEqual(summary["collected_sources"], ["apps"])
+        self.assertEqual(summary["failed_sources"], ["drivers"])
 
     def test_export_excludes_forward_slash_profile_paths(self) -> None:
         with Database(":memory:") as database:
@@ -326,4 +348,34 @@ class BundleTests(unittest.TestCase):
 
             bundle = export_bundle(database, incident_id=incident.id, as_of=now)
 
-            self.assertEqual(bundle["investigations"][0]["results"][0]["tie_count"], 3)
+            result = bundle["investigations"][0]["results"][0]
+            self.assertEqual(result["tie_count"], 3)
+            self.assertEqual(result["support_level"], "moderate")
+            self.assertNotIn("score", result)
+            self.assertNotIn("confidence", result)
+
+    def test_bundle_exposes_feedback_as_helpfulness_not_causal_correctness(self) -> None:
+        with Database(":memory:") as database:
+            now = utc_now()
+            event = Event(
+                now - timedelta(hours=1),
+                "change",
+                "application",
+                "updated",
+                "Example updated",
+                event_id="useful-lead",
+            )
+            database.save_events([event])
+            incident = database.create_incident(
+                IncidentRequest("Example stopped working", now, now, "application", 7)
+            )
+            database.update_incident_results(
+                incident.id,
+                [{"score": 0.8, "confidence": "Medium", "event": event.as_dict()}],
+            )
+            database.record_incident_feedback(incident.id, "correct", event_id="useful-lead")
+            bundle = export_bundle(database, incident_id=incident.id, as_of=now)
+
+        exported = bundle["investigations"][0]
+        self.assertEqual(exported["feedback"]["outcome"], "helpful")
+        self.assertNotIn("score", exported["results"][0])

@@ -13,6 +13,7 @@ interface AppShellProps {
   version: string;
   connection: "local" | "preview";
   scanning: boolean;
+  unreadSignals: number;
   onNavigate: (view: View) => void;
   onScan: () => void;
   children: ReactNode;
@@ -20,20 +21,20 @@ interface AppShellProps {
 
 const navItems: Array<{ id: View; label: string; icon: IconName }> = [
   { id: "home", label: "Overview", icon: "home" },
-  { id: "timeline", label: "Timeline", icon: "timeline" },
-  { id: "investigate", label: "Investigate", icon: "investigate" },
-  { id: "incidents", label: "Incidents", icon: "incidents" },
-  { id: "health", label: "System health", icon: "health" },
-  { id: "automation", label: "Automation", icon: "clock" },
+  { id: "timeline", label: "Evidence timeline", icon: "timeline" },
+  { id: "investigate", label: "Review a problem", icon: "investigate" },
+  { id: "incidents", label: "Saved reviews", icon: "incidents" },
+  { id: "health", label: "Collection & system", icon: "health" },
+  { id: "automation", label: "Background scans", icon: "clock" },
 ];
 
 const titles: Record<View, string> = {
   home: "Overview",
-  timeline: "Timeline",
-  investigate: "Investigate a problem",
-  incidents: "Incidents",
-  health: "System health",
-  automation: "Automation",
+  timeline: "Evidence timeline",
+  investigate: "Review a problem",
+  incidents: "Saved evidence reviews",
+  health: "Collection & system",
+  automation: "Background scans",
 };
 
 type DesktopWindow = ReturnType<typeof getCurrentWindow>;
@@ -47,15 +48,21 @@ function getDesktopWindow(): DesktopWindow | null {
   }
 }
 
-export function AppShell({ view, status, version, connection, scanning, onNavigate, onScan, children }: AppShellProps) {
-  const partial = status.last_scan?.status === "partial";
+export function AppShell({ view, status, version, connection, scanning, unreadSignals, onNavigate, onScan, children }: AppShellProps) {
+  const scanAttention = Boolean(status.last_scan && status.last_scan.status !== "ok");
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => getStoredThemeMode());
   const [systemTheme, setSystemTheme] = useState<Theme>(() => getSystemTheme());
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const mobileMenuButtonRef = useRef<HTMLButtonElement>(null);
   const mobileCloseButtonRef = useRef<HTMLButtonElement>(null);
   const mobileNavWasOpen = useRef(false);
+  const contentRef = useRef<HTMLElement>(null);
+  const mainColumnRef = useRef<HTMLDivElement>(null);
   const theme = themeMode === "system" ? systemTheme : themeMode;
+
+  useEffect(() => {
+    if (contentRef.current) contentRef.current.scrollTop = 0;
+  }, [view]);
 
   useEffect(() => {
     applyTheme(theme);
@@ -106,6 +113,10 @@ export function AppShell({ view, status, version, connection, scanning, onNaviga
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [mobileNavOpen]);
 
+  useEffect(() => {
+    if (mainColumnRef.current) mainColumnRef.current.inert = mobileNavOpen;
+  }, [mobileNavOpen]);
+
   const toggleTheme = () => setThemeMode(theme === "dark" ? "light" : "dark");
   const useSystemTheme = () => setThemeMode("system");
   const closeMobileNav = () => setMobileNavOpen(false);
@@ -122,7 +133,7 @@ export function AppShell({ view, status, version, connection, scanning, onNaviga
           <div className="brand-name">Difftrail</div>
         </div>
 
-        <NavigationList view={view} onNavigate={onNavigate} />
+        <NavigationList view={view} unreadSignals={unreadSignals} onNavigate={onNavigate} />
 
         <div className="sidebar-bottom">
           <ThemeControl theme={theme} mode={themeMode} onToggle={toggleTheme} onUseSystem={useSystemTheme} />
@@ -145,10 +156,10 @@ export function AppShell({ view, status, version, connection, scanning, onNaviga
             <Icon name="close" size={19} />
           </button>
         </div>
-        <NavigationList view={view} onNavigate={navigateFromMobileNav} />
+        <NavigationList view={view} unreadSignals={unreadSignals} onNavigate={navigateFromMobileNav} />
       </div>
 
-      <div className="main-column" aria-hidden={mobileNavOpen ? "true" : undefined}>
+      <div ref={mainColumnRef} className="main-column" aria-hidden={mobileNavOpen ? "true" : undefined}>
         <header className="topbar">
           <button
             ref={mobileMenuButtonRef}
@@ -156,7 +167,7 @@ export function AppShell({ view, status, version, connection, scanning, onNaviga
             className="mobile-menu-button"
             aria-label={mobileNavOpen ? "Close navigation menu" : "Open navigation menu"}
             aria-expanded={mobileNavOpen}
-            aria-controls="mobile-navigation"
+            aria-controls={mobileNavOpen ? "mobile-navigation" : undefined}
             aria-haspopup="dialog"
             onClick={() => setMobileNavOpen((open) => !open)}
           >
@@ -178,7 +189,7 @@ export function AppShell({ view, status, version, connection, scanning, onNaviga
               <span className="connection-label-full">{connection === "local" ? "Local journal" : "Preview data"}</span>
               <span className="connection-label-compact">{connection === "local" ? "Local" : "Preview"}</span>
             </div>
-            <button type="button" className="button button-secondary scan-button" aria-label={scanning ? "Scanning" : "Scan now"} onClick={onScan} disabled={scanning}>
+            <button type="button" className="button button-secondary scan-button" aria-label={scanning ? "Scanning" : "Scan now"} title={connection === "preview" ? "Connect the local journal to scan" : scanning ? "Scanning" : "Scan now"} onClick={onScan} disabled={scanning || connection === "preview"}>
               <Icon name="refresh" size={15} className={scanning ? "spin" : ""} />
               {scanning ? "Scanning" : "Scan now"}
             </button>
@@ -186,19 +197,19 @@ export function AppShell({ view, status, version, connection, scanning, onNaviga
           </div>
         </header>
 
-        {partial && (
+        {scanAttention && (
           <div className="notice-bar notice-warning" role="status">
             <Icon name="alert" size={16} />
-            <span>The latest scan completed with provider warnings. Review System health for coverage details.</span>
-            <button type="button" className="text-button" onClick={() => onNavigate("health")}>Review health <Icon name="arrow" size={14} /></button>
+            <span>The latest scan ended as {status.last_scan?.status}. Evidence from that snapshot may be incomplete.</span>
+            <button type="button" className="text-button" onClick={() => onNavigate("health")}>Review coverage <Icon name="arrow" size={14} /></button>
           </div>
         )}
 
-        <main className="content"><div className="content-inner">{children}</div></main>
+        <main ref={contentRef} className="content"><div className="content-inner">{children}</div></main>
         <footer className="app-footer">
-          <span>Last scan {relativeTime(status.last_scan?.finished_at)}</span>
+          <span>{connection === "preview" ? "Synthetic example dataset" : status.last_scan?.finished_at ? `Last scan ${relativeTime(status.last_scan.finished_at)}` : "No scan recorded"}</span>
           <span className="footer-separator" aria-hidden="true" />
-          <span>{status.sources.filter((source) => source.initialized).length} of {status.sources.length} sources capturing</span>
+          <span>{connection === "preview" ? "No local evidence connected" : `${status.sources.filter((source) => source.initialized).length} of ${status.sources.length} source baselines set`}</span>
         </footer>
       </div>
     </div>
@@ -207,10 +218,11 @@ export function AppShell({ view, status, version, connection, scanning, onNaviga
 
 interface NavigationListProps {
   view: View;
+  unreadSignals: number;
   onNavigate: (view: View) => void;
 }
 
-function NavigationList({ view, onNavigate }: NavigationListProps) {
+function NavigationList({ view, unreadSignals, onNavigate }: NavigationListProps) {
   return (
     <nav className="nav-list" aria-label="Workspace navigation">
       {navItems.map((item) => (
@@ -226,6 +238,9 @@ function NavigationList({ view, onNavigate }: NavigationListProps) {
           <span className="nav-copy">
             <span>{item.label}</span>
           </span>
+          {item.id === "automation" && unreadSignals > 0 && (
+            <span className="nav-badge" aria-label={`${unreadSignals} unread signal${unreadSignals === 1 ? "" : "s"}`}>{unreadSignals > 9 ? "9+" : unreadSignals}</span>
+          )}
         </button>
       ))}
     </nav>

@@ -25,6 +25,7 @@ export function EventRow({ event, compact = false, groupedEvents }: Props) {
   const isSymptom = event.kind === "symptom";
   const records = groupedEvents && groupedEvents.length > 1 ? groupedEvents : [event];
   const isBurst = records.length > 1;
+  const synthetic = event.source === "demo" || event.source.startsWith("fixture:");
   return (
     <div className={`event-row ${open ? "is-open" : ""} ${isSymptom ? "is-symptom" : ""}`}>
       <button type="button" className="event-main" onClick={() => setOpen((value) => !value)} aria-expanded={open}>
@@ -39,8 +40,8 @@ export function EventRow({ event, compact = false, groupedEvents }: Props) {
       </button>
       {open && (
         <div className="event-detail">
-          <div className="detail-line"><span>Recorded</span><strong>{formatDateTime(event.occurred_at)}</strong></div>
-          <div className="detail-line"><span>Action</span><strong>{event.action}</strong></div>
+          <div className="detail-line"><span>{isSymptom ? "Source timestamp" : "Detected by scan"}</span><strong>{formatDateTime(event.occurred_at)}</strong></div>
+          <div className="detail-line"><span>Action</span><strong>{humanizeKey(event.action)}</strong></div>
           {event.entity && <div className="detail-line"><span>Entity</span><strong>{event.entity}</strong></div>}
           {isBurst && <>
             <div className="detail-line"><span>Burst</span><strong>{records.length} records within {burstDuration(records)}</strong></div>
@@ -49,7 +50,7 @@ export function EventRow({ event, compact = false, groupedEvents }: Props) {
             </div>
           </>}
           {event.detail_summary && <DetailSummary summary={event.detail_summary} />}
-          <div className="detail-note"><Icon name="shield" size={14} /> Parsed details are shown locally; raw messages and paths stay in the journal.</div>
+          <div className="detail-note"><Icon name={synthetic ? "alert" : "shield"} size={14} /> {synthetic ? "This is synthetic fixture data, not evidence from this PC." : isSymptom ? "This is a reduced, redacted source record. Its presence on the timeline does not establish a cause." : "This inventory difference was detected at scan time; Windows may not expose when the state actually changed. It does not establish a cause."}</div>
         </div>
       )}
     </div>
@@ -63,14 +64,45 @@ function DetailSummary({ summary }: { summary: NonNullable<EventRecord["detail_s
     {summary.log_name && <div className="detail-line"><span>Log</span><strong>{summary.log_name}</strong></div>}
     {summary.provider && <div className="detail-line"><span>Provider</span><strong>{summary.provider}</strong></div>}
     {summary.record_id && <div className="detail-line"><span>Record</span><strong>{summary.record_id}</strong></div>}
-    {summary.changed_fields?.length ? <div className="detail-line"><span>Changed fields</span><strong>{summary.changed_fields.join(", ")}</strong></div> : null}
+    {summary.changed_fields?.length ? <div className="detail-line"><span>Changed fields</span><strong>{summary.changed_fields.map(detailKeyLabel).join(", ")}</strong></div> : null}
     {summary.before && <div className="detail-line"><span>Before</span><strong>{formatValues(summary.before)}</strong></div>}
     {summary.after && <div className="detail-line"><span>After</span><strong>{formatValues(summary.after)}</strong></div>}
   </div>;
 }
 
 function formatValues(values: Record<string, string | number | boolean>): string {
-  return Object.entries(values).map(([key, value]) => `${key}: ${String(value)}`).join(" · ");
+  return Object.entries(values).map(([key, value]) => `${detailKeyLabel(key)}: ${formatDetailValue(value)}`).join(" · ");
+}
+
+function formatDetailValue(value: string | number | boolean): string {
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  return String(value);
+}
+
+function detailKeyLabel(key: string): string {
+  const labels: Record<string, string> = {
+    class: "Device class",
+    description: "Description",
+    display_name: "Name",
+    driver_date: "Driver date",
+    install_date: "Install date",
+    installed_on: "Installed on",
+    location: "Scope",
+    manufacturer: "Manufacturer",
+    publisher: "Publisher",
+    service_type: "Service type",
+    signed: "Digitally signed",
+    start_mode: "Startup type",
+    state: "State",
+    status: "Status",
+    version: "Version",
+  };
+  return labels[key] || humanizeKey(key);
+}
+
+function humanizeKey(value: string): string {
+  const text = value.replace(/[_-]+/g, " ").trim();
+  return text ? text[0].toUpperCase() + text.slice(1) : "Unknown";
 }
 
 function burstDuration(records: EventRecord[]): string {
