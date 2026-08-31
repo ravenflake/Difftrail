@@ -12,7 +12,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 getrandom = "0.4.3"
 image = { version = "0.25", default-features = false, features = ["png"] }
-tao = "0.35.3"
+tao = "0.37.0"
 tauri = { version = "2", features = [] }
 tray-icon = "0.24.2"
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading"] }
