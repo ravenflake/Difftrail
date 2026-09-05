@@ -533,3 +533,27 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
 }
+
+/* Overview entry point and visible timeline filter context. */
+.overview-intro { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(240px, 1fr); gap: 36px; align-items: center; padding: 30px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.overview-intro h2 { margin: 9px 0 12px; color: var(--ink); font-size: clamp(25px, 3vw, 36px); font-weight: 650; line-height: 1.15; letter-spacing: -.035em; }
+.overview-intro-copy > p { max-width: 510px; margin: 0; color: var(--ink-soft); font-size: 14px; line-height: 1.65; }
+.overview-actions { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 24px; }
+.overview-steps { display: grid; gap: 19px; margin: 0; padding: 4px 0 4px 28px; border-left: 1px solid var(--line); list-style: none; }
+.overview-steps li { display: flex; gap: 13px; align-items: flex-start; }
+.overview-steps li > span { display: grid; place-items: center; flex: 0 0 30px; height: 30px; color: var(--teal-dark); background: var(--teal-wash); border-radius: 8px; font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.overview-steps strong { color: var(--ink); font-size: 13px; }
+.overview-steps p { margin: 4px 0 0; color: var(--ink-soft); font-size: 12px; line-height: 1.5; }
+.timeline-filter-summary { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: -8px; padding: 11px 15px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink-soft); font-size: 12px; line-height: 1.5; }
+.timeline-filter-summary > span { min-width: 0; overflow-wrap: anywhere; }
+.timeline-filter-summary .quiet-link { flex-shrink: 0; min-height: 32px; }
+@media (max-width: 1100px) {
+  .overview-intro { grid-template-columns: 1fr; gap: 25px; }
+  .overview-steps { grid-template-columns: repeat(3, minmax(0, 1fr)); padding: 22px 0 0; border-left: 0; border-top: 1px solid var(--line); }
+}
+@media (max-width: 600px) {
+  .overview-intro { padding: 22px; }
+  .overview-steps { grid-template-columns: 1fr; }
+  .overview-actions { flex-direction: column; align-items: stretch; }
+  .timeline-filter-summary { align-items: flex-start; flex-direction: column; gap: 4px; }
+}

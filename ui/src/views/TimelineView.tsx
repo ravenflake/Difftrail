@@ -34,6 +34,7 @@ export function TimelineView({ events, onLoad }: Props) {
   }, [events, filters, onLoad]);
 
   const grouped = groupByDay(visibleEvents);
+  const hasFilters = filters.kind !== "all" || filters.subsystem !== "all" || Boolean(filters.search);
   const burstCount = Object.values(grouped).reduce((total, dayEvents) => total + groupBursts(dayEvents).filter((group) => group.length > 1).length, 0);
   return (
     <div className="page-stack">
@@ -47,7 +48,11 @@ export function TimelineView({ events, onLoad }: Props) {
           <label className="select-field"><Icon name="filter" size={15} /><span className="sr-only">Filter by subsystem</span><select value={filters.subsystem} onChange={(event) => setFilters((current) => ({ ...current, subsystem: event.target.value }))}>{timelineSubsystemOptions.map((subsystem) => <option key={subsystem} value={subsystem}>{subsystem === "all" ? "All areas" : subsystemLabel(subsystem)}</option>)}</select></label>
         </div>
       </section>
-      <section className="timeline-stream" aria-live="polite">
+      {hasFilters && <div className="timeline-filter-summary">
+        <span><strong>Filters:</strong> {filters.kind === "all" ? "All event types" : filters.kind === "change" ? "Changes" : "Symptoms"} · {filters.subsystem === "all" ? "All areas" : subsystemLabel(filters.subsystem)}{filters.search && <> · “{filters.search}”</>}</span>
+        <button type="button" className="quiet-link" onClick={() => setFilters({ kind: "all", subsystem: "all", search: "" })}><Icon name="close" size={13} /> Clear all filters</button>
+      </div>}
+      <section className="timeline-stream" aria-live="polite" aria-busy={loading}>
         {loading && <div className="loading-line"><span className="loading-bar" /> Updating the journal…</div>}
         {loadError && <div className="form-error timeline-error" role="alert"><Icon name="alert" size={14} /><span><strong>Could not refresh this view.</strong> {loadError} The last available results remain visible.</span></div>}
         {Object.entries(grouped).map(([day, dayEvents]) => <div className="timeline-day" key={day}><div className="day-label"><span>{day}</span><span className="day-rule" /></div><div className="timeline-events">{groupBursts(dayEvents).map((group) => <EventRow key={group[0].id || `${group[0].occurred_at}-${group[0].title}`} event={group[0]} groupedEvents={group.length > 1 ? group : undefined} />)}</div></div>)}
