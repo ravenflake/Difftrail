@@ -20,25 +20,38 @@ from .simulation import run_controlled_fixture_suite, simulate_nvidia_driver_swi
 
 
 _FEEDBACK_TO_STORED = {
-    "helpful": "correct",
-    "not_helpful": "incorrect",
-    "unsure": "unknown",
+    "confirmed_cause": "confirmed_cause",
+    "useful_lead": "useful_lead",
+    "irrelevant_lead": "irrelevant_lead",
+    "uncaptured_cause": "uncaptured_cause",
+    "unknown": "unknown",
     # Keep pre-v0.1.4 command lines working while presenting the clearer terms.
+    "helpful": "helpful",
+    "not_helpful": "not_helpful",
+    "unsure": "unsure",
     "correct": "correct",
     "incorrect": "incorrect",
-    "unknown": "unknown",
 }
 _STORED_TO_FEEDBACK = {
-    "correct": "helpful",
-    "incorrect": "not_helpful",
-    "unknown": "unsure",
+    "correct": "useful_lead",
+    "incorrect": "irrelevant_lead",
+    "helpful": "useful_lead",
+    "not_helpful": "irrelevant_lead",
+    "unsure": "unknown",
+    "confirmed_cause": "confirmed_cause",
+    "useful_lead": "useful_lead",
+    "irrelevant_lead": "irrelevant_lead",
+    "uncaptured_cause": "uncaptured_cause",
+    "unknown": "unknown",
 }
 
 
 def _feedback_outcome(value: str) -> str:
     normalized = value.casefold().replace("-", "_")
     if normalized not in _FEEDBACK_TO_STORED:
-        raise argparse.ArgumentTypeError("outcome must be helpful, not_helpful, or unsure")
+        raise argparse.ArgumentTypeError(
+            "outcome must be confirmed_cause, useful_lead, irrelevant_lead, uncaptured_cause, or unknown"
+        )
     return normalized
 
 
@@ -217,18 +230,23 @@ def command_feedback(args: argparse.Namespace) -> int:
             args.incident_id,
             stored_outcome,
             event_id=args.event_id,
+            reason=getattr(args, "reason", None),
         )
         result = {
             "incident_id": incident["id"],
             "outcome": _STORED_TO_FEEDBACK[incident["feedback"]["outcome"]],
             "event_id": incident["feedback"]["event_id"],
             "recorded_at": incident["feedback"]["recorded_at"],
+            "rank": incident["feedback"]["rank"],
+            "reason": incident["feedback"]["reason"],
         }
         if args.json:
             _print_json(result)
         else:
             selected = f" for event {result['event_id']}" if result["event_id"] else ""
             print(f"Feedback recorded: {result['outcome']}{selected}.")
+            rank = f"rank #{result['rank']}" if result["rank"] is not None else "not ranked"
+            print(f"Validation context: {rank} | reason {result['reason']}.")
             print(f"Incident: {result['incident_id']}")
     return 0
 
@@ -416,6 +434,13 @@ def command_validate_host(args: argparse.Namespace) -> int:
         quiet_rate = scans["quiet_rate"]
         quiet_text = "n/a" if quiet_rate is None else f"{quiet_rate:.1%}"
         print(f"Host validation report: last {args.days} days")
+        runtime = report["runtime"]
+        print(
+            f"Runtime logs ({runtime['status']}): {runtime['watcher_failures']} watcher failures, "
+            f"{runtime['desktop_failures']} desktop startup failures. "
+            f"Status companion: {runtime['companion']}."
+        )
+        print("Journal scan totals exclude failures that occurred before a scan was saved.")
         print(
             f"Scans: {scans['total']} | quiet {scans['quiet']} "
             f"({quiet_text}) | "
@@ -434,14 +459,14 @@ def command_validate_host(args: argparse.Namespace) -> int:
         else:
             print("Overhead: no recorded measurements. Use `overhead --record` to add one.")
         feedback = investigations["with_feedback"]
-        top3_rate = investigations["helpful_lead_top3_rate"]
+        top3_rate = investigations["confirmed_cause_top3_rate"]
         top3_text = "n/a" if top3_rate is None else f"{top3_rate:.1%}"
         print(
             f"Evidence reviews: {investigations['total']} | feedback {feedback} | "
-            f"helpful lead in top 3 {investigations['helpful_lead_top3_hits']}/"
-            f"{investigations['outcomes']['helpful']} ({top3_text})."
+            f"confirmed cause in top 3 {investigations['confirmed_cause_top3_hits']}/"
+            f"{investigations['outcomes']['confirmed_cause']} ({top3_text})."
         )
-        print("Interpretation: user-labeled lead usefulness, not causal accuracy.")
+        print("Interpretation: user-verified outcomes; ranking never establishes causality by itself.")
         print("Privacy: aggregate local report; raw evidence and paths are omitted.")
     return 0
 
@@ -512,15 +537,22 @@ def build_parser() -> argparse.ArgumentParser:
     investigate.add_argument("--json", action="store_true")
     investigate.set_defaults(func=command_investigate)
 
-    feedback = subparsers.add_parser("feedback", help="Record whether a ranked lead was useful")
+    feedback = subparsers.add_parser("feedback", help="Record a verified investigation outcome")
     feedback.add_argument("incident_id")
     feedback.add_argument(
         "--outcome",
         type=_feedback_outcome,
-        metavar="{helpful,not_helpful,unsure}",
+        metavar="{confirmed_cause,useful_lead,irrelevant_lead,uncaptured_cause,unknown}",
         required=True,
     )
-    feedback.add_argument("--event-id", help="Event ID for the useful lead; required for --outcome helpful")
+    feedback.add_argument("--event-id", help="Ranked event ID for a confirmed, useful, or irrelevant lead")
+    feedback.add_argument(
+        "--reason",
+        help=(
+            "Required outcome-specific reason code; examples: reproduced, narrowed_investigation, "
+            "disproved_by_testing, between_scans, or still_investigating"
+        ),
+    )
     feedback.add_argument("--json", action="store_true")
     feedback.set_defaults(func=command_feedback)
 

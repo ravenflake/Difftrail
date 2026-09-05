@@ -6,6 +6,7 @@ import argparse
 from contextlib import contextmanager
 import logging
 import logging.handlers
+from .runtime_health import failure_category
 import os
 from pathlib import Path
 
@@ -17,18 +18,10 @@ LOGGER = logging.getLogger("difftrail.watcher")
 
 
 def _log_path(database_path: Path) -> Path:
-    if os.name == "nt":
-        local_app_data = os.environ.get("LOCALAPPDATA")
-        if local_app_data:
-            return Path(local_app_data) / "Difftrail" / "watcher.log"
     return database_path.with_name("watcher.log")
 
 
 def _active_marker_path(database_path: Path) -> Path:
-    if os.name == "nt":
-        local_app_data = os.environ.get("LOCALAPPDATA")
-        if local_app_data:
-            return Path(local_app_data) / "Difftrail" / "watcher.active"
     return database_path.with_name("watcher.active")
 
 
@@ -54,6 +47,9 @@ def _configure_logging(database_path: Path) -> None:
     )
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     LOGGER.setLevel(logging.INFO)
+    for previous in list(LOGGER.handlers):
+        LOGGER.removeHandler(previous)
+        previous.close()
     LOGGER.addHandler(handler)
 
 
@@ -77,8 +73,10 @@ def run_once(database_path: Path) -> int:
                 result.sources,
             )
         return 0
-    except Exception:
-        LOGGER.exception("Background scan failed")
+    except Exception as exc:
+        # This must work even when opening SQLite itself failed. Do not put
+        # exception text, command lines, or profile paths into the runtime log.
+        LOGGER.error("Background scan failed: %s", failure_category(exc))
         return 1
 
 

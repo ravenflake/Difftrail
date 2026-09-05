@@ -17,6 +17,7 @@ from difftrail.automation import (
     run_automated_scan,
     TASK_RESULT_HAS_NOT_RUN,
     _normalize_task_time,
+    _expected_watcher_executable,
     _fallback_task_action,
     _run_schtasks,
     _run_task_script,
@@ -717,6 +718,27 @@ class AutomationTests(unittest.TestCase):
                 expected_executable=frozen_executable,
             )
         )
+
+    def test_source_runtime_does_not_claim_installed_watcher_task(self) -> None:
+        with TemporaryDirectory() as temporary:
+            python = Path(temporary) / "python.exe"
+            pythonw = Path(temporary) / "pythonw.exe"
+            pythonw.touch()
+
+            with patch("difftrail.automation.sys.executable", str(python)), patch(
+                "difftrail.automation.sys.frozen", False, create=True
+            ):
+                self.assertIsNone(_expected_watcher_executable())
+
+            self.assertFalse(
+                _watcher_task_needs_repair(
+                    r"C:\Program Files\Difftrail\difftrail-watcher.exe",
+                    r'--db "C:\Data\journal.db"',
+                    has_repetition=True,
+                    expected_database=Path(r"C:\Data\journal.db"),
+                    expected_executable=None,
+                )
+            )
 
     def test_fallback_task_uses_the_headless_one_shot_worker(self) -> None:
         with TemporaryDirectory() as directory:

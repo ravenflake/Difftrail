@@ -4,6 +4,7 @@ import type {
   BundleResponse,
   AutomationConfig,
   AutomationSummary,
+  FeedbackReason,
   Incident,
   InvestigationInput,
   InvestigationResponse,
@@ -171,11 +172,12 @@ export function createInvestigation(input: InvestigationInput): Promise<Investig
 export function recordFeedback(
   incidentId: string,
   outcome: NonNullable<Incident["feedback"]["outcome"]>,
+  reason: FeedbackReason,
   eventId?: string,
 ): Promise<{ incident: Incident }> {
   return request<{ incident: Incident }>(`/incidents/${encodeURIComponent(incidentId)}/feedback`, {
     method: "POST",
-    body: JSON.stringify({ outcome, event_id: eventId }),
+    body: JSON.stringify({ outcome, reason, event_id: eventId }),
   });
 }
 

@@ -71,12 +71,29 @@ flowchart TD
 
 ## Failure behavior
 
+- Driver state is a last-known association cache, not proof of installed
+  package membership. Missing provider rows retain their original last-seen
+  timestamp. Reappearance compares with the prior payload; a new association
+  is informational, and absence never generates a driver removal. Device
+  presence transitions remain in the independent devices source.
+- Runtime health reads bounded tails of local logs beside the selected journal
+  and exposes only timestamps, numeric counts, fixed failure categories, and
+  session companion presence. It includes failures before SQLite could open;
+  it does not add them to journal scan totals or claim complete uptime history.
+  Missing/truncated logs remain explicit. No log text crosses the public API.
+
 - One unavailable collector makes a scan partial; it does not turn missing
   coverage into a clean result.
 - SQLite initialization and migrations either commit completely or roll back.
 - A stale interrupted scan is reported by `doctor`; recovery is explicit.
 - Weak or incomplete evidence produces `insufficient_evidence`,
   `no_recent_changes`, or `limited_coverage` rather than a confident answer.
+- Investigation outcomes are explicit user labels, never ranking-engine output.
+  Ranked outcomes freeze the selected one-based rank and a controlled reason
+  code; the saved hypothesis retains the deterministic supporting and counter-
+  signals that explain its ordering. Confirmed cause requires a selected
+  recorded lead, while an uncaptured cause records a structured evidence-gap
+  reason. No free-form cause narrative is stored.
 - Desktop backend startup failures are recorded locally without including the
   journal contents.
 
@@ -88,5 +105,7 @@ argument construction, bundle validation, and release metadata. Windows CI also
 builds and silently installs/uninstalls the NSIS package.
 
 Synthetic validation demonstrates behavior for known inputs. It is not evidence
-of real-world investigation accuracy. The remaining host evidence is tracked in the
-[v0.1.4 field-validation checklist](v0.1.4-field-validation.md).
+of real-world investigation accuracy. Real outcomes remain user-verified labels
+and are aggregated separately from synthetic ground truth. The remaining host
+evidence is tracked in the
+[v0.1.5 field-validation checklist](v0.1.5-field-validation.md).

@@ -49,7 +49,7 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("details", event)
         self.assertNotIn("raw provider text", json.dumps(event))
 
-    def test_feedback_uses_helpfulness_terms_while_preserving_stored_schema(self) -> None:
+    def test_feedback_records_confirmed_cause_rank_and_reason(self) -> None:
         now = utc_now()
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "journal.db"
@@ -75,23 +75,27 @@ class CliTests(unittest.TestCase):
             args = argparse.Namespace(
                 db=str(path),
                 incident_id=incident.id,
-                outcome="helpful",
+                outcome="confirmed_cause",
                 event_id=event.event_id,
+                reason="reproduced",
                 json=True,
             )
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
                 self.assertEqual(command_feedback(args), 0)
 
-            self.assertEqual(json.loads(output.getvalue())["outcome"], "helpful")
+            result = json.loads(output.getvalue())
+            self.assertEqual(result["outcome"], "confirmed_cause")
+            self.assertEqual(result["rank"], 1)
+            self.assertEqual(result["reason"], "reproduced")
             with Database(path) as database:
-                self.assertEqual(database.get_incident(incident.id)["feedback"]["outcome"], "correct")
+                self.assertEqual(database.get_incident(incident.id)["feedback"]["outcome"], "confirmed_cause")
 
     def test_feedback_parser_accepts_hyphenated_public_term(self) -> None:
         args = build_parser().parse_args(
-            ["feedback", "incident-id", "--outcome", "not-helpful"]
+            ["feedback", "incident-id", "--outcome", "irrelevant-lead"]
         )
-        self.assertEqual(args.outcome, "not_helpful")
+        self.assertEqual(args.outcome, "irrelevant_lead")
 
     def test_investigation_without_onset_includes_recent_changes(self) -> None:
         now = utc_now()

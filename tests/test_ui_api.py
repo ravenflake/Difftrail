@@ -242,7 +242,7 @@ class UiApiTests(unittest.TestCase):
         self.assertNotIn("Alice", json.dumps(summary))
         self.assertNotIn("S-1-5-21", json.dumps(summary))
 
-    def test_public_feedback_uses_helpfulness_language_and_omits_ranking_score(self) -> None:
+    def test_public_feedback_preserves_legacy_usefulness_without_claiming_cause(self) -> None:
         incident = public_incident(
             {
                 "id": "review-1",
@@ -259,7 +259,9 @@ class UiApiTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(incident["feedback"]["outcome"], "helpful")
+        self.assertEqual(incident["feedback"]["outcome"], "useful_lead")
+        self.assertIsNone(incident["feedback"]["rank"])
+        self.assertIsNone(incident["feedback"]["reason"])
         result = incident["results"][0]
         self.assertEqual(result["support_level"], "moderate")
         self.assertNotIn("score", result)

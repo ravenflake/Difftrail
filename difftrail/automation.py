@@ -461,7 +461,13 @@ def _task_install_script() -> Path | None:
 
 
 def _expected_watcher_executable() -> Path | None:
-    """Return the bundled watcher path when the desktop app is frozen."""
+    """Return the bundled watcher path when the desktop app is frozen.
+
+    Source checkouts must not claim ownership of an installed desktop watcher's
+    scheduled task. Both runtimes use the same default journal, and replacing a
+    released watcher with development code can migrate that journal beyond the
+    installed desktop backend's supported schema.
+    """
 
     if not getattr(sys, "frozen", False):
         return None

@@ -354,7 +354,7 @@ class BundleTests(unittest.TestCase):
             self.assertNotIn("score", result)
             self.assertNotIn("confidence", result)
 
-    def test_bundle_exposes_feedback_as_helpfulness_not_causal_correctness(self) -> None:
+    def test_bundle_exposes_legacy_feedback_as_useful_lead_not_confirmed_cause(self) -> None:
         with Database(":memory:") as database:
             now = utc_now()
             event = Event(
@@ -377,5 +377,42 @@ class BundleTests(unittest.TestCase):
             bundle = export_bundle(database, incident_id=incident.id, as_of=now)
 
         exported = bundle["investigations"][0]
-        self.assertEqual(exported["feedback"]["outcome"], "helpful")
+        self.assertEqual(exported["feedback"]["outcome"], "useful_lead")
+        self.assertEqual(exported["feedback"]["rank"], 1)
+        self.assertEqual(exported["feedback"]["reason"], "legacy_unspecified")
         self.assertNotIn("score", exported["results"][0])
+
+    def test_bundle_exports_repeatable_confirmed_rank_without_private_explanation(self) -> None:
+        with Database(":memory:") as database:
+            now = utc_now()
+            incident = database.create_incident(
+                IncidentRequest("A private symptom description", now, now, "application", 7)
+            )
+            database.update_incident_results(
+                incident.id,
+                [
+                    {"event": {"id": "distractor", "title": "Distractor"}},
+                    {"event": {"id": "verified", "title": "Verified change"}},
+                ],
+            )
+            database.record_incident_feedback(
+                incident.id,
+                "confirmed_cause",
+                event_id="verified",
+                reason="independent_confirmation",
+            )
+            bundle = export_bundle(database, incident_id=incident.id, as_of=now)
+
+        feedback = bundle["investigations"][0]["feedback"]
+        self.assertEqual(
+            feedback,
+            {
+                "outcome": "confirmed_cause",
+                "event_id": "verified",
+                "recorded_at": feedback["recorded_at"],
+                "rank": 2,
+                "reason": "independent_confirmation",
+            },
+        )
+        self.assertNotIn("explanation", feedback)
+        self.assertTrue(validate_bundle(bundle)["valid"])

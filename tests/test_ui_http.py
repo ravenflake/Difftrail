@@ -15,6 +15,24 @@ from difftrail.ui_api import UiServer
 
 
 class UiHttpTests(unittest.TestCase):
+    def test_runtime_failures_reach_bootstrap_without_log_text(self) -> None:
+        now = utc_now()
+        local = now.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+        self.database_path.with_name("watcher.log").write_text(
+            f"{local},000 ERROR Background scan failed\nRuntimeError: The Difftrail journal schema version 99 is not supported C:\\Users\\Synthetic\\secret\n", encoding="utf-8"
+        )
+        status, payload = self.request("GET", "/api/bootstrap")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["validation"]["runtime"]["watcher_failures"], 1)
+        self.assertNotIn("secret", json.dumps(payload))
+
+    def test_newer_journal_returns_a_useful_error_instead_of_dropping_connection(self) -> None:
+        with Database(self.database_path) as db:
+            db.set_meta("schema_version", "999")
+        status, payload = self.request("GET", "/api/health")
+        self.assertEqual(status, 400)
+        self.assertIn("Update the desktop and bundled watcher together", payload["error"])
+
     def setUp(self) -> None:
         self.folder = tempfile.TemporaryDirectory()
         self.database_path = Path(self.folder.name) / "journal.db"
@@ -401,7 +419,44 @@ class UiHttpTests(unittest.TestCase):
             {"outcome": "unsure"},
         )
         self.assertEqual(status, 200)
-        self.assertEqual(feedback["incident"]["feedback"]["outcome"], "unsure")
+        self.assertEqual(feedback["incident"]["feedback"]["outcome"], "unknown")
+        self.assertEqual(feedback["incident"]["feedback"]["reason"], "legacy_unspecified")
+
+        status, feedback = self.request(
+            "POST",
+            f"/api/incidents/{incident_id}/feedback",
+            {"outcome": "incorrect"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(feedback["incident"]["feedback"]["outcome"], "irrelevant_lead")
+        self.assertIsNone(feedback["incident"]["feedback"]["event_id"])
+        self.assertIsNone(feedback["incident"]["feedback"]["rank"])
+
+        status, feedback = self.request(
+            "POST",
+            f"/api/incidents/{incident_id}/feedback",
+            {"outcome": "uncaptured_cause", "reason": "provider_gap"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(feedback["incident"]["feedback"]["outcome"], "uncaptured_cause")
+        self.assertEqual(feedback["incident"]["feedback"]["reason"], "provider_gap")
+        self.assertIsNone(feedback["incident"]["feedback"]["rank"])
+
+        status, payload = self.request(
+            "POST",
+            f"/api/incidents/{incident_id}/feedback",
+            {"outcome": "uncaptured_cause", "reason": {"private": "text"}},
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"], "reason must be a string")
+
+        status, payload = self.request(
+            "POST",
+            f"/api/incidents/{incident_id}/feedback",
+            {"outcome": "unknown", "reason": "provider_gap"},
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("reason for unknown", payload["error"])
 
         # Old local clients may still send the storage vocabulary during an
         # in-place upgrade, but the public response remains non-causal.
@@ -411,7 +466,8 @@ class UiHttpTests(unittest.TestCase):
             {"outcome": "unknown"},
         )
         self.assertEqual(status, 200)
-        self.assertEqual(feedback["incident"]["feedback"]["outcome"], "unsure")
+        self.assertEqual(feedback["incident"]["feedback"]["outcome"], "unknown")
+        self.assertEqual(feedback["incident"]["feedback"]["reason"], "legacy_unspecified")
 
         status, payload = self.request(
             "POST",

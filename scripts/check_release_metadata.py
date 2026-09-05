@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import re
 import sys
@@ -9,6 +10,24 @@ from pathlib import Path
 
 
 VERSION_PATTERN = re.compile(r'(?m)^__version__\s*=\s*["\']([^"\']+)["\']\s*$')
+
+
+def check_runtime_version(root: Path, expected: str, *, allow_build_stamp: bool = False) -> None:
+    stamp = root / "difftrail/_build_version.py"
+    if not stamp.exists():
+        return
+    assignments = ast.parse(stamp.read_text(encoding="utf-8")).body
+    values = [ast.literal_eval(node.value) for node in assignments
+              if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "BUILD_VERSION" for target in node.targets)]
+    if len(values) != 1 or not isinstance(values[0], str):
+        raise ValueError("Invalid ignored backend build stamp")
+    if values[0] == expected:
+        return
+    if allow_build_stamp:
+        config = json.loads((root / "ui/src-tauri/tauri.build.conf.json").read_text(encoding="utf-8"))
+        if config.get("version") == values[0]:
+            return
+    raise ValueError("Ignored backend build stamp differs from release metadata. Archive stale build stamps before a release build, or explicitly build both components with the matching development configuration.")
 
 
 def read_versions(root: Path) -> dict[str, str]:
@@ -49,6 +68,8 @@ def read_versions(root: Path) -> dict[str, str]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Check Difftrail release metadata consistency")
     parser.add_argument("--expected", help="Require this exact base version")
+    parser.add_argument("--runtime", action="store_true", help="Reject a stale ignored backend build stamp")
+    parser.add_argument("--allow-build-stamp", action="store_true", help="Permit a matching generated development Tauri configuration")
     args = parser.parse_args(argv)
     root = Path(__file__).resolve().parents[1]
     try:
@@ -62,6 +83,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Release metadata mismatch: {details}", file=sys.stderr)
         return 1
     version = next(iter(unique))
+    if args.runtime:
+        try:
+            check_runtime_version(root, version, allow_build_stamp=args.allow_build_stamp)
+        except (OSError, SyntaxError, TypeError, ValueError) as exc:
+            print(f"Runtime metadata mismatch: {exc}", file=sys.stderr)
+            return 1
     if args.expected and version != args.expected:
         print(f"Release metadata is {version!r}; expected {args.expected!r}", file=sys.stderr)
         return 1

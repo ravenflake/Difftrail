@@ -90,7 +90,13 @@ class HostValidationTests(unittest.TestCase):
                 ],
                 assessment="candidate_found",
             )
-            database.record_incident_feedback(incident.id, "correct", event_id="cause-event", recorded_at=now)
+            database.record_incident_feedback(
+                incident.id,
+                "confirmed_cause",
+                event_id="cause-event",
+                reason="independent_confirmation",
+                recorded_at=now,
+            )
             database.record_overhead_measurement(
                 {
                     "interval_seconds": 15,
@@ -118,22 +124,37 @@ class HostValidationTests(unittest.TestCase):
         self.assertEqual(report["journal"]["changes"], 2)
         self.assertEqual(report["journal"]["changes_by_source"], {"apps": 1, "drivers": 1})
         self.assertEqual(report["overhead"]["measurements"], 1)
-        self.assertEqual(report["investigations"]["helpful_lead_top3_hits"], 1)
-        self.assertEqual(report["investigations"]["helpful_lead_top3_rate"], 1.0)
-        self.assertEqual(report["investigations"]["outcomes"]["helpful"], 1)
-        self.assertNotIn("correct_cause", json.dumps(report))
+        self.assertEqual(report["investigations"]["confirmed_cause_top1_hits"], 0)
+        self.assertEqual(report["investigations"]["confirmed_cause_top3_hits"], 1)
+        self.assertEqual(report["investigations"]["confirmed_cause_top3_rate"], 1.0)
+        self.assertEqual(report["investigations"]["outcomes"]["confirmed_cause"], 1)
+        self.assertEqual(
+            report["investigations"]["rank_distribution_by_outcome"]["confirmed_cause"]["rank_2"],
+            1,
+        )
+        self.assertEqual(
+            report["investigations"]["reason_distribution"],
+            {"independent_confirmation": 1},
+        )
         self.assertEqual(report["investigations"]["assessment_distribution"], {"candidate_found": 1})
         self.assertNotIn("Display driver updated", json.dumps(report))
         self.assertNotIn("provider unavailable", json.dumps(report))
 
-    def test_helpful_feedback_requires_a_ranked_lead(self) -> None:
+    def test_ranked_outcome_requires_a_ranked_lead(self) -> None:
         with Database(":memory:") as database:
             now = utc_now()
             incident = database.create_incident(IncidentRequest("a problem", now, now, "general", 7))
             with self.assertRaises(ValueError):
-                database.record_incident_feedback(incident.id, "correct")
+                database.record_incident_feedback(
+                    incident.id, "confirmed_cause", reason="reproduced"
+                )
             with self.assertRaises(ValueError):
-                database.record_incident_feedback(incident.id, "correct", event_id="missing")
+                database.record_incident_feedback(
+                    incident.id,
+                    "confirmed_cause",
+                    event_id="missing",
+                    reason="reproduced",
+                )
 
     def test_ranked_lead_feedback_survives_event_retention(self) -> None:
         with Database(":memory:") as database:
@@ -157,8 +178,80 @@ class HostValidationTests(unittest.TestCase):
 
             saved = database.record_incident_feedback(
                 incident.id,
-                "correct",
+                "useful_lead",
                 event_id=event.event_id,
+                reason="guided_diagnostic",
             )
 
         self.assertEqual(saved["feedback"]["event_id"], "retained-lead")
+        self.assertEqual(saved["feedback"]["rank"], 1)
+
+    def test_outcome_validation_freezes_rank_and_records_privacy_safe_miss_reason(self) -> None:
+        now = utc_now()
+        with Database(":memory:") as database:
+            confirmed = database.create_incident(
+                IncidentRequest("a verified problem", now, now, "application", 7),
+                created_at=now,
+            )
+            database.update_incident_results(
+                confirmed.id,
+                [
+                    {"event": {"id": "distractor"}},
+                    {"event": {"id": "actual-cause"}},
+                ],
+            )
+            database.record_incident_feedback(
+                confirmed.id,
+                "confirmed_cause",
+                event_id="actual-cause",
+                reason="reproduced",
+                recorded_at=now,
+            )
+            # Later review edits must not rewrite the rank observed when the
+            # real-world outcome was recorded.
+            database.update_incident_results(
+                confirmed.id,
+                [
+                    {"event": {"id": "actual-cause"}},
+                    {"event": {"id": "distractor"}},
+                ],
+            )
+
+            missed = database.create_incident(
+                IncidentRequest("another verified problem", now, now, "application", 7),
+                created_at=now,
+            )
+            database.record_incident_feedback(
+                missed.id,
+                "uncaptured_cause",
+                reason="between_scans",
+                recorded_at=now,
+            )
+            report = build_host_validation_report(database, days=1, as_of=now)
+            repeated_report = build_host_validation_report(database, days=1, as_of=now)
+
+            with self.assertRaisesRegex(ValueError, "must not select"):
+                database.record_incident_feedback(
+                    missed.id,
+                    "uncaptured_cause",
+                    event_id="actual-cause",
+                    reason="between_scans",
+                )
+            with self.assertRaisesRegex(ValueError, "reason for confirmed_cause"):
+                database.record_incident_feedback(
+                    confirmed.id,
+                    "confirmed_cause",
+                    event_id="actual-cause",
+                    reason="between_scans",
+                )
+
+        metrics = report["investigations"]
+        self.assertEqual(metrics, repeated_report["investigations"])
+        self.assertEqual(metrics["known_cause_capture_rate"], 0.5)
+        self.assertEqual(metrics["confirmed_cause_top3_rate"], 1.0)
+        self.assertEqual(
+            metrics["rank_distribution_by_outcome"]["confirmed_cause"]["rank_2"],
+            1,
+        )
+        self.assertEqual(metrics["outcomes"]["uncaptured_cause"], 1)
+        self.assertEqual(metrics["reason_distribution"], {"between_scans": 1, "reproduced": 1})

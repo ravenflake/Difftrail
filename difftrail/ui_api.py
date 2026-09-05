@@ -43,7 +43,6 @@ from .public_data import (
     public_feedback_outcome,
     public_next_action,
     public_review_text,
-    stored_feedback_outcome,
 )
 
 
@@ -262,6 +261,8 @@ def public_incident(incident: dict[str, Any]) -> dict[str, Any]:
             "outcome": outcome,
             "event_id": redact_public_text(str(feedback["event_id"])) if feedback.get("event_id") is not None else None,
             "recorded_at": redact_public_text(str(feedback["recorded_at"])) if feedback.get("recorded_at") is not None else None,
+            "rank": _safe_count(feedback.get("rank")) if feedback.get("rank") is not None else None,
+            "reason": redact_public_text(str(feedback["reason"])) if feedback.get("reason") is not None else None,
         },
     }
 
@@ -564,7 +565,14 @@ class UiRequestHandler(BaseHTTPRequestHandler):
         return value
 
     def _with_database(self, callback):
-        with Database(self.server.database_path) as database:
+        try:
+            database = Database(self.server.database_path)
+        except RuntimeError as exc:
+            from .runtime_health import failure_category
+            if failure_category(exc) == "schema_incompatible":
+                raise ValueError("The journal needs a newer Difftrail backend. Update the desktop and bundled watcher together; preserve the journal.") from None
+            raise ValueError("The local journal could not be opened. Run doctor for details.") from None
+        with database:
             return callback(database)
 
     def do_OPTIONS(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
@@ -740,12 +748,16 @@ class UiRequestHandler(BaseHTTPRequestHandler):
                 event_id = body.get("event_id")
                 if event_id is not None and not isinstance(event_id, str):
                     raise ValueError("event_id must be a string")
+                reason = body.get("reason")
+                if reason is not None and not isinstance(reason, str):
+                    raise ValueError("reason must be a string")
 
                 def record(database: Database) -> dict[str, Any]:
                     return database.record_incident_feedback(
                         incident_id,
-                        stored_feedback_outcome(body.get("outcome", "unsure")),
+                        body.get("outcome", "unknown"),
                         event_id=event_id,
+                        reason=reason,
                     )
 
                 payload = {"incident": public_incident(self._with_database(record))}
@@ -793,6 +805,19 @@ def serve(
     if host not in {"127.0.0.1", "localhost", "::1"}:
         raise ValueError("The Difftrail UI server only supports loopback hosts")
     token = api_token if api_token is not None else os.environ.get(API_TOKEN_ENV)
+    # Fail before announcing readiness when an older executable encounters a
+    # newer journal, instead of serving repeated failing health requests.
+    try:
+        with Database(database_path):
+            pass
+    except RuntimeError as exc:
+        from .runtime_health import failure_category
+        if failure_category(exc) == "schema_incompatible":
+            raise ValueError(
+                "This Difftrail backend cannot read the journal schema version (not supported). "
+                "Update the desktop and bundled watcher together; keep the existing journal."
+            ) from None
+        raise ValueError("Difftrail could not initialize the local journal. Run doctor for details.") from None
     server = UiServer((host, port), database_path, api_token=token)
     actual_port = server.server_address[1]
     print(f"Difftrail UI API ready on http://{host}:{actual_port}", flush=True)

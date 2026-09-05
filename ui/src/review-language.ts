@@ -18,8 +18,10 @@ export function assessmentLabel(incident: Incident): string {
 }
 
 export function feedbackLabel(outcome: Incident["feedback"]["outcome"]): string {
-  if (outcome === "helpful") return "Useful lead";
-  if (outcome === "not_helpful") return "Not helpful";
-  if (outcome === "unsure") return "Still checking";
+  if (outcome === "confirmed_cause") return "Confirmed cause";
+  if (outcome === "useful_lead") return "Useful lead";
+  if (outcome === "irrelevant_lead") return "Irrelevant lead";
+  if (outcome === "uncaptured_cause") return "Cause was not captured";
+  if (outcome === "unknown") return "Unknown outcome";
   return "Not reviewed";
 }

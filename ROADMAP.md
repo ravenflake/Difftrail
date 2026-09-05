@@ -3,18 +3,21 @@
 Difftrail is an early Windows-first MVP. The roadmap prioritizes evidence and
 reliability over collector count or speculative features.
 
-## Now: v0.1.4 field validation
+## Now: v0.1.5 real-outcome validation
 
-- Validate clean install, v0.1.3 upgrade, launch, watcher enable/disable, and
+- Validate clean install, v0.1.4 upgrade, launch, watcher enable/disable, and
   uninstall on a real Windows user profile.
 - Confirm legacy journal privacy migration preserves useful context.
 - Observe the watcher for at least 48 hours, including reboot and sleep/wake.
-- Review naturally occurring incidents, including one with incomplete provider
-  coverage, without treating correlation as proof.
+- Review naturally occurring incidents using confirmed-cause, useful-lead,
+  irrelevant-lead, uncaptured-cause, and unknown labels without treating
+  correlation as proof.
+- Compare confirmed-cause rank and uncaptured-cause reason distributions across
+  repeated redacted host-validation reports.
 - Inspect a real redacted bundle before sharing it.
 
 The complete evidence gate is in
-[`docs/v0.1.4-field-validation.md`](docs/v0.1.4-field-validation.md). Items remain
+[`docs/v0.1.5-field-validation.md`](docs/v0.1.5-field-validation.md). Items remain
 pending until the recorded Windows checks actually happen.
 
 ## Next: reliability and diagnostic evidence

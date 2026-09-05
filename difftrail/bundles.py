@@ -32,8 +32,8 @@ from .public_data import (
 
 
 BUNDLE_FORMAT = "difftrail-diagnostic-bundle"
-BUNDLE_VERSION = 2
-SUPPORTED_BUNDLE_VERSIONS = frozenset({1, BUNDLE_VERSION})
+BUNDLE_VERSION = 3
+SUPPORTED_BUNDLE_VERSIONS = frozenset({1, 2, BUNDLE_VERSION})
 COLLECTION_SOURCE_NAMES = frozenset(
     {"updates", "apps", "drivers", "services", "tasks", "startup", "devices", "eventlog"}
 )
@@ -253,8 +253,10 @@ def _safe_incident(incident: dict[str, Any]) -> dict[str, Any]:
         "results": [_safe_hypothesis(item) for item in raw_results],
         "feedback": {
             "outcome": public_feedback_outcome(feedback.get("outcome")),
-            "event_id": feedback.get("event_id"),
+            "event_id": _safe_text(feedback.get("event_id")) if feedback.get("event_id") is not None else None,
             "recorded_at": feedback.get("recorded_at"),
+            "rank": _safe_count(feedback.get("rank")) if feedback.get("rank") is not None else None,
+            "reason": _safe_text(feedback.get("reason")) if feedback.get("reason") is not None else None,
         },
     }
 

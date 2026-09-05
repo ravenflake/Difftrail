@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createInvestigation, deleteInvestigation, exportBundle, loadBootstrap, loadTimeline, markAutomationNotificationsRead, recordFeedback, recordOverhead, runScan, updateAutomationConfig, updateAutomationWatcher, waitForApi } from "./api";
 import { makePreviewBootstrap } from "./mock";
-import type { AutomationConfig, Bootstrap, Incident, InvestigationInput, TimelineFilters, View } from "./types";
+import type { AutomationConfig, Bootstrap, FeedbackReason, Incident, InvestigationInput, TimelineFilters, View } from "./types";
 import { AppShell } from "./components/AppShell";
 import { BrandMark } from "./components/BrandMark";
 import { Icon } from "./components/Icon";
@@ -11,6 +11,7 @@ import { InvestigateView } from "./views/InvestigateView";
 import { IncidentsView } from "./views/IncidentsView";
 import { HealthView } from "./views/HealthView";
 import { AutomationView } from "./views/AutomationView";
+import { createBootstrapReadGate } from "./bootstrap-state";
 
 function routeFromHash(): View {
   const route = window.location.hash.replace(/^#/, "") as View;
@@ -60,6 +61,7 @@ function removeIncidentFromBootstrap(current: Bootstrap, incidentId: string): Bo
 }
 
 export default function App() {
+  const bootstrapReadGate = useRef(createBootstrapReadGate()).current;
   const [view, setView] = useState<View>(routeFromHash);
   const [data, setData] = useState<Bootstrap | null>(null);
   const [connection, setConnection] = useState<"local" | "preview">("local");
@@ -90,14 +92,17 @@ export default function App() {
   }, []);
 
   const refresh = useCallback(async (initial = false): Promise<boolean> => {
+    const generation = bootstrapReadGate.begin();
     if (initial) setLoading(true);
     try {
       const next = await loadBootstrapWithRetry();
+      if (!bootstrapReadGate.isCurrent(generation)) return false;
       setData(next);
       setConnection("local");
       setLoadError(null);
       return true;
     } catch (reason) {
+      if (!bootstrapReadGate.isCurrent(generation)) return false;
       const message = connectionErrorMessage(reason);
       if (initial) {
         if (import.meta.env.DEV) {
@@ -111,9 +116,9 @@ export default function App() {
       setLoadError(message);
       return false;
     } finally {
-      if (initial) setLoading(false);
+      if (initial && bootstrapReadGate.isCurrent(generation)) setLoading(false);
     }
-  }, []);
+  }, [bootstrapReadGate]);
 
   useEffect(() => {
     void refresh(true);
@@ -130,8 +135,10 @@ export default function App() {
   useEffect(() => {
     if (connection !== "local") return;
     const poll = window.setInterval(() => {
+      const generation = bootstrapReadGate.begin();
       void loadBootstrap()
         .then((next) => {
+          if (!bootstrapReadGate.isCurrent(generation)) return;
           setData(next);
           setLoadError(null);
         })
@@ -140,7 +147,7 @@ export default function App() {
         });
     }, 30_000);
     return () => window.clearInterval(poll);
-  }, [connection]);
+  }, [bootstrapReadGate, connection]);
 
   const handleScan = useCallback(async () => {
     if (connection === "preview") {
@@ -218,15 +225,18 @@ export default function App() {
   const handleInvestigate = useCallback(async (input: InvestigationInput) => {
     if (connection === "preview") throw new Error("The local UI API is not connected. Start it to review the real journal.");
     const response = await createInvestigation(input);
+    // A poll that started before the write can otherwise finish afterward and
+    // replace this new review with its stale bootstrap snapshot.
+    bootstrapReadGate.invalidate();
     setData((current) => current ? { ...current, incidents: [response.incident, ...current.incidents.filter((incident) => incident.id !== response.incident.id)], status: { ...current.status, incidents: current.status.incidents + 1 } } : current);
     setSelectedIncidentId(response.incident.id);
     navigate("incidents");
     return response;
-  }, [connection, navigate]);
+  }, [bootstrapReadGate, connection, navigate]);
 
-  const handleFeedback = useCallback(async (incidentId: string, outcome: NonNullable<Incident["feedback"]["outcome"]>, eventId?: string) => {
+  const handleFeedback = useCallback(async (incidentId: string, outcome: NonNullable<Incident["feedback"]["outcome"]>, reason: FeedbackReason, eventId?: string) => {
     if (connection === "preview") throw new Error("Feedback is only saved when the local journal is connected.");
-    const response = await recordFeedback(incidentId, outcome, eventId);
+    const response = await recordFeedback(incidentId, outcome, reason, eventId);
     setData((current) => current ? { ...current, incidents: current.incidents.map((incident) => incident.id === incidentId ? response.incident : incident) } : current);
   }, [connection]);
 

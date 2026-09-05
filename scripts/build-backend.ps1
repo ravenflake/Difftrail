@@ -4,6 +4,14 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
+$metadataArguments = @((Join-Path $PSScriptRoot 'check_release_metadata.py'), '--runtime')
+if ($env:DIFFTRAIL_ALLOW_BUILD_STAMP -eq '1') {
+    $metadataArguments += '--allow-build-stamp'
+}
+& $PythonPath @metadataArguments
+if ($LASTEXITCODE -ne 0) {
+    throw 'Backend build stopped because runtime versions would not match.'
+}
 $entryPoint = Join-Path $repositoryRoot "scripts\difftrail_backend.py"
 $watcherEntryPoint = Join-Path $repositoryRoot "scripts\difftrail_watcher.py"
 $desktopManifest = Join-Path $repositoryRoot "ui\src-tauri\Cargo.toml"

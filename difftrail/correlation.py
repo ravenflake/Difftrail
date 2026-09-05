@@ -549,6 +549,13 @@ def rank_candidates(
             )
 
         counter: list[Evidence] = []
+        if event.source == "drivers" and event.action == "observed":
+            counter.append(Evidence(
+                "first observed association",
+                "strong",
+                "This driver association was first observed, but no previous version is available. Device appearance alone does not establish a driver installation or update.",
+                event.event_id,
+            ))
         if not supporting:
             counter.append(
                 Evidence(
@@ -627,7 +634,7 @@ def rank_candidates(
                 )
             )
         score = max(0.0, min(1.0, score))
-        if not supporting:
+        if not supporting or (event.source == "drivers" and event.action == "observed"):
             confidence = "Low"
         elif score >= 0.67 and strong_support and not counter:
             confidence = "High"
