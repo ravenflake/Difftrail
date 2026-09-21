@@ -1,3 +1,4 @@
+# ⚠️ DEVELOPMENT PAUSED INDEFINITELY
 # Difftrail
 
 [![CI](https://github.com/ravenflake/Difftrail/actions/workflows/ci.yml/badge.svg)](https://github.com/ravenflake/Difftrail/actions/workflows/ci.yml)
