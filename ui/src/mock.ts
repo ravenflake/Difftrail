@@ -44,7 +44,7 @@ const previewIncident: Incident = {
   assessment: "insufficient_evidence",
   assessment_reasons: ["The top-ranked change has compatible timing, but the symptom record is not specific enough to establish a strong lead."],
   coverage: { known: true, limited: false, reasons: [] },
-  feedback: { outcome: null, event_id: null, recorded_at: null },
+  feedback: { outcome: null, event_id: null, recorded_at: null, rank: null, reason: null },
   results: [
     {
       event: graphicsChange,
@@ -63,11 +63,12 @@ const previewIncident: Incident = {
 };
 
 const validation: ValidationReport = {
+  runtime: { status: "unavailable", watcher_failures: 0, desktop_failures: 0, watcher_completions: 0, watcher_partial: 0, failure_categories: {}, last_failure_at: null, earliest_log_at: null, companion: "unknown", limits: "Synthetic preview; no runtime logs were read." },
   period: { start: ago(24 * 7), end: new Date().toISOString(), days: 7 },
   scans: { total: 14, by_status: { ok: 14 }, quiet: 10, quiet_rate: 10 / 14, with_changes: 4, with_symptoms: 2, reported_changes: 4, reported_symptoms: 2, provider_error_count: 0, error_buckets: {}, sources_per_scan_mean: 8, change_bearing_scan_rate: 4 / 14 },
   journal: { changes: 4, symptoms: 2, changes_per_day: 0.57, changes_by_source: { drivers: 1, apps: 1, devices: 1, services: 1 }, changes_by_subsystem: { graphics: 1, application: 1, device: 1, startup: 1 }, symptoms_by_subsystem: { graphics: 1, application: 1 } },
   overhead: { measurements: 2, first_measured_at: ago(48), last_measured_at: ago(4), cpu_percent_mean: 1.1, cpu_percent_peak: 1.6, rss_mb_mean: 82, rss_mb_peak: 182, disk_read_mb_total: 8.2, disk_write_mb_total: 0.01, startup_cpu_percent_peak: 2.1, startup_rss_mb_peak: 148 },
-  investigations: { total: 2, with_feedback: 1, outcomes: { helpful: 1, not_helpful: 0, unsure: 0 }, helpful_lead_top3_hits: 1, helpful_lead_top3_rate: 1, helpful_lead_rank_distribution: { rank_1: 1, rank_2: 0, rank_3: 0, outside_top3: 0 }, assessment_distribution: { insufficient_evidence: 1, candidate_found: 1 } },
+  investigations: { total: 2, with_feedback: 1, outcomes: { confirmed_cause: 0, useful_lead: 1, irrelevant_lead: 0, uncaptured_cause: 0, unknown: 0 }, known_cause_capture_rate: null, confirmed_cause_top1_hits: 0, confirmed_cause_top1_rate: null, confirmed_cause_top3_hits: 0, confirmed_cause_top3_rate: null, useful_lead_top3_hits: 1, useful_lead_top3_rate: 1, rank_distribution_by_outcome: { confirmed_cause: { rank_1: 0, rank_2: 0, rank_3: 0, rank_4_plus: 0, not_ranked: 0 }, useful_lead: { rank_1: 1, rank_2: 0, rank_3: 0, rank_4_plus: 0, not_ranked: 0 }, irrelevant_lead: { rank_1: 0, rank_2: 0, rank_3: 0, rank_4_plus: 0, not_ranked: 0 } }, reason_distribution: { narrowed_investigation: 1 }, assessment_distribution: { insufficient_evidence: 1, candidate_found: 1 } },
   privacy: "Aggregate local report; raw evidence and paths are omitted.",
   limits: ["This report measures collection and labeled ranking feedback; it is not causal proof.", "Longer and cross-machine data is still needed."],
 };

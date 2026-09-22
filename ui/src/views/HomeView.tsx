@@ -25,6 +25,22 @@ export function HomeView({ data, connection, scanning, onNavigate, onScan, onOpe
 
   return (
     <div className="page-stack">
+      <section className="overview-intro" aria-labelledby="overview-title">
+        <div className="overview-intro-copy">
+          <span className="eyebrow">Your local change journal</span>
+          <h2 id="overview-title">What changed on your PC?</h2>
+          <p>Start with the recorded history. When something goes wrong, compare nearby changes with the time the problem began.</p>
+          <div className="overview-actions">
+            <button type="button" className="button button-primary" onClick={() => onNavigate("investigate")}><Icon name="investigate" size={17} /> Review a problem <Icon name="arrow" size={15} /></button>
+            <button type="button" className="button button-secondary" onClick={() => onNavigate("timeline")}>Browse evidence</button>
+          </div>
+        </div>
+        <ol className="overview-steps" aria-label="How a review works">
+          <li><span>01</span><div><strong>Describe the problem</strong><p>Choose a symptom and when it started.</p></div></li>
+          <li><span>02</span><div><strong>Compare the evidence</strong><p>Review leads and signals against them.</p></div></li>
+          <li><span>03</span><div><strong>Choose a safe check</strong><p>Follow a read-only diagnostic target.</p></div></li>
+        </ol>
+      </section>
       <section className={`status-panel ${attention ? "is-attention" : ""}`}>
         <div>
           <div className="status-panel-label"><span className="live-pulse" /> {preview ? "Synthetic preview only" : attention ? "Journal coverage needs attention" : "Source baselines established"}</div>

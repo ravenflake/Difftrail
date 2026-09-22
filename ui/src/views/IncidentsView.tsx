@@ -1,4 +1,4 @@
-import type { Incident } from "../types";
+import type { FeedbackReason, Incident } from "../types";
 import { relativeTime, subsystemLabel } from "../format";
 import { Icon } from "../components/Icon";
 import { InvestigationDetail } from "./InvestigationDetail";
@@ -10,7 +10,7 @@ interface Props {
   connected: boolean;
   onSelect: (incident: Incident) => void;
   onNavigate: () => void;
-  onFeedback: (incidentId: string, outcome: NonNullable<Incident["feedback"]["outcome"]>, eventId?: string) => Promise<void>;
+  onFeedback: (incidentId: string, outcome: NonNullable<Incident["feedback"]["outcome"]>, reason: FeedbackReason, eventId?: string) => Promise<void>;
   onDelete: (incidentId: string) => Promise<void>;
   onExport: (incidentId: string) => Promise<void>;
   exportBusy: boolean;

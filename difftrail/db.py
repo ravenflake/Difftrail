@@ -29,11 +29,17 @@ from .privacy import (
     redact_text,
     redact_value,
 )
+from .public_data import (
+    LEGACY_FEEDBACK_REASON,
+    feedback_reason,
+    public_feedback_outcome,
+    stored_feedback_outcome,
+)
 from .service_identity import is_per_user_service_payload, service_base_name
 
 
 DEFAULT_RETENTION_DAYS = 30
-DATABASE_SCHEMA_VERSION = 7
+DATABASE_SCHEMA_VERSION = 8
 STALE_SCAN_AFTER = timedelta(minutes=15)
 INVESTIGATION_MAX_PRE_ONSET_GAP = timedelta(hours=24)
 MAX_PERSISTED_JSON_NESTING = 64
@@ -130,6 +136,8 @@ CREATE TABLE IF NOT EXISTS incidents (
     feedback_outcome TEXT,
     feedback_event_id TEXT,
     feedback_at TEXT,
+    feedback_rank INTEGER,
+    feedback_reason TEXT,
     affected_entity TEXT,
     suspected_change TEXT
 );
@@ -203,6 +211,25 @@ def _table_columns(connection: sqlite3.Connection, table: str) -> set[str]:
 
 def _canonical_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _ranked_event_position(results: Any, event_id: Any) -> int | None:
+    """Return a one-based stored rank without trusting persisted JSON shapes."""
+
+    if event_id is None:
+        return None
+    if isinstance(results, str):
+        try:
+            results = json.loads(results)
+        except (json.JSONDecodeError, RecursionError):
+            return None
+    if not isinstance(results, list) or not _json_nesting_is_safe(results):
+        return None
+    for index, result in enumerate(results, start=1):
+        event = result.get("event") if isinstance(result, dict) else None
+        if isinstance(event, dict) and event.get("id") == event_id:
+            return index
+    return None
 
 
 def _hash(value: Any) -> str:
@@ -471,6 +498,7 @@ class Database:
             5: ("investigation assessment fields", self._migration_investigation_assessment),
             6: ("legacy journal privacy re-sanitization", self._migration_redact_legacy_journal),
             7: ("optional investigation context", self._migration_investigation_context),
+            8: ("structured investigation outcomes", self._migration_structured_investigation_outcomes),
         }
         for version in range(current_version + 1, DATABASE_SCHEMA_VERSION + 1):
             name, callback = migrations[version]
@@ -549,6 +577,26 @@ class Database:
         for name, statement in statements.items():
             if name not in columns:
                 self.connection.execute(statement)
+
+    def _migration_structured_investigation_outcomes(self) -> None:
+        columns = _table_columns(self.connection, "incidents")
+        if "feedback_rank" not in columns:
+            self.connection.execute("ALTER TABLE incidents ADD COLUMN feedback_rank INTEGER")
+        if "feedback_reason" not in columns:
+            self.connection.execute("ALTER TABLE incidents ADD COLUMN feedback_reason TEXT")
+
+        rows = self.connection.execute(
+            "SELECT id, result_json, feedback_outcome, feedback_event_id, feedback_reason FROM incidents "
+            "WHERE feedback_outcome IS NOT NULL"
+        ).fetchall()
+        for row in rows:
+            outcome = public_feedback_outcome(row["feedback_outcome"]) or "unknown"
+            rank = _ranked_event_position(row["result_json"], row["feedback_event_id"])
+            reason = row["feedback_reason"] or LEGACY_FEEDBACK_REASON
+            self.connection.execute(
+                "UPDATE incidents SET feedback_outcome = ?, feedback_rank = ?, feedback_reason = ? WHERE id = ?",
+                (outcome, rank, reason, row["id"]),
+            )
 
     def _migration_safe_application_entities(self) -> None:
         self._backfill_safe_application_entities(commit=False)
@@ -1366,7 +1414,9 @@ class Database:
             safe_payload = redact_value(item.payload)
             comparison_payload = _comparison_payload(source, item.payload)
             if old_payload is None:
-                action = item.action_on_add
+                # A newly visible PnP association is not proof that a driver
+                # package was installed. Keep it as low-priority context.
+                action = "observed" if source == "drivers" else item.action_on_add
             else:
                 old_comparison_payload = _comparison_payload(source, old_payload)
                 service_family: str | None = None
@@ -1423,14 +1473,14 @@ class Database:
                     action=action,
                     title=f"{item.display_name} {title_action}",
                     entity=item.entity or item.display_name,
-                    severity=item.severity,
+                    severity="info" if source == "drivers" and old_payload is None else item.severity,
                     source=source,
                     details={"key": key, "before": old_payload, "after": safe_payload},
                 )
             )
 
         for key, old_payload in previous.items():
-            if key not in matched_previous_keys:
+            if source != "drivers" and key not in matched_previous_keys:
                 generated.append(
                     Event(
                         occurred_at=now,
@@ -1530,11 +1580,20 @@ class Database:
 
     def _replace_state(self, source: str, current: dict[str, SnapshotItem], now: datetime) -> None:
         timestamp = iso_datetime(now)
-        self.connection.execute("DELETE FROM state_items WHERE source = ?", (source,))
+        # Win32_PnPSignedDriver can omit disconnected associations even without
+        # a Present filter. Absence cannot establish a package uninstall.
+        # Retain last-observed payloads/timestamps so reconnects compare against
+        # known versions instead of generating uninstall/reinstall pairs.
+        if source != "drivers":
+            self.connection.execute("DELETE FROM state_items WHERE source = ?", (source,))
         self.connection.executemany(
             """
             INSERT INTO state_items(source, item_key, payload_json, payload_hash, last_seen_at)
             VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(source, item_key) DO UPDATE SET
+                payload_json = excluded.payload_json,
+                payload_hash = excluded.payload_hash,
+                last_seen_at = excluded.last_seen_at
             """,
             [
                 (
@@ -1821,35 +1880,48 @@ class Database:
         outcome: str,
         *,
         event_id: str | None = None,
+        reason: str | None = None,
         recorded_at: datetime | None = None,
     ) -> dict[str, Any]:
-        """Record local lead-usefulness feedback using the legacy stored values."""
+        """Record a user-labeled outcome without inferring causality from rank."""
 
-        if outcome not in {"correct", "incorrect", "unknown"}:
-            raise ValueError("outcome must be correct, incorrect, or unknown")
+        original_outcome = outcome
+        legacy_outcome = original_outcome in {
+            "correct", "incorrect", "helpful", "not_helpful", "unsure", "unknown"
+        }
+        outcome = stored_feedback_outcome(outcome)
+        if reason is None:
+            if not legacy_outcome:
+                raise ValueError("reason is required for this outcome")
+            reason = LEGACY_FEEDBACK_REASON
+        if reason == LEGACY_FEEDBACK_REASON and not legacy_outcome:
+            raise ValueError("legacy_unspecified is reserved for upgraded feedback")
+        reason = feedback_reason(reason, outcome)
         incident = self.get_incident(incident_id)
         if incident is None:
             raise ValueError(f"Unknown incident: {incident_id}")
-        if outcome == "correct" and not event_id:
-            raise ValueError("Helpful feedback requires an event ID for lead-usefulness measurement")
+        lead_outcomes = {"confirmed_cause", "useful_lead", "irrelevant_lead"}
+        legacy_unselected_irrelevant = (
+            original_outcome in {"incorrect", "not_helpful"} and event_id is None
+        )
+        if outcome in lead_outcomes and not event_id and not legacy_unselected_irrelevant:
+            raise ValueError(f"{outcome} requires an event ID from the ranked leads")
+        if outcome not in lead_outcomes and event_id is not None:
+            raise ValueError(f"{outcome} must not select a ranked lead")
+        rank: int | None = None
         if event_id:
-            ranked_event_ids = {
-                str(event.get("id"))
-                for result in incident.get("results", [])
-                if isinstance(result, dict)
-                and isinstance((event := result.get("event")), dict)
-                and event.get("id") is not None
-            }
-            if event_id not in ranked_event_ids:
+            rank = _ranked_event_position(incident.get("results", []), event_id)
+            if rank is None:
                 raise ValueError("The selected event is not a ranked lead in this evidence review")
         timestamp = iso_datetime(recorded_at or utc_now())
         self.connection.execute(
             """
             UPDATE incidents
-            SET feedback_outcome = ?, feedback_event_id = ?, feedback_at = ?
+            SET feedback_outcome = ?, feedback_event_id = ?, feedback_at = ?,
+                feedback_rank = ?, feedback_reason = ?
             WHERE id = ?
             """,
-            (outcome, event_id, timestamp, incident_id),
+            (outcome, event_id, timestamp, rank, reason, incident_id),
         )
         self.connection.commit()
         updated = self.get_incident(incident_id)
@@ -1915,6 +1987,8 @@ class Database:
                 "outcome": row["feedback_outcome"],
                 "event_id": row["feedback_event_id"],
                 "recorded_at": row["feedback_at"],
+                "rank": row["feedback_rank"] if "feedback_rank" in row.keys() else None,
+                "reason": row["feedback_reason"] if "feedback_reason" in row.keys() else None,
             },
         }
 

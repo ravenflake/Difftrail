@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+- Keep last-known driver associations across missing provider rows so device
+  reconnects do not masquerade as driver uninstall/reinstall events. First
+  observations are informational and cannot receive strong ranking support;
+  observed version changes remain actionable evidence leads.
+- Include bounded, privacy-safe runtime log failure counts and companion
+  presence in Collection & system and host validation, separate from journal scans.
+- Fail before API readiness on incompatible journals and explain that desktop
+  and watcher binaries must be updated together without resetting the journal.
+- Reject stale ignored backend build stamps during packaging; development CI
+  explicitly permits a stamp only with its matching generated Tauri configuration.
+- Retry tray icon creation on a single event loop, support both installed
+  companion locations, and log safe startup/explicit-exit lifecycle events.
+
+## 0.1.5
+
+- Expanded investigation outcomes to distinguish a user-confirmed cause, a
+  useful lead, an irrelevant lead, a known cause missing from the ranking, and
+  an unresolved outcome without inferring causality from correlation.
+- Added privacy-safe reason codes and a frozen one-based lead rank so real
+  incident outcomes remain comparable after a saved review is rerun.
+- Added confirmed-cause top-1/top-3, known-cause capture, useful-lead,
+  irrelevant-lead, and evidence-gap aggregates to redacted host-validation reports.
+- Migrated older helpful/not-helpful feedback conservatively as lead usefulness,
+  never as confirmed cause, and added the structured outcome to UI, CLI, API,
+  and diagnostic bundle contracts.
+- Prevented an older background refresh from temporarily hiding a newly saved
+  evidence review after submission.
+- Development builds now flag a scheduled watcher from a different installed
+  runtime as needing an update before it can repeatedly fail on a newer journal schema.
+
 ## 0.1.4
 
 - Reframed problem review around ranked evidence leads instead of root-cause

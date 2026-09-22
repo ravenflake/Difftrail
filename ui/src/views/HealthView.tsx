@@ -16,6 +16,8 @@ interface Props {
 
 export function HealthView({ data, connected, onRecordOverhead, recording, error, onExport, exportBusy, exportError }: Props) {
   const { status, validation, automation } = data;
+  const runtime = validation.runtime;
+  const runtimeFailures = (runtime?.watcher_failures ?? 0) + (runtime?.desktop_failures ?? 0);
   const ready = status.sources.filter((source) => source.initialized).length;
   const hasScan = Boolean(status.last_scan?.finished_at);
   const scanStatusAttention = Boolean(status.last_scan && status.last_scan.status !== "ok");
@@ -104,6 +106,17 @@ export function HealthView({ data, connected, onRecordOverhead, recording, error
         <div className="journal-health-stats"><span><strong>{status.journal.scans.running}</strong> active scan{status.journal.scans.running === 1 ? "" : "s"}</span><span><strong>{status.journal.scans.stale_running.length}</strong> stale scan{status.journal.scans.stale_running.length === 1 ? "" : "s"}</span></div>
       </section>
 
+      <section className="panel collection-health-panel">
+        <div className="section-heading"><div><h3>Runtime reliability</h3><span className="section-subtitle">Failures in the last {validation.period.days} days can occur before a scan reaches the journal. A successful latest scan does not erase earlier failures.</span></div></div>
+        <div className="collection-health-grid">
+          <HealthFact label="Watcher failures" value={runtime ? number(runtime.watcher_failures) : "Unknown"} detail="Includes failures while opening the journal" tone={runtime?.watcher_failures ? "warning" : "neutral"} />
+          <HealthFact label="Desktop startup failures" value={runtime ? number(runtime.desktop_failures) : "Unknown"} detail={runtimeFailures ? `Latest runtime failure ${relativeTime(runtime?.last_failure_at)}` : "Retained logs only; not an uptime guarantee"} tone={runtime?.desktop_failures ? "warning" : "neutral"} />
+          <HealthFact label="Status icon" value={runtime?.companion === "running" ? "Running" : runtime?.companion === "not_running" ? "Not running" : "Unknown"} detail={runtime?.companion === "not_running" ? "Reopen Difftrail to restore the icon. An explicit icon exit does not stop scheduled scans." : "The companion runs independently of the desktop window"} tone={runtime?.companion === "not_running" ? "warning" : "neutral"} />
+          <HealthFact label="Runtime log coverage" value={runtime?.status ?? "Unavailable"} detail={runtime?.limits ?? "This backend does not report runtime log history."} tone="neutral" />
+        </div>
+        {Boolean(runtime?.failure_categories.schema_incompatible) && <p className="panel-footnote">A backend encountered a newer journal schema. Update the desktop and bundled watcher together. Preserve the journal; do not downgrade or reset it.</p>}
+      </section>
+
       <section className="panel source-panel">
         <div className="section-heading">
           <div><h3>Source coverage</h3><span className="section-subtitle">Each read-only source needs a valid baseline before later state differences can become evidence. {validation.scans.provider_error_count} provider warning{validation.scans.provider_error_count === 1 ? "" : "s"} recorded in the last {validation.period.days} days.</span></div>
@@ -176,6 +189,9 @@ function sourceDetail(source: Bootstrap["status"]["sources"][number]): string {
   const lastRead = relativeTime(source.last_successful_at || source.last_seen_at);
   if (source.source === "eventlog") {
     return `${number(source.item_count)} retained symptom record${source.item_count === 1 ? "" : "s"} · last successful read ${lastRead}`;
+  }
+  if (source.source === "drivers") {
+    return `${number(source.item_count)} last-known driver associations · last successful read ${lastRead}. Disconnected associations are retained; absence is not an uninstall.`;
   }
   return `${number(source.item_count)} current item${source.item_count === 1 ? "" : "s"} · last successful read ${lastRead}`;
 }

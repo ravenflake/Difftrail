@@ -29,13 +29,47 @@ SAFE_CHANGE_FIELDS = frozenset(
 )
 SAFE_EVENT_FIELDS = frozenset({"event_id", "log_name", "provider", "record_id", "application_name"})
 
-PUBLIC_FEEDBACK_OUTCOMES = frozenset({"helpful", "not_helpful", "unsure"})
-_STORED_TO_PUBLIC_FEEDBACK = {
-    "correct": "helpful",
-    "incorrect": "not_helpful",
-    "unknown": "unsure",
+PUBLIC_FEEDBACK_OUTCOMES = frozenset(
+    {"confirmed_cause", "useful_lead", "irrelevant_lead", "uncaptured_cause", "unknown"}
+)
+FEEDBACK_REASONS_BY_OUTCOME: dict[str, frozenset[str]] = {
+    "confirmed_cause": frozenset(
+        {"reproduced", "resolved_after_change", "independent_confirmation", "other"}
+    ),
+    "useful_lead": frozenset(
+        {"narrowed_investigation", "guided_diagnostic", "ruled_out_candidate", "other"}
+    ),
+    "irrelevant_lead": frozenset(
+        {"disproved_by_testing", "unrelated_to_symptom", "timing_only", "other"}
+    ),
+    "uncaptured_cause": frozenset(
+        {
+            "before_first_baseline",
+            "between_scans",
+            "unsupported_source",
+            "provider_gap",
+            "outside_review_window",
+            "other",
+        }
+    ),
+    "unknown": frozenset({"still_investigating", "insufficient_information", "other"}),
 }
-_PUBLIC_TO_STORED_FEEDBACK = {value: key for key, value in _STORED_TO_PUBLIC_FEEDBACK.items()}
+LEGACY_FEEDBACK_REASON = "legacy_unspecified"
+_STORED_TO_PUBLIC_FEEDBACK = {
+    # v0.1.4 described these labels as lead usefulness in every public
+    # surface. Preserve that meaning during upgrade; never promote a legacy
+    # "correct" value into a user-confirmed causal label.
+    "correct": "useful_lead",
+    "incorrect": "irrelevant_lead",
+    "helpful": "useful_lead",
+    "not_helpful": "irrelevant_lead",
+    "unsure": "unknown",
+}
+_LEGACY_PUBLIC_FEEDBACK = {
+    "helpful": "useful_lead",
+    "not_helpful": "irrelevant_lead",
+    "unsure": "unknown",
+}
 
 
 def public_review_text(value: Any) -> str:
@@ -130,7 +164,7 @@ def safe_detail_value(value: Any) -> str | int | float | bool | None:
 
 
 def public_feedback_outcome(value: Any) -> str | None:
-    """Translate the legacy stored feedback vocabulary into a non-causal label."""
+    """Return the canonical outcome while preserving legacy usefulness semantics."""
 
     if not isinstance(value, str):
         return None
@@ -140,16 +174,34 @@ def public_feedback_outcome(value: Any) -> str | None:
 
 
 def stored_feedback_outcome(value: Any) -> str:
-    """Accept the public vocabulary while preserving the existing journal schema."""
+    """Accept current and legacy vocabulary and return the canonical stored value."""
 
     if not isinstance(value, str):
-        raise ValueError("outcome must be helpful, not_helpful, or unsure")
-    if value in _STORED_TO_PUBLIC_FEEDBACK:
+        raise ValueError(
+            "outcome must be confirmed_cause, useful_lead, irrelevant_lead, uncaptured_cause, or unknown"
+        )
+    if value in PUBLIC_FEEDBACK_OUTCOMES:
         return value
-    stored = _PUBLIC_TO_STORED_FEEDBACK.get(value)
-    if stored is None:
-        raise ValueError("outcome must be helpful, not_helpful, or unsure")
-    return stored
+    stored = _STORED_TO_PUBLIC_FEEDBACK.get(value) or _LEGACY_PUBLIC_FEEDBACK.get(value)
+    if stored is not None:
+        return stored
+    raise ValueError(
+        "outcome must be confirmed_cause, useful_lead, irrelevant_lead, uncaptured_cause, or unknown"
+    )
+
+
+def feedback_reason(value: Any, outcome: str) -> str:
+    """Validate a privacy-safe, outcome-specific reason code."""
+
+    if not isinstance(value, str):
+        raise ValueError("reason must be a string")
+    if value == LEGACY_FEEDBACK_REASON:
+        return value
+    allowed = FEEDBACK_REASONS_BY_OUTCOME.get(outcome, frozenset())
+    if value not in allowed:
+        choices = ", ".join(sorted(allowed))
+        raise ValueError(f"reason for {outcome} must be one of: {choices}")
+    return value
 
 
 def _public_location(value: Any) -> str | None:

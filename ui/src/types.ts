@@ -52,10 +52,21 @@ export interface Hypothesis {
   };
 }
 
+export type FeedbackOutcome = "confirmed_cause" | "useful_lead" | "irrelevant_lead" | "uncaptured_cause" | "unknown";
+
+export type FeedbackReason =
+  | "reproduced" | "resolved_after_change" | "independent_confirmation"
+  | "narrowed_investigation" | "guided_diagnostic" | "ruled_out_candidate"
+  | "disproved_by_testing" | "unrelated_to_symptom" | "timing_only"
+  | "before_first_baseline" | "between_scans" | "unsupported_source" | "provider_gap" | "outside_review_window"
+  | "still_investigating" | "insufficient_information" | "other" | "legacy_unspecified";
+
 export interface Feedback {
-  outcome: "helpful" | "not_helpful" | "unsure" | null;
+  outcome: FeedbackOutcome | null;
   event_id: string | null;
   recorded_at: string | null;
+  rank: number | null;
+  reason: FeedbackReason | null;
 }
 
 export interface Incident {
@@ -171,6 +182,18 @@ export interface Status {
 }
 
 export interface ValidationReport {
+  runtime: {
+    status: "available" | "partial" | "unavailable";
+    watcher_failures: number;
+    desktop_failures: number;
+    watcher_completions: number;
+    watcher_partial: number;
+    failure_categories: Record<string, number>;
+    last_failure_at: string | null;
+    earliest_log_at: string | null;
+    companion: "running" | "not_running" | "unsupported" | "unknown";
+    limits: string;
+  };
   period: { start: string; end: string; days: number };
   scans: {
     total: number;
@@ -210,10 +233,16 @@ export interface ValidationReport {
   investigations: {
     total: number;
     with_feedback: number;
-    outcomes: { helpful: number; not_helpful: number; unsure: number };
-    helpful_lead_top3_hits: number;
-    helpful_lead_top3_rate: number | null;
-    helpful_lead_rank_distribution: Record<string, number>;
+    outcomes: Record<FeedbackOutcome, number>;
+    known_cause_capture_rate: number | null;
+    confirmed_cause_top1_hits: number;
+    confirmed_cause_top1_rate: number | null;
+    confirmed_cause_top3_hits: number;
+    confirmed_cause_top3_rate: number | null;
+    useful_lead_top3_hits: number;
+    useful_lead_top3_rate: number | null;
+    rank_distribution_by_outcome: Record<"confirmed_cause" | "useful_lead" | "irrelevant_lead", Record<string, number>>;
+    reason_distribution: Record<string, number>;
     assessment_distribution: Record<string, number>;
   };
   privacy: string;

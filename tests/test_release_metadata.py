@@ -1,10 +1,26 @@
 import re
 import unittest
 
-from scripts.check_release_metadata import read_versions
+from scripts.check_release_metadata import read_versions, check_runtime_version
 
 
 class ReleaseMetadataTests(unittest.TestCase):
+    def test_stale_runtime_stamp_requires_explicit_matching_development_build(self) -> None:
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "difftrail").mkdir()
+            (root / "ui/src-tauri").mkdir(parents=True)
+            (root / "difftrail/_build_version.py").write_text("BUILD_VERSION = '0.1.4-dev.fixture'\n")
+            with self.assertRaisesRegex(ValueError, "Ignored backend build stamp"):
+                check_runtime_version(root, "0.1.5")
+            (root / "ui/src-tauri/tauri.build.conf.json").write_text('{"version":"0.1.4-dev.fixture"}')
+            check_runtime_version(root, "0.1.5", allow_build_stamp=True)
+            (root / "ui/src-tauri/tauri.build.conf.json").write_text('{"version":"0.1.5"}')
+            with self.assertRaises(ValueError):
+                check_runtime_version(root, "0.1.5", allow_build_stamp=True)
+
     def test_all_release_metadata_uses_one_version(self) -> None:
         from pathlib import Path
 
@@ -21,7 +37,7 @@ class ReleaseMetadataTests(unittest.TestCase):
             "ui/src-tauri/Cargo.lock",
         }
         self.assertEqual(set(versions), expected_sources)
-        self.assertEqual(set(versions.values()), {"0.1.4"})
+        self.assertEqual(set(versions.values()), {"0.1.5"})
 
     def test_installer_smoke_script_preserves_argument_and_exit_code_contract(self) -> None:
         from pathlib import Path

@@ -16,7 +16,7 @@ class DatabaseTests(unittest.TestCase):
         with Database(":memory:") as database:
             schema = database.schema_status()
             self.assertEqual(schema["current_version"], schema["supported_version"])
-            self.assertEqual([item["version"] for item in schema["migrations"]], [1, 2, 3, 4, 5, 6, 7])
+            self.assertEqual([item["version"] for item in schema["migrations"]], [1, 2, 3, 4, 5, 6, 7, 8])
 
     def test_stale_scan_is_detected_and_recovered_without_deleting_it(self) -> None:
         with Database(":memory:") as database:
@@ -251,7 +251,7 @@ class DatabaseTests(unittest.TestCase):
             connection.close()
 
             with Database(path) as database:
-                self.assertEqual(database.schema_status()["current_version"], 7)
+                self.assertEqual(database.schema_status()["current_version"], 8)
                 self.assertEqual(database.list_events(limit=1)[0].details, {})
 
     def test_ascending_event_limit_keeps_the_most_recent_evidence(self) -> None:
@@ -303,6 +303,8 @@ class DatabaseTests(unittest.TestCase):
                         "feedback_outcome",
                         "feedback_event_id",
                         "feedback_at",
+                        "feedback_rank",
+                        "feedback_reason",
                         "affected_entity",
                         "suspected_change",
                     }.issubset(columns)
@@ -322,7 +324,7 @@ class DatabaseTests(unittest.TestCase):
 
             with Database(path) as database:
                 schema = database.schema_status()
-                self.assertEqual(schema["current_version"], 7)
+                self.assertEqual(schema["current_version"], 8)
                 columns = {
                     row[1]
                     for row in database.connection.execute("PRAGMA table_info(incidents)").fetchall()
@@ -392,11 +394,81 @@ class DatabaseTests(unittest.TestCase):
                     for row in database.connection.execute("PRAGMA table_info(incidents)").fetchall()
                 }
 
-            self.assertEqual(current_version, 7)
+            self.assertEqual(current_version, 8)
             self.assertTrue({"affected_entity", "suspected_change"}.issubset(columns))
             self.assertEqual(incident["description"], "Automatic draft: Application crash detected")
             self.assertIsNone(incident["affected_entity"])
             self.assertIsNone(incident["suspected_change"])
+
+    def test_v7_feedback_migration_preserves_usefulness_and_backfills_rank(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "v7-outcomes.db"
+            legacy_schema = BASE_SCHEMA.replace(
+                "    feedback_rank INTEGER,\n    feedback_reason TEXT,\n",
+                "",
+            )
+            connection = sqlite3.connect(path)
+            connection.executescript(legacy_schema)
+            connection.executescript(
+                """
+                ALTER TABLE incidents ADD COLUMN assessment TEXT NOT NULL DEFAULT 'insufficient_evidence';
+                ALTER TABLE incidents ADD COLUMN assessment_reasons_json TEXT NOT NULL DEFAULT '[]';
+                ALTER TABLE incidents ADD COLUMN coverage_json TEXT NOT NULL DEFAULT '{}';
+                """
+            )
+            connection.executemany(
+                "INSERT INTO meta(key, value) VALUES (?, ?)",
+                [("schema_version", "7"), ("migration:safe-application-entities", "1")],
+            )
+            connection.execute(
+                """
+                INSERT INTO incidents
+                (id, created_at, description, subsystem, onset_start, onset_end, lookback_days, status,
+                 result_json, feedback_outcome, feedback_event_id, feedback_at, assessment,
+                 assessment_reasons_json, coverage_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "legacy-feedback",
+                    "2026-08-15T12:00:00Z",
+                    "Application failed",
+                    "application",
+                    "2026-08-15T12:00:00Z",
+                    "2026-08-15T13:00:00Z",
+                    7,
+                    "investigating",
+                    json.dumps(
+                        [
+                            {"event": {"id": "distractor"}},
+                            {"event": {"id": "useful-event"}},
+                        ]
+                    ),
+                    "correct",
+                    "useful-event",
+                    "2026-08-16T12:00:00Z",
+                    "candidate_found",
+                    "[]",
+                    "{}",
+                ),
+            )
+            connection.commit()
+            connection.close()
+
+            with Database(path) as database:
+                incident = database.get_incident("legacy-feedback")
+                schema = database.schema_status()
+
+            self.assertEqual(schema["current_version"], 8)
+            self.assertEqual(
+                incident["feedback"],
+                {
+                    "outcome": "useful_lead",
+                    "event_id": "useful-event",
+                    "recorded_at": "2026-08-16T12:00:00Z",
+                    "rank": 2,
+                    "reason": "legacy_unspecified",
+                },
+            )
 
     def test_v013_journal_is_re_sanitized_on_upgrade(self) -> None:
         legacy_path = r"C:\Users\<user> Doe\Games\Example Game.exe"
@@ -520,7 +592,7 @@ class DatabaseTests(unittest.TestCase):
             connection.close()
 
             with Database(path) as database:
-                self.assertEqual(database.schema_status()["current_version"], 7)
+                self.assertEqual(database.schema_status()["current_version"], 8)
                 events = {event.event_id: event for event in database.list_events(kind="symptom")}
                 self.assertEqual(set(events), {"legacy-event", "already-safe-event"})
                 event = events["legacy-event"]
@@ -551,7 +623,13 @@ class DatabaseTests(unittest.TestCase):
                 self.assertEqual(incident["coverage"], {"path": safe_path})
                 self.assertEqual(
                     incident["feedback"],
-                    {"outcome": "correct", "event_id": "legacy-event", "recorded_at": timestamp},
+                    {
+                        "outcome": "useful_lead",
+                        "event_id": "legacy-event",
+                        "recorded_at": timestamp,
+                        "rank": None,
+                        "reason": "legacy_unspecified",
+                    },
                 )
                 self.assertEqual(
                     notification,
@@ -577,7 +655,7 @@ class DatabaseTests(unittest.TestCase):
                 try:
                     barrier.wait(timeout=10)
                     with Database(path) as database:
-                        self.assertEqual(database.schema_status()["current_version"], 7)
+                        self.assertEqual(database.schema_status()["current_version"], 8)
                 except Exception as exc:  # capture thread failures for the test thread
                     errors.append(exc)
 

@@ -1,11 +1,11 @@
 {
   "name": "difftrail-ui",
   "private": true,
-  "version": "0.1.4",
+  "version": "0.1.5",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "test": "node scripts/test-maximize-state.cjs && node scripts/test-production-api-build.cjs",
+    "test": "node scripts/test-maximize-state.cjs && node scripts/test-bootstrap-state.cjs && node scripts/test-production-api-build.cjs",
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1",

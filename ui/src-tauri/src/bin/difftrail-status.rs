@@ -104,8 +104,17 @@ mod windows_app {
     fn install_root() -> PathBuf {
         std::env::current_exe()
             .ok()
-            .and_then(|path| path.parent().and_then(Path::parent).map(Path::to_path_buf))
+            .and_then(|path| install_root_for(&path))
             .unwrap_or_else(|| PathBuf::from("."))
+    }
+
+    fn install_root_for(executable: &Path) -> Option<PathBuf> {
+        let parent = executable.parent()?;
+        if parent.file_name().is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("backend")) {
+            parent.parent().map(Path::to_path_buf)
+        } else {
+            Some(parent.to_path_buf())
+        }
     }
 
     fn active_marker_path(root: &Path) -> PathBuf {
@@ -343,13 +352,27 @@ mod windows_app {
         let open_item = MenuItem::with_id(OPEN_ID, "Open Difftrail", true, None);
         let exit_item = MenuItem::with_id(EXIT_ID, "Exit status icon", true, None);
         let separator = PredefinedMenuItem::separator();
-        let menu = Menu::with_items(&[&status_item, &separator, &open_item, &exit_item])?;
-        let tray = TrayIconBuilder::new()
-            .with_menu(Box::new(menu))
-            .with_menu_on_left_click(false)
-            .with_tooltip(initial_status.tooltip())
-            .with_icon(load_icon()?)
-            .build()?;
+        // Retry icon creation on the same event loop. Recreating a Windows
+        // event loop after Explorer-startup failure can itself panic.
+        let mut created_tray = None;
+        for attempt in 1..=STARTUP_ATTEMPTS {
+            let menu = Menu::with_items(&[&status_item, &separator, &open_item, &exit_item])?;
+            match TrayIconBuilder::new()
+                .with_menu(Box::new(menu))
+                .with_menu_on_left_click(false)
+                .with_tooltip(initial_status.tooltip())
+                .with_icon(load_icon()?)
+                .build() {
+                Ok(tray) => { created_tray = Some(tray); break; }
+                Err(error) => {
+                    record_startup_failure(attempt, &error);
+                    if attempt == STARTUP_ATTEMPTS { return Err(Box::new(error)); }
+                    thread::sleep(STARTUP_RETRY_INTERVAL);
+                }
+            }
+        }
+        let tray = created_tray.ok_or("notification-area icon unavailable")?;
+        record_lifecycle("started");
 
         let mut last_status = initial_status;
         event_loop.run(move |event, _, control_flow| {
@@ -379,6 +402,7 @@ mod windows_app {
                     open_difftrail(&root);
                 }
                 Event::UserEvent(UserEvent::Menu(event)) if event.id.as_ref() == EXIT_ID => {
+                    record_lifecycle("exited_by_user");
                     *control_flow = ControlFlow::Exit;
                 }
                 Event::UserEvent(UserEvent::Refresh) => {
@@ -394,13 +418,22 @@ mod windows_app {
         });
     }
 
-    fn record_startup_failure(attempt: u8, error: &dyn Error) {
+    fn record_startup_failure(_attempt: u8, _error: &dyn Error) {
+        record_lifecycle("startup_failed");
+    }
+
+    fn record_lifecycle(event: &str) {
         let log_path = std::env::var_os("LOCALAPPDATA")
             .map(PathBuf::from)
             .map(|path| path.join("Difftrail").join("status.log"))
             .unwrap_or_else(|| PathBuf::from("difftrail-status.log"));
         if let Some(parent) = log_path.parent() {
             let _ = std::fs::create_dir_all(parent);
+        }
+        if std::fs::metadata(&log_path).is_ok_and(|metadata| metadata.len() > 1_048_576) {
+            let previous = log_path.with_extension("log.1");
+            let _ = std::fs::remove_file(&previous);
+            let _ = std::fs::rename(&log_path, previous);
         }
         let Ok(mut log) = OpenOptions::new().create(true).append(true).open(log_path) else {
             return;
@@ -411,27 +444,28 @@ mod windows_app {
             .unwrap_or_default();
         let _ = writeln!(
             log,
-            "[{timestamp}] notification-area startup attempt {attempt}/{STARTUP_ATTEMPTS} failed: {error}"
+            "[{timestamp}] companion {event}"
         );
     }
 
     pub fn run_with_startup_retry() {
-        for attempt in 1..=STARTUP_ATTEMPTS {
-            match run() {
-                Ok(()) => return,
-                Err(error) => {
-                    record_startup_failure(attempt, error.as_ref());
-                    if attempt < STARTUP_ATTEMPTS {
-                        thread::sleep(STARTUP_RETRY_INTERVAL);
-                    }
-                }
-            }
+        if let Err(error) = run() {
+            record_startup_failure(STARTUP_ATTEMPTS, error.as_ref());
         }
     }
 
     #[cfg(test)]
     mod tests {
-        use super::CollectionStatus;
+        use super::{CollectionStatus, install_root_for};
+        use std::path::{Path, PathBuf};
+
+        #[test]
+        fn installed_layouts_resolve_the_same_root() {
+            let root = PathBuf::from(r"C:\Program Files\Difftrail");
+            assert_eq!(install_root_for(&root.join("backend").join("difftrail-status.exe")), Some(root.clone()));
+            assert_eq!(install_root_for(&root.join("difftrail-status.exe")), Some(root));
+            assert_eq!(install_root_for(Path::new(r"C:\Difftrail\BACKEND\difftrail-status.exe")), Some(PathBuf::from(r"C:\Difftrail")));
+        }
 
         #[test]
         fn status_copy_distinguishes_scanning_enabled_and_off() {

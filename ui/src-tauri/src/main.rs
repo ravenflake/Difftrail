@@ -58,12 +58,14 @@ fn ensure_status_companion(_app: &tauri::AppHandle) {
         };
         let executable = resource_root.join("difftrail-status.exe");
         if executable.is_file() {
-            let _ = Command::new(executable)
+            if Command::new(executable)
                 .creation_flags(0x08000000)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
-                .spawn();
+                .spawn().is_err() {
+                eprintln!("Difftrail status companion could not start; reopen Difftrail to retry.");
+            }
         }
     }
 }
@@ -203,12 +205,21 @@ fn write_startup_failure(
         .unwrap_or_default();
     writeln!(
         log,
-        "[{timestamp}] Difftrail backend startup failed:\n{error}"
+        "[{timestamp}] Difftrail backend startup failed:\n{}",
+        startup_failure_category(&error.to_string())
     )?;
-    if let Some(primary_log_error) = primary_log_error {
-        writeln!(log, "Primary startup log failure: {primary_log_error}")?;
+    if primary_log_error.is_some() {
+        writeln!(log, "Primary startup log unavailable")?;
     }
     writeln!(log)
+}
+
+fn startup_failure_category(message: &str) -> &'static str {
+    if message.contains("schema version") && message.contains("not supported") {
+        "schema_incompatible: Update the desktop and bundled watcher together; preserve the journal."
+    } else {
+        "runtime_error: The local backend could not start."
+    }
 }
 
 fn record_startup_failure(error: &dyn Error) -> io::Result<()> {
@@ -432,9 +443,15 @@ fn start_local_api(_app: &tauri::AppHandle, token: &str) -> Result<(Child, u16),
 
 #[cfg(test)]
 mod tests {
-    use super::{capture_api_output, parse_api_ready_port};
+    use super::{capture_api_output, parse_api_ready_port, startup_failure_category};
     use std::io::Cursor;
     use std::time::Duration;
+
+    #[test]
+    fn startup_diagnostics_do_not_log_private_exception_text() {
+        assert_eq!(startup_failure_category(r"failed C:\Users\Synthetic\private"), "runtime_error: The local backend could not start.");
+        assert!(startup_failure_category("schema version 999 is not supported").starts_with("schema_incompatible:"));
+    }
 
     #[test]
     fn ready_port_requires_the_exact_backend_banner() {

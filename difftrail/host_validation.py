@@ -6,9 +6,10 @@ from typing import Any
 
 from .assessment import NEUTRAL_ASSESSMENT
 from .db import Database
+from .runtime_health import runtime_health
 from .models import ensure_utc, iso_datetime, utc_now
 from .privacy import error_bucket, redact_public_text
-from .public_data import public_feedback_outcome
+from .public_data import FEEDBACK_REASONS_BY_OUTCOME, LEGACY_FEEDBACK_REASON, public_feedback_outcome
 
 
 MAX_VALIDATION_DAYS = 3650
@@ -79,42 +80,86 @@ def _investigation_metrics(incidents: list[dict[str, Any]]) -> dict[str, Any]:
         for incident in incidents
         if public_feedback_outcome(incident["feedback"]["outcome"]) is not None
     )
-    helpful_total = outcomes["helpful"]
-    top3_hits = 0
-    rank_counts: Counter[str] = Counter()
+    rank_counts: dict[str, Counter[str]] = {
+        outcome: Counter() for outcome in sorted(outcomes)
+    }
+    reason_counts: Counter[str] = Counter()
+
+    def rank_bucket(rank: int | None) -> str:
+        if rank is None or rank < 1:
+            return "not_ranked"
+        if rank <= 3:
+            return f"rank_{rank}"
+        return "rank_4_plus"
+
     for incident in incidents:
         feedback = incident["feedback"]
-        if public_feedback_outcome(feedback["outcome"]) != "helpful":
+        outcome = public_feedback_outcome(feedback["outcome"])
+        if outcome is None:
             continue
-        selected_event_id = feedback["event_id"]
-        rank: int | None = None
-        for index, hypothesis in enumerate(incident["results"], start=1):
-            event = hypothesis.get("event", {}) if isinstance(hypothesis, dict) else {}
-            if event.get("id") == selected_event_id:
-                rank = index
-                break
-        if rank is not None and rank <= 3:
-            top3_hits += 1
-            rank_counts[f"rank_{rank}"] += 1
-        else:
-            rank_counts["outside_top3"] += 1
+        reason = feedback.get("reason")
+        if isinstance(reason, str) and reason:
+            safe_reasons = FEEDBACK_REASONS_BY_OUTCOME.get(outcome, frozenset()) | {
+                LEGACY_FEEDBACK_REASON
+            }
+            reason_counts[reason if reason in safe_reasons else "invalid"] += 1
+        rank = feedback.get("rank")
+        if not isinstance(rank, int) or isinstance(rank, bool) or rank < 1:
+            rank = None
+            selected_event_id = feedback.get("event_id")
+            for index, hypothesis in enumerate(incident["results"], start=1):
+                event = hypothesis.get("event", {}) if isinstance(hypothesis, dict) else {}
+                if event.get("id") == selected_event_id:
+                    rank = index
+                    break
+        rank_counts.setdefault(outcome, Counter())[rank_bucket(rank)] += 1
+
+    confirmed_total = outcomes["confirmed_cause"]
+    useful_total = outcomes["useful_lead"]
+    confirmed_top1 = rank_counts.get("confirmed_cause", Counter())["rank_1"]
+    confirmed_top3 = sum(
+        rank_counts.get("confirmed_cause", Counter())[f"rank_{rank}"] for rank in range(1, 4)
+    )
+    useful_top3 = sum(
+        rank_counts.get("useful_lead", Counter())[f"rank_{rank}"] for rank in range(1, 4)
+    )
+    cause_outcomes = confirmed_total + outcomes["uncaptured_cause"]
+
+    def public_rank_distribution(outcome: str) -> dict[str, int]:
+        counts = rank_counts.get(outcome, Counter())
+        return {
+            "rank_1": counts["rank_1"],
+            "rank_2": counts["rank_2"],
+            "rank_3": counts["rank_3"],
+            "rank_4_plus": counts["rank_4_plus"],
+            "not_ranked": counts["not_ranked"],
+        }
 
     return {
         "total": len(incidents),
         "with_feedback": sum(outcomes.values()),
         "outcomes": {
-            "helpful": outcomes["helpful"],
-            "not_helpful": outcomes["not_helpful"],
-            "unsure": outcomes["unsure"],
+            outcome: outcomes[outcome]
+            for outcome in (
+                "confirmed_cause",
+                "useful_lead",
+                "irrelevant_lead",
+                "uncaptured_cause",
+                "unknown",
+            )
         },
-        "helpful_lead_top3_hits": top3_hits,
-        "helpful_lead_top3_rate": _rate(top3_hits, helpful_total),
-        "helpful_lead_rank_distribution": {
-            "rank_1": rank_counts["rank_1"],
-            "rank_2": rank_counts["rank_2"],
-            "rank_3": rank_counts["rank_3"],
-            "outside_top3": rank_counts["outside_top3"],
+        "known_cause_capture_rate": _rate(confirmed_total, cause_outcomes),
+        "confirmed_cause_top1_hits": confirmed_top1,
+        "confirmed_cause_top1_rate": _rate(confirmed_top1, confirmed_total),
+        "confirmed_cause_top3_hits": confirmed_top3,
+        "confirmed_cause_top3_rate": _rate(confirmed_top3, confirmed_total),
+        "useful_lead_top3_hits": useful_top3,
+        "useful_lead_top3_rate": _rate(useful_top3, useful_total),
+        "rank_distribution_by_outcome": {
+            outcome: public_rank_distribution(outcome)
+            for outcome in ("confirmed_cause", "useful_lead", "irrelevant_lead")
         },
+        "reason_distribution": dict(sorted(reason_counts.items())),
         "assessment_distribution": dict(sorted(assessment_distribution.items())),
     }
 
@@ -194,10 +239,12 @@ def build_host_validation_report(
             "symptoms_by_subsystem": _safe_label_counts(journal["symptoms_by_subsystem"]),
         },
         "overhead": _aggregate_overhead(overhead),
+        "runtime": runtime_health(database.path, start=start, end=end),
         "investigations": _investigation_metrics(incidents),
         "limits": [
             "This report measures collection behavior and user-labeled outcomes; it does not establish causality by itself.",
-            "The top-three helpful-lead rate includes only reviews explicitly labeled helpful with an event ID; it is not a causal-accuracy measurement.",
+            "Confirmed-cause metrics include only outcomes explicitly verified by a user; Difftrail never infers confirmation from rank or timing.",
+            "Useful and irrelevant leads measure investigation value separately from confirmed-cause rank.",
             "A longer window and multiple hosts are needed before treating overhead or ranking results as general guarantees.",
         ],
     }

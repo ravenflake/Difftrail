@@ -1,16 +1,50 @@
 import { useEffect, useRef, useState } from "react";
-import type { AssessmentState, Incident, Hypothesis } from "../types";
+import type { AssessmentState, FeedbackReason, Incident, Hypothesis } from "../types";
 import { formatDateTime, relativeTime, sourceLabel, subsystemLabel } from "../format";
 import { feedbackLabel, supportLabel } from "../review-language";
 import { Icon } from "../components/Icon";
 import { EvidenceList } from "../components/EvidenceList";
 
 type ReviewOutcome = Exclude<Incident["feedback"]["outcome"], null>;
+const LEAD_OUTCOMES = new Set<ReviewOutcome>(["confirmed_cause", "useful_lead", "irrelevant_lead"]);
+const FEEDBACK_REASON_OPTIONS: Record<ReviewOutcome, Array<{ value: FeedbackReason; label: string }>> = {
+  confirmed_cause: [
+    { value: "reproduced", label: "Reproduced through controlled testing" },
+    { value: "resolved_after_change", label: "Resolved after the cause was changed" },
+    { value: "independent_confirmation", label: "Confirmed by an independent diagnostic or source" },
+    { value: "other", label: "Verified another way" },
+  ],
+  useful_lead: [
+    { value: "narrowed_investigation", label: "Narrowed the investigation" },
+    { value: "guided_diagnostic", label: "Led to a useful diagnostic check" },
+    { value: "ruled_out_candidate", label: "Helped rule out a candidate" },
+    { value: "other", label: "Useful another way" },
+  ],
+  irrelevant_lead: [
+    { value: "disproved_by_testing", label: "Testing disproved the lead" },
+    { value: "unrelated_to_symptom", label: "The change was unrelated to the symptom" },
+    { value: "timing_only", label: "Timing was the only apparent connection" },
+    { value: "other", label: "Irrelevant for another reason" },
+  ],
+  uncaptured_cause: [
+    { value: "before_first_baseline", label: "Cause occurred before the first baseline" },
+    { value: "between_scans", label: "Cause occurred between scans" },
+    { value: "unsupported_source", label: "Relevant evidence source is not collected" },
+    { value: "provider_gap", label: "A provider warning or failed read left a gap" },
+    { value: "outside_review_window", label: "Cause was outside the selected review window" },
+    { value: "other", label: "Cause was missing for another reason" },
+  ],
+  unknown: [
+    { value: "still_investigating", label: "Still investigating" },
+    { value: "insufficient_information", label: "Not enough information to decide" },
+    { value: "other", label: "Unknown for another reason" },
+  ],
+};
 
 interface Props {
   incident: Incident;
   connected: boolean;
-  onFeedback: (incidentId: string, outcome: ReviewOutcome, eventId?: string) => Promise<void>;
+  onFeedback: (incidentId: string, outcome: ReviewOutcome, reason: FeedbackReason, eventId?: string) => Promise<void>;
   onDelete: (incidentId: string) => Promise<void>;
   onExport: (incidentId: string) => Promise<void>;
   exportBusy: boolean;
@@ -22,6 +56,10 @@ interface Props {
 export function InvestigationDetail({ incident, connected, onFeedback, onDelete, onExport, exportBusy, exportError, deleteBusy, deleteError }: Props) {
   const [feedbackBusy, setFeedbackBusy] = useState(false);
   const [feedbackError, setFeedbackError] = useState<string | null>(null);
+  const initialOutcome = incident.feedback.outcome || "unknown";
+  const [feedbackOutcome, setFeedbackOutcome] = useState<ReviewOutcome>(initialOutcome);
+  const [feedbackEventId, setFeedbackEventId] = useState(incident.feedback.event_id || incident.results[0]?.event.id || "");
+  const [feedbackReason, setFeedbackReason] = useState<FeedbackReason>(() => initialFeedbackReason(initialOutcome, incident.feedback.reason));
   const [removeConfirming, setRemoveConfirming] = useState(false);
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const copyResetTimer = useRef<number | null>(null);
@@ -47,11 +85,29 @@ export function InvestigationDetail({ incident, connected, onFeedback, onDelete,
     if (copyResetTimer.current !== null) window.clearTimeout(copyResetTimer.current);
   }, []);
 
-  async function giveFeedback(outcome: ReviewOutcome, eventId?: string) {
+  useEffect(() => {
+    const outcome = incident.feedback.outcome || "unknown";
+    setFeedbackOutcome(outcome);
+    setFeedbackEventId(incident.feedback.event_id || incident.results[0]?.event.id || "");
+    setFeedbackReason(initialFeedbackReason(outcome, incident.feedback.reason));
+  }, [incident.feedback.outcome, incident.feedback.event_id, incident.feedback.reason, incident.feedback.recorded_at, incident.results]);
+
+  function changeFeedbackOutcome(outcome: ReviewOutcome) {
+    setFeedbackOutcome(outcome);
+    setFeedbackReason(FEEDBACK_REASON_OPTIONS[outcome][0].value);
+    if (LEAD_OUTCOMES.has(outcome) && !feedbackEventId) setFeedbackEventId(lead?.event.id || "");
+  }
+
+  async function giveFeedback() {
     setFeedbackBusy(true);
     setFeedbackError(null);
     try {
-      await onFeedback(incident.id, outcome, eventId);
+      await onFeedback(
+        incident.id,
+        feedbackOutcome,
+        feedbackReason,
+        LEAD_OUTCOMES.has(feedbackOutcome) ? feedbackEventId : undefined,
+      );
     } catch (reason) {
       setFeedbackError(reason instanceof Error ? reason.message : "Feedback could not be saved.");
     } finally {
@@ -124,23 +180,24 @@ export function InvestigationDetail({ incident, connected, onFeedback, onDelete,
           <div className="counter-block"><span className="eyebrow">What weakens this lead</span>{lead.counter_evidence.length ? <EvidenceList items={lead.counter_evidence} counter /> : <p className="counter-empty">No counter-signal was recorded. That absence does not confirm a relationship.</p>}</div>
           <div className="causality-boundary"><Icon name="shield" size={16} /><p><strong>Not established:</strong> whether this change caused the symptom, whether an uncollected change mattered, or whether changing it would fix the problem.</p></div>
         </section>
+      </>}
 
         <section className="feedback-panel panel">
           <div>
-            <h3>Did a ranked lead help narrow the problem?</h3>
-            <p>This local feedback records usefulness only; it does not establish cause, retrain the rules, or change this ranking.</p>
-            {incident.feedback.outcome && <div className="feedback-recorded" role="status"><Icon name="check" size={15} /> Saved: {feedbackLabel(incident.feedback.outcome)}{incident.feedback.outcome === "helpful" && feedbackEvent ? ` — ${feedbackEvent.title}` : ""}. You can update this answer.</div>}
+            <h3>What was the real investigation outcome?</h3>
+            <p>Choose only what you verified. Difftrail records the selected rank and a structured reason for local validation; it never turns correlation into confirmation.</p>
+            {incident.feedback.outcome && <div className="feedback-recorded" role="status"><Icon name="check" size={15} /> Saved: {feedbackLabel(incident.feedback.outcome)}{feedbackEvent ? ` — ${feedbackEvent.title}` : ""}{incident.feedback.rank ? ` at rank #${incident.feedback.rank}` : ""}. You can update this answer.</div>}
           </div>
-          <div className="feedback-actions">
-            <button type="button" className={`button button-secondary ${incident.feedback.outcome === "not_helpful" ? "is-selected" : ""}`} aria-pressed={incident.feedback.outcome === "not_helpful"} title={connected ? undefined : "Connect the local journal to save feedback"} disabled={!connected || feedbackBusy} onClick={() => giveFeedback("not_helpful")}><Icon name="close" size={15} /> Not helpful</button>
-            <button type="button" className={`button button-secondary ${incident.feedback.outcome === "unsure" ? "is-selected" : ""}`} aria-pressed={incident.feedback.outcome === "unsure"} title={connected ? undefined : "Connect the local journal to save feedback"} disabled={!connected || feedbackBusy} onClick={() => giveFeedback("unsure")}><Icon name="clock" size={15} /> Still checking</button>
-            <button type="button" className={`button button-primary ${incident.feedback.outcome === "helpful" && incident.feedback.event_id === lead.event.id ? "is-selected" : ""}`} aria-pressed={incident.feedback.outcome === "helpful" && incident.feedback.event_id === lead.event.id} title={connected ? undefined : "Connect the local journal to save feedback"} disabled={!connected || feedbackBusy || !lead.event.id} onClick={() => giveFeedback("helpful", lead.event.id || undefined)}><Icon name="check" size={15} /> Top lead helped</button>
+          <div className="feedback-actions feedback-form">
+            <label><span>Outcome</span><select value={feedbackOutcome} onChange={(event) => changeFeedbackOutcome(event.target.value as ReviewOutcome)} disabled={!connected || feedbackBusy}><option value="confirmed_cause" disabled={!lead}>Confirmed cause</option><option value="useful_lead" disabled={!lead}>Useful lead</option><option value="irrelevant_lead" disabled={!lead}>Irrelevant lead</option><option value="uncaptured_cause">Cause was not captured</option><option value="unknown">Unknown outcome</option></select></label>
+            {LEAD_OUTCOMES.has(feedbackOutcome) && <label><span>Ranked lead</span><select value={feedbackEventId} onChange={(event) => setFeedbackEventId(event.target.value)} disabled={!connected || feedbackBusy}>{incident.results.map((result, index) => <option key={result.event.id || index} value={result.event.id || ""}>#{index + 1} {result.event.title}</option>)}</select></label>}
+            <label><span>Why</span><select value={feedbackReason} onChange={(event) => setFeedbackReason(event.target.value as FeedbackReason)} disabled={!connected || feedbackBusy}>{FEEDBACK_REASON_OPTIONS[feedbackOutcome].map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+            <button type="button" className="button button-primary" title={connected ? undefined : "Connect the local journal to save feedback"} disabled={!connected || feedbackBusy || (LEAD_OUTCOMES.has(feedbackOutcome) && !feedbackEventId)} onClick={() => void giveFeedback()}><Icon name={feedbackBusy ? "clock" : "check"} size={15} /> {feedbackBusy ? "Saving…" : "Save outcome"}</button>
           </div>
           {feedbackError && <div className="form-error" role="alert"><Icon name="alert" size={14} /> {feedbackError}</div>}
         </section>
 
-        {incident.results.length > 1 && <section className="panel candidates-panel"><div className="section-heading"><div><h3>Other recorded changes to compare</h3><span className="section-subtitle">Lower ranking means weaker rule-based support, not that a change is cleared.</span></div><span className="muted-count">{incident.results.length - 1} more</span></div><div className="candidate-list">{incident.results.slice(1).map((hypothesis, index) => <Candidate key={`${hypothesis.event.id}-${index}`} hypothesis={hypothesis} rank={index + 2} connected={connected} onFeedback={onFeedback} incidentId={incident.id} selectedUsefulLeadId={incident.feedback.outcome === "helpful" ? incident.feedback.event_id : null} />)}</div></section>}
-      </>}
+        {incident.results.length > 1 && <section className="panel candidates-panel"><div className="section-heading"><div><h3>Other recorded changes to compare</h3><span className="section-subtitle">Lower ranking means weaker rule-based support, not that a change is cleared.</span></div><span className="muted-count">{incident.results.length - 1} more</span></div><div className="candidate-list">{incident.results.slice(1).map((hypothesis, index) => <Candidate key={`${hypothesis.event.id}-${index}`} hypothesis={hypothesis} rank={index + 2} selectedFeedbackId={incident.feedback.event_id} />)}</div></section>}
     </div>
   );
 }
@@ -189,26 +246,15 @@ function emptyNext(state: AssessmentState): string {
   return "Inspect the evidence timeline around the onset or narrow the problem with an exact app, device, area, and time.";
 }
 
-function Candidate({ hypothesis, rank, connected, onFeedback, incidentId, selectedUsefulLeadId }: { hypothesis: Hypothesis; rank: number; connected: boolean; onFeedback: Props["onFeedback"]; incidentId: string; selectedUsefulLeadId: string | null }) {
+function Candidate({ hypothesis, rank, selectedFeedbackId }: { hypothesis: Hypothesis; rank: number; selectedFeedbackId: string | null }) {
   const [open, setOpen] = useState(false);
-  const [feedbackBusy, setFeedbackBusy] = useState(false);
-  const [feedbackError, setFeedbackError] = useState<string | null>(null);
+  const selected = Boolean(hypothesis.event.id && selectedFeedbackId === hypothesis.event.id);
+  return <div className={`candidate ${open ? "is-open" : ""} ${selected ? "is-feedback-selected" : ""}`}><button type="button" className="candidate-toggle" onClick={() => setOpen((value) => !value)} aria-expanded={open}><span className="candidate-rank">#{rank}</span><span className={`support-mini support-${hypothesis.support_level}`} title="Rule-based evidence support, not probability">{supportLabel(hypothesis.support_level)}</span><span className="candidate-copy"><strong>{hypothesis.event.title}</strong><small>{subsystemLabel(hypothesis.event.subsystem)} · detected {relativeTime(hypothesis.event.occurred_at)}{selected ? " · included in saved outcome" : ""}</small></span><Icon name="chevron" size={15} className={open ? "rotated" : ""} /></button>{open && <div className="candidate-body"><div><span className="eyebrow">Supporting signals</span><EvidenceList items={hypothesis.evidence} /></div><div className="candidate-counter"><span className="eyebrow">Counter-signals</span>{hypothesis.counter_evidence.length ? <EvidenceList items={hypothesis.counter_evidence} counter /> : <p className="counter-empty">None recorded; this does not confirm a relationship.</p>}</div><p className="candidate-limit">This ranking orders what to inspect. It is not a probability or proof of cause.</p></div>}</div>;
+}
 
-  async function giveFeedback() {
-    if (feedbackBusy) return;
-    setFeedbackBusy(true);
-    setFeedbackError(null);
-    try {
-      await onFeedback(incidentId, "helpful", hypothesis.event.id || undefined);
-    } catch (reason) {
-      setFeedbackError(reason instanceof Error ? reason.message : "Feedback could not be saved.");
-    } finally {
-      setFeedbackBusy(false);
-    }
-  }
-
-  const selected = Boolean(hypothesis.event.id && selectedUsefulLeadId === hypothesis.event.id);
-  return <div className={`candidate ${open ? "is-open" : ""} ${selected ? "is-feedback-selected" : ""}`}><button type="button" className="candidate-toggle" onClick={() => setOpen((value) => !value)} aria-expanded={open}><span className="candidate-rank">#{rank}</span><span className={`support-mini support-${hypothesis.support_level}`} title="Rule-based evidence support, not probability">{supportLabel(hypothesis.support_level)}</span><span className="candidate-copy"><strong>{hypothesis.event.title}</strong><small>{subsystemLabel(hypothesis.event.subsystem)} · detected {relativeTime(hypothesis.event.occurred_at)}{selected ? " · marked useful" : ""}</small></span><Icon name="chevron" size={15} className={open ? "rotated" : ""} /></button>{open && <div className="candidate-body"><div><span className="eyebrow">Supporting signals</span><EvidenceList items={hypothesis.evidence} /></div><div className="candidate-counter"><span className="eyebrow">Counter-signals</span>{hypothesis.counter_evidence.length ? <EvidenceList items={hypothesis.counter_evidence} counter /> : <p className="counter-empty">None recorded; this does not confirm a relationship.</p>}</div><p className="candidate-limit">This ranking orders what to inspect. It is not a probability or proof of cause.</p><button type="button" className="quiet-link" title={connected ? undefined : "Connect the local journal to save feedback"} disabled={!connected || feedbackBusy || !hypothesis.event.id} aria-busy={feedbackBusy} onClick={() => void giveFeedback()}>{feedbackBusy ? "Saving feedback..." : selected ? "Marked as the useful lead" : "Mark as a useful lead"} <Icon name={feedbackBusy ? "clock" : selected ? "check" : "arrow"} size={14} /></button>{feedbackError && <div className="form-error" role="alert"><Icon name="alert" size={14} /> {feedbackError}</div>}</div>}</div>;
+function initialFeedbackReason(outcome: ReviewOutcome, saved: FeedbackReason | null): FeedbackReason {
+  if (saved && saved !== "legacy_unspecified" && FEEDBACK_REASON_OPTIONS[outcome].some((option) => option.value === saved)) return saved;
+  return FEEDBACK_REASON_OPTIONS[outcome][0].value;
 }
 
 function uniqueReasons(reasons: string[]): string[] {
